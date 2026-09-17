@@ -1,0 +1,25 @@
+{
+  "name": "pr-conventions",
+  "description": "Pull request and commit message conventions",
+  "interface": {
+    "displayName": "PR Conventions",
+    "shortDescription": "Pull request and commit message conventions",
+    "longDescription": "Gitmoji-style PR titles, Conventional Commits message format, atomic-commit discipline, and a hook that blocks AI/co-author attribution footers from commit messages and PR descriptions.",
+    "developerName": "Fahad Javed",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Git",
+      "Validation"
+    ],
+    "defaultPrompt": [
+      "Write a gitmoji-style title and Conventional Commits message for this change"
+    ]
+  },
+  "version": "1.0.0",
+  "author": {
+    "name": "Fahad Javed",
+    "email": "fahad@heyfahad.dev",
+    "url": "https://heyfahad.dev"
+  },
+  "skills": "./skills/"
+}
