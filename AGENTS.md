@@ -10,9 +10,8 @@ Most of what used to live here as prose now lives as task-triggered skills under
 
 ## Mandatory rules with no cross-tool enforcement mechanism (yet)
 
-These five rules are enforced as Claude Code `PreToolUse`/`PostToolUse` hooks (see the named plugin for the actual hook). On a tool that can't run those hooks, treat these as hard requirements anyway:
+These four rules are enforced as Claude Code `PreToolUse`/`PostToolUse` hooks (see the named plugin for the actual hook). On a tool that can't run those hooks, treat these as hard requirements anyway:
 
-- **Never run `git commit`** (any repo, any branch, any change) without first showing the staged diff and getting explicit go-ahead. See `git-workflow`'s `commit-review-gate` hook.
 - **Before opening or re-opening a PR against a repo's pre-prod branch** (`staging`, `stage`, `develop`, `dev`, or whatever a given repo calls it, not necessarily literally "staging"), always pre-check for merge conflicts first (`git fetch origin <pre-prod-branch> && git merge-tree --write-tree origin/<pre-prod-branch> <branch>`) rather than reflexively branching a conflict-resolution branch. See `git-workflow`'s `pre-staging-conflict-check` hook (which resolves the actual branch names dynamically) and its `staging-conflict-resolution` skill.
 - **Before running a package-manager install/add command**, check which lockfile is actually committed on the current branch and use that manager. Don't trust a stated tooling convention alone (a migration may exist only on an unmerged branch). See `package-manager-safety`'s `lockfile-verification-gate` hook.
 - **Before shelling out to a tool/script that itself calls `gh`** from within its own subprocess, export `GH_TOKEN=$(gh auth token)` first in the same invocation. macOS's Keychain-backed `gh` credential can silently fail to propagate through an extra process boundary, producing a `404` that reads like a permissions bug. See `github-tooling`'s `gh-token-export` hook.
@@ -20,4 +19,4 @@ These five rules are enforced as Claude Code `PreToolUse`/`PostToolUse` hooks (s
 
 ## Git staging discipline
 
-Don't run `git add` reflexively after finishing a round of edits. Only stage files when the user explicitly asks to stage/commit, or immediately before a `git commit` they've already approved (the commit-review-gate rule above still applies regardless of who staged the files). The user may be intentionally keeping a known-good state staged as a manual checkpoint, so they can diff their working tree against it to see exactly what a new round of changes touched. Auto-staging collapses that comparison and takes away their ability to tell "what's new" from "what I already reviewed."
+Don't run `git add` reflexively after finishing a round of edits. Only stage files when the user explicitly asks to stage/commit, or immediately before a `git commit` they've already approved. The user may be intentionally keeping a known-good state staged as a manual checkpoint, so they can diff their working tree against it to see exactly what a new round of changes touched. Auto-staging collapses that comparison and takes away their ability to tell "what's new" from "what I already reviewed."

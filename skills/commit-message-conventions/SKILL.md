@@ -11,7 +11,7 @@ metadata:
 
 **Keep commits atomic: one logical change per commit.** Don't bundle an unrelated refactor, a formatting pass, and a bug fix into a single commit just because they happened to land in the same session. If staged changes span more than one logical change, split them into separate commits (`git add -p` or per-file staging) rather than committing everything at once.
 
-This is a judgment call the `commit-review-gate` hook can't fully make for you, but it does add a lightweight nudge: if the staged diff spans an unusually large number of top-level directories, the hook's review prompt flags that as worth double-checking before you proceed.
+This is a judgment call with no mechanical check behind it: if the staged diff spans an unusually large number of top-level directories, that's worth a second look before committing everything as one change.
 
 ## Format
 
