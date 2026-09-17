@@ -17,6 +17,13 @@ INPUT=$(cat)
 CWD=$(printf '%s' "$INPUT" | jq -r '.cwd // "."')
 COMMAND=$(printf '%s' "$INPUT" | jq -r '.tool_input.command // ""')
 
+# hooks.json's "if" is a fast-path only - it can't express "contains
+# --base" at all, only a tool-name prefix. This script is the actual
+# authority: it must not run gh/git network calls for an unrelated Bash call.
+if ! printf '%s' "$COMMAND" | grep -qiE '\bgh\s+pr\s+create\b'; then
+  exit 0
+fi
+
 BASE_BRANCH=$(printf '%s' "$COMMAND" | grep -oE -- '--base[= ]+[^ ]+' | sed -E 's/--base[= ]+//' | head -n1 || true)
 if [ -z "$BASE_BRANCH" ]; then
   # No explicit --base - gh will target the repo's default branch, which is

@@ -78,3 +78,28 @@ jobs:
             fi
           done < <(find plugins -name '*.sh')
           exit $status
+
+      - name: Check hooks.json "if" patterns use valid wildcard syntax
+        # claude plugin validate never looks at hooks.json at all (it only
+        # checks the plugin manifest, skills, agents, and commands), so a
+        # broken hook condition ships silently otherwise. Claude Code only
+        # expands "*" as a prefix wildcard when it directly follows ":" or
+        # " " (e.g. "Bash(git commit:*)"); anywhere else - "Bash(git
+        # commit*)" - the "*" is matched as a literal character, so the
+        # pattern can never match a real command and the hook's "if"
+        # silently never lets it run.
+        run: |
+          status=0
+          while IFS= read -r hooks_file; do
+            while IFS= read -r pattern; do
+              [ -z "$pattern" ] && continue
+              # Strip every valid wildcard (":*" or " *"); any "*" left over
+              # was glued directly onto other text and is matched literally.
+              cleaned=$(printf '%s' "$pattern" | sed -E 's/([: ])\*/\1STAR_OK/g')
+              if printf '%s' "$cleaned" | grep -q '\*'; then
+                echo "::error file=$hooks_file::hook \"if\" pattern '$pattern' has a '*' not directly preceded by ':' or ' ' - it will be matched literally and this hook's if condition will never match a real command"
+                status=1
+              fi
+            done < <(jq -r '.hooks[]? | .[]? | .hooks[]? | .if // empty' "$hooks_file")
+          done < <(find plugins -name 'hooks.json')
+          exit $status

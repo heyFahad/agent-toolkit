@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "if": "Bash(git commit*)",
+            "if": "Bash(git commit:*)",
             "command": "${CLAUDE_PLUGIN_ROOT}/hooks/commit-review-gate.sh",
             "timeout": 15
           }
@@ -18,7 +18,7 @@
         "hooks": [
           {
             "type": "command",
-            "if": "Bash(gh pr create*--base*)",
+            "if": "Bash(gh pr create:*)",
             "command": "${CLAUDE_PLUGIN_ROOT}/hooks/pre-staging-conflict-check.sh",
             "timeout": 30
           }

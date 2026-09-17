@@ -40,5 +40,6 @@ Every push and PR to `main` (`.github/workflows/validate.yml`) checks:
 - every plugin directory, with plain (non-strict) `claude plugin validate`, since the symlink notice above would otherwise fail a strict check
 - the canonical `skills/` directory, with `claude plugin validate --strict` (no symlinks there to trip that check)
 - every hook script, for valid bash syntax and the executable bit
+- every `hooks.json`'s `if` patterns, for valid wildcard syntax (`claude plugin validate` never reads `hooks.json` at all, so this is the only check that catches it)
 
 Run the same checks locally before opening a PR; the commands are in `.github/workflows/validate.yml`.
