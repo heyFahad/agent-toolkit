@@ -1,0 +1,81 @@
+name: Validate plugins
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.4.2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: ".nvmrc"
+          cache: "pnpm"
+
+      - name: Install Claude Code and Codex CLIs
+        run: |
+          pnpm add -g @anthropic-ai/claude-code @openai/codex
+
+      - name: Validate Claude Code marketplace manifest
+        run: claude plugin validate .claude-plugin/marketplace.json --strict
+
+      - name: Validate Codex marketplace manifest
+        # claude plugin validate only understands Claude's marketplace schema,
+        # so the Codex marketplace file is checked with Codex's own CLI
+        # instead - actually registering it and confirming every plugin
+        # resolves, not just that the JSON parses. The expected list is read
+        # from the Claude Code marketplace file rather than hardcoded here,
+        # so this doesn't need a manual update every time a plugin is added
+        # or removed - it just needs the two marketplace files to agree.
+        run: |
+          codex plugin marketplace add .
+          codex plugin list --marketplace agent-toolkit --available --json > /tmp/codex-plugins.json
+          expected=$(jq -r '.plugins[].name' .claude-plugin/marketplace.json | sort | tr '\n' ' ' | sed 's/ $//')
+          actual=$(jq -r '.available[].name' /tmp/codex-plugins.json | sort | tr '\n' ' ' | sed 's/ $//')
+          if [ "$expected" != "$actual" ]; then
+            echo "::error::Codex marketplace plugin list doesn't match the Claude Code marketplace. Expected: $expected. Got: $actual"
+            exit 1
+          fi
+          codex plugin marketplace remove agent-toolkit
+
+      - name: Validate each plugin
+        # Not --strict here: every plugin with a shared skill triggers an
+        # expected, benign "symlinks were not read" warning (this repo's
+        # skills/ directory is the real content; plugins/*/skills/* are
+        # symlinks back to it on purpose - see README). --strict would turn
+        # that into a permanent false-positive failure. Real errors (a
+        # broken manifest) still fail the plain (non-strict) check below;
+        # the canonical content itself is checked --strict next.
+        run: |
+          for plugin_dir in plugins/*/; do
+            echo "::group::$(basename "$plugin_dir")"
+            claude plugin validate "$plugin_dir"
+            echo "::endgroup::"
+          done
+
+      - name: Validate canonical skills directory
+        run: claude plugin validate skills --strict
+
+      - name: Check every hook script is executable and syntactically valid
+        run: |
+          status=0
+          while IFS= read -r script; do
+            if [ ! -x "$script" ]; then
+              echo "::error file=$script::not executable"
+              status=1
+            fi
+            if ! bash -n "$script"; then
+              echo "::error file=$script::bash syntax error"
+              status=1
+            fi
+          done < <(find plugins -name '*.sh')
+          exit $status
