@@ -1,0 +1,19 @@
+{
+  "$schema": "https://www.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "git-workflow",
+  "description": "Git branching, pull request, and merge/deploy workflow conventions",
+  "version": "1.0.0",
+  "author": {
+    "name": "Fahad Javed",
+    "email": "fahad@heyfahad.dev",
+    "url": "https://heyfahad.dev"
+  },
+  "license": "MIT",
+  "keywords": [
+    "git",
+    "github",
+    "pull-requests",
+    "branching",
+    "staging"
+  ]
+}
