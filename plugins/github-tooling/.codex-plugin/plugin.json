@@ -1,0 +1,25 @@
+{
+  "name": "github-tooling",
+  "description": "GitHub CLI tooling conventions and safety checks",
+  "interface": {
+    "displayName": "GitHub Tooling",
+    "shortDescription": "GitHub CLI tooling conventions and safety checks",
+    "longDescription": "Auth-propagation safety for gh CLI calls made from inside a nested script, plus guidance for calibrating automated bot PR review triage tooling.",
+    "developerName": "Fahad Javed",
+    "category": "Developer Tools",
+    "capabilities": [
+      "GitHub",
+      "Validation"
+    ],
+    "defaultPrompt": [
+      "Triage the bot review findings on this PR"
+    ]
+  },
+  "version": "1.0.0",
+  "author": {
+    "name": "Fahad Javed",
+    "email": "fahad@heyfahad.dev",
+    "url": "https://heyfahad.dev"
+  },
+  "skills": "./skills/"
+}
