@@ -12,18 +12,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 12.4.2
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version-file: ".nvmrc"
-          cache: "pnpm"
-
       - name: Install Claude Code and Codex CLIs
+        # Standalone installers, not a package manager: nothing else in this
+        # repo needs Node.js, and this matches how these CLIs actually get
+        # installed day to day. Both target $HOME/.local/bin by default
+        # (confirmed from each installer's own source), which isn't on PATH
+        # for a non-interactive shell like this one, so it's added explicitly
+        # for the rest of the job's steps.
         run: |
-          pnpm add -g @anthropic-ai/claude-code @openai/codex
+          curl -fsSL https://claude.ai/install.sh | bash
+          curl -fsSL https://chatgpt.com/codex/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Validate Claude Code marketplace manifest
         run: claude plugin validate .claude-plugin/marketplace.json --strict
