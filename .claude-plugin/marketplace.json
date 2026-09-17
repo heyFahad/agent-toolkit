@@ -1,0 +1,58 @@
+{
+  "$schema": "https://www.schemastore.org/claude-code-marketplace.json",
+  "name": "agent-toolkit",
+  "owner": {
+    "name": "Fahad Javed",
+    "email": "fahad@heyfahad.dev",
+    "url": "https://heyfahad.dev"
+  },
+  "description": "Personal git/PR workflow, Jira lifecycle, coding style, and writing convention plugins",
+  "version": "1.0.0",
+  "metadata": {
+    "pluginRoot": "./plugins"
+  },
+  "plugins": [
+    {
+      "name": "git-workflow",
+      "description": "Git branching, pull request, and merge/deploy workflow conventions",
+      "category": "git",
+      "source": "./plugins/git-workflow"
+    },
+    {
+      "name": "package-manager-safety",
+      "description": "Package manager tooling safety checks",
+      "category": "tooling",
+      "source": "./plugins/package-manager-safety"
+    },
+    {
+      "name": "github-tooling",
+      "description": "GitHub CLI tooling conventions and safety checks",
+      "category": "github",
+      "source": "./plugins/github-tooling"
+    },
+    {
+      "name": "pr-conventions",
+      "description": "Pull request and commit message conventions",
+      "category": "git",
+      "source": "./plugins/pr-conventions"
+    },
+    {
+      "name": "atlassian-workflow",
+      "description": "Atlassian (Jira/Confluence/Bitbucket) tooling and workflow conventions",
+      "category": "jira",
+      "source": "./plugins/atlassian-workflow"
+    },
+    {
+      "name": "writing-conventions",
+      "description": "Writing and formatting conventions across platforms",
+      "category": "writing",
+      "source": "./plugins/writing-conventions"
+    },
+    {
+      "name": "coding-style",
+      "description": "JavaScript/TypeScript coding style enforcement",
+      "category": "coding",
+      "source": "./plugins/coding-style"
+    }
+  ]
+}
