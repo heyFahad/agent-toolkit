@@ -1,0 +1,18 @@
+{
+  "$schema": "https://www.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "package-manager-safety",
+  "description": "Package manager tooling safety checks",
+  "version": "1.0.0",
+  "author": {
+    "name": "Fahad Javed",
+    "email": "fahad@heyfahad.dev",
+    "url": "https://heyfahad.dev"
+  },
+  "license": "MIT",
+  "keywords": [
+    "npm",
+    "pnpm",
+    "yarn",
+    "lockfile"
+  ]
+}

@@ -1,0 +1,23 @@
+{
+  "name": "package-manager-safety",
+  "description": "Package manager tooling safety checks",
+  "interface": {
+    "displayName": "Package Manager Safety",
+    "shortDescription": "Package manager tooling safety checks",
+    "longDescription": "Verifies the lockfile actually committed on the current branch matches the package manager being invoked before an install/add/update command runs, to catch an in-progress or unmerged package-manager migration.",
+    "developerName": "Fahad Javed",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Validation"
+    ],
+    "defaultPrompt": [
+      "Check whether this branch's lockfile matches the package manager I'm about to use"
+    ]
+  },
+  "version": "1.0.0",
+  "author": {
+    "name": "Fahad Javed",
+    "email": "fahad@heyfahad.dev",
+    "url": "https://heyfahad.dev"
+  }
+}
