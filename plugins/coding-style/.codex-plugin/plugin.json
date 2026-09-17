@@ -1,0 +1,25 @@
+{
+  "name": "coding-style",
+  "description": "JavaScript/TypeScript coding style enforcement",
+  "interface": {
+    "displayName": "Coding Style",
+    "shortDescription": "JavaScript/TypeScript coding style enforcement",
+    "longDescription": "Shareable ESLint flat config plus an auto-fix hook that runs on every edited JS/TS file, so style rules are enforced immediately instead of relying on being remembered.",
+    "developerName": "Fahad Javed",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Linting",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "Check this file against the project's JS/TS style rules"
+    ]
+  },
+  "version": "1.0.0",
+  "author": {
+    "name": "Fahad Javed",
+    "email": "fahad@heyfahad.dev",
+    "url": "https://heyfahad.dev"
+  },
+  "skills": "./skills/"
+}

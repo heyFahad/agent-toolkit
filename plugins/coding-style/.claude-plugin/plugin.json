@@ -1,0 +1,18 @@
+{
+  "$schema": "https://www.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "coding-style",
+  "description": "JavaScript/TypeScript coding style enforcement",
+  "version": "1.0.0",
+  "author": {
+    "name": "Fahad Javed",
+    "email": "fahad@heyfahad.dev",
+    "url": "https://heyfahad.dev"
+  },
+  "license": "MIT",
+  "keywords": [
+    "eslint",
+    "javascript",
+    "typescript",
+    "coding-style"
+  ]
+}
