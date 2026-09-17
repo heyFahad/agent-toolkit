@@ -1,0 +1,20 @@
+{
+  "json.schemas": [
+    {
+      "fileMatch": ["**/.claude-plugin/plugin.json"],
+      "url": "https://www.schemastore.org/claude-code-plugin-manifest.json"
+    },
+    {
+      "fileMatch": ["**/.claude-plugin/marketplace.json"],
+      "url": "https://www.schemastore.org/claude-code-marketplace.json"
+    },
+    {
+      "fileMatch": ["**/.codex-plugin/plugin.json"],
+      "url": "https://www.schemastore.org/codex-plugin-manifest.json"
+    },
+    {
+      "fileMatch": ["**/hooks/hooks.json"],
+      "url": "https://www.schemastore.org/claude-code-settings.json"
+    }
+  ]
+}
