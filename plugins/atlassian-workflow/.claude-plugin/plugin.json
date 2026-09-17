@@ -1,0 +1,18 @@
+{
+  "$schema": "https://www.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "atlassian-workflow",
+  "description": "Atlassian (Jira/Confluence/Bitbucket) tooling and workflow conventions",
+  "version": "1.0.0",
+  "author": {
+    "name": "Fahad Javed",
+    "email": "fahad@heyfahad.dev",
+    "url": "https://heyfahad.dev"
+  },
+  "license": "MIT",
+  "keywords": [
+    "jira",
+    "confluence",
+    "bitbucket",
+    "twg"
+  ]
+}
