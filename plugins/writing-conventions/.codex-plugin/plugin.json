@@ -1,0 +1,25 @@
+{
+  "name": "writing-conventions",
+  "description": "Writing and formatting conventions across platforms",
+  "interface": {
+    "displayName": "Writing Conventions",
+    "shortDescription": "Writing and formatting conventions across platforms",
+    "longDescription": "Per-surface hyperlink and code-reference formatting rules (GitHub-native, Jira/Confluence, JSDoc), a hook that catches backtick-wrapped GitHub references that defeat GitHub's autolinker, and an anti-AI-slop humanizing pass for prose.",
+    "developerName": "Fahad Javed",
+    "category": "Productivity",
+    "capabilities": [
+      "Writing",
+      "Validation"
+    ],
+    "defaultPrompt": [
+      "Humanize this PR description before I post it"
+    ]
+  },
+  "version": "1.0.0",
+  "author": {
+    "name": "Fahad Javed",
+    "email": "fahad@heyfahad.dev",
+    "url": "https://heyfahad.dev"
+  },
+  "skills": "./skills/"
+}

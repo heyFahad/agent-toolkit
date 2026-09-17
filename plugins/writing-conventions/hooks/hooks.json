@@ -1,0 +1,37 @@
+{
+  "$schema": "https://www.schemastore.org/claude-code-settings.json",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/github-comment-formatting-gate.sh",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "agent",
+            "prompt": "Hook input JSON: $ARGUMENTS\n\nFirst, parse tool_input.command from that JSON. If it is NOT a command that posts a GitHub PR/issue comment, review, or body (gh pr create/edit/comment, gh issue create/edit/comment, gh pr review with --body, or gh api posting to a .../comments or .../reviews endpoint), immediately return exactly this and do nothing else: {\"hookSpecificOutput\": {\"hookEventName\": \"PreToolUse\", \"permissionDecision\": \"allow\"}}\n\nOtherwise, extract the body/comment text the command is about to post and check it ONLY against these unambiguous, high-confidence signs of AI-generated prose (the 'hard defaults' from the humanize skill - do not flag softer, density-based judgment calls like occasional AI-vocabulary words, since those need more context than a single automated pass can fairly judge):\n- a significance flourish ('stands as a testament to', 'plays a pivotal/vital/crucial role', 'marks a turning point', 'underscores the importance of')\n- a sentence ending in a bolted-on '-ing' clause that just restates significance ('..., ensuring...', '..., highlighting its...', '..., further solidifying...')\n- negative parallelism ('not just X, but Y', 'it isn't about X, it's about Y', 'not only... but also...')\n- a wrap-up paragraph ('In summary,', 'In conclusion,', 'Overall,', or a closing paragraph that just restates what was already said)\n- an editorializing aside ('it's important to note', 'it's worth remembering', 'no discussion would be complete without')\n- three or more em dashes\n- chatbot residue leaking into the deliverable ('I hope this helps', 'Certainly!', 'Here is the draft you requested', 'Let me know if you would like me to expand on this')\n- a fabricated-sounding claim presented as fact with no basis in the actual change\n\nIf you find one or more of these clearly present, return: {\"hookSpecificOutput\": {\"hookEventName\": \"PreToolUse\", \"permissionDecision\": \"deny\", \"permissionDecisionReason\": \"<quote the exact offending phrase(s), name which sign(s) of AI writing they are, and say: apply the humanize skill and rewrite before retrying>\"}}\n\nIf the text is clean, return: {\"hookSpecificOutput\": {\"hookEventName\": \"PreToolUse\", \"permissionDecision\": \"allow\"}}\n\nReturn ONLY that JSON object, nothing else - no explanation outside it.",
+            "timeout": 45
+          }
+        ]
+      },
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "agent",
+            "prompt": "Hook input JSON: $ARGUMENTS\n\nFirst, parse tool_input.file_path from that JSON. If the file is NOT named README.md and NOT located under a top-level docs/ directory, immediately return exactly this and do nothing else: {\"hookSpecificOutput\": {\"hookEventName\": \"PreToolUse\", \"permissionDecision\": \"allow\"}}\n\nOtherwise, look at the new text being introduced (tool_input.content for a Write call, or tool_input.new_string for an Edit call) and check it ONLY against these unambiguous, high-confidence signs of AI-generated prose (the 'hard defaults' from the humanize skill - do not flag softer, density-based judgment calls like occasional AI-vocabulary words, since those need more context than a single automated pass can fairly judge):\n- a significance flourish ('stands as a testament to', 'plays a pivotal/vital/crucial role', 'marks a turning point', 'underscores the importance of')\n- a sentence ending in a bolted-on '-ing' clause that just restates significance ('..., ensuring...', '..., highlighting its...', '..., further solidifying...')\n- negative parallelism ('not just X, but Y', 'it isn't about X, it's about Y', 'not only... but also...')\n- a wrap-up paragraph ('In summary,', 'In conclusion,', 'Overall,', or a closing paragraph that just restates what was already said)\n- an editorializing aside ('it's important to note', 'it's worth remembering', 'no discussion would be complete without')\n- three or more em dashes\n- chatbot residue leaking into the deliverable ('I hope this helps', 'Certainly!', 'Here is the draft you requested', 'Let me know if you would like me to expand on this')\n- a fabricated-sounding claim presented as fact\n\nIf you find one or more of these clearly present, return: {\"hookSpecificOutput\": {\"hookEventName\": \"PreToolUse\", \"permissionDecision\": \"deny\", \"permissionDecisionReason\": \"<quote the exact offending phrase(s), name which sign(s) of AI writing they are, and say: apply the humanize skill and rewrite before retrying>\"}}\n\nIf the text is clean, return: {\"hookSpecificOutput\": {\"hookEventName\": \"PreToolUse\", \"permissionDecision\": \"allow\"}}\n\nReturn ONLY that JSON object, nothing else - no explanation outside it.",
+            "timeout": 45
+          }
+        ]
+      }
+    ]
+  }
+}
