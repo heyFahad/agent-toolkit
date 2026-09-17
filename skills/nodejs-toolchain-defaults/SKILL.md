@@ -37,6 +37,6 @@ Also add an `.nvmrc` with the same major version. Classic `nvm` only reads `.nvm
 
 Any pnpm-specific settings (`engineStrict: true`, etc.) belong in `pnpm-workspace.yaml`, not `.npmrc`. pnpm now reads `.npmrc` for auth and registry settings only; everything else has moved to `pnpm-workspace.yaml` (or the global `~/.config/pnpm/config.yaml`), and a setting like `engine-strict` left in `.npmrc` is silently ignored by pnpm rather than erroring, which makes the mistake easy to miss.
 
-## This repo's own current pins
+## When this doesn't apply
 
-This repo's own `package.json`, `.nvmrc`, and `pnpm-workspace.yaml` carry the actual current values in use here. Keep those updated as Node and pnpm advance (that's a living config, expected to change) rather than treating a copy of the numbers baked into this skill as authoritative.
+This is for a project that actually builds or runs JS/TS. A repo with no real dependencies and no build step (this toolkit's own repo included) doesn't need `package.json`, `.nvmrc`, or a package-manager pin at all: adding them anyway just recreates the toolchain-pinning problem for a project with nothing to pin. Pin only when there's a real reason to, such as a CI step that needs a package manager to install something, or actual dependencies to lock.

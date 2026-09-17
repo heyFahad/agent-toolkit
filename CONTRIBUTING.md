@@ -1,8 +1,6 @@
 # Contributing to agent-toolkit
 
-## Local development setup
-
-Node and pnpm versions are pinned in `.nvmrc` and `package.json` (`devEngines`), not the legacy `packageManager` field. See the `nodejs-toolchain-defaults` skill for why. There's nothing to install for most changes (editing a `SKILL.md` or a hook script needs no build step); the pin exists for CI and for anyone extending `coding-style`'s ESLint config.
+There's no build step and no dependencies to install: editing a `SKILL.md`, a hook script, or a manifest needs nothing beyond a text editor. `claude` and `codex` (used below and in CI) are the standalone CLI installs, not something this repo brings in via a package manager.
 
 ## Test a change locally, before pushing anywhere
 
