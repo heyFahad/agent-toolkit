@@ -9,7 +9,7 @@ metadata:
 
 This is the default workflow for a standalone ticket or fix in a repo that has both a production branch and a long-lived pre-prod branch. It does not apply to subtasks of a multi-subtask epic: see the `stacked-epics` skill for that case instead.
 
-**A note on naming:** `main` and `staging` below are shorthand, not a claim about what a given repo actually calls these branches. Production is often `main` or `master`; pre-prod shows up as `staging`, `stage`, `develop`, `dev`, `preprod`, or similar. Before applying this skill, confirm the repo's actual names: `gh repo view --json defaultBranchRef -q .defaultBranchRef.name` gives the production branch, and the pre-prod branch is usually visible as another long-lived branch in `git branch -r` or the repo's own docs. This plugin's hooks (`commit-review-gate`, `pre-staging-conflict-check`) already resolve the real names dynamically rather than hardcoding `main`/`staging`, so they work regardless of what this repo calls them.
+**A note on naming:** `main` and `staging` below are shorthand, not a claim about what a given repo actually calls these branches. Production is often `main` or `master`; pre-prod shows up as `staging`, `stage`, `develop`, `dev`, `preprod`, or similar. Before applying this skill, confirm the repo's actual names: `gh repo view --json defaultBranchRef -q .defaultBranchRef.name` gives the production branch, and the pre-prod branch is usually visible as another long-lived branch in `git branch -r` or the repo's own docs. This plugin's `pre-staging-conflict-check` hook already resolves the real names dynamically rather than hardcoding `main`/`staging`, so it works regardless of what this repo calls them.
 
 ## Branching
 
