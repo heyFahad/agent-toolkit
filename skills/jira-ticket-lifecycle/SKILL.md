@@ -19,7 +19,7 @@ Whenever picking up or working on a Jira ticket, keep the ticket's Jira status a
 
 Status names, and the graph connecting them, are defined per project by that project's workflow scheme. A different board can use different words for the same milestone ("In Review" vs "Code Review" vs "Ready for QA"), skip a milestone entirely, or require several hops through intermediate statuses to reach it. Never hardcode a literal status name into a transition call — resolve it first:
 
-- Check for a `status-map.local.json` file next to this skill (format in `references/status-map.md`). If the current project has an entry (directly, or via a shared `workflow` id), use its `started`/`devReview` status names, `edges` graph, and `avoidBranches` as a starting map.
+- Look for `status-map.local.json` (format in `references/status-map.md`) in `${XDG_CONFIG_HOME:-$HOME/.config}/agent-toolkit/` first, then next to this skill. The first location survives plugin updates; the second is a read-only legacy fallback, because an installed plugin's folder is versioned and gets replaced on update. If the current project has an entry (directly, or via a shared `workflow` id), use its `started`/`devReview` status names, `edges` graph, and `avoidBranches` as a starting map.
 - If there's no entry (new project, or the file doesn't exist at all), don't ask the person to hand-author one upfront — bootstrap it yourself (see below), and fall back to the generic matching heuristics in `references/status-map.md`'s `default` block for the first walk while you do.
 
 ### Bootstrapping a project with no config yet
@@ -29,7 +29,7 @@ Prefer getting the *complete* graph in one shot, and prefer getting it with zero
 1. **Try the API first.** `POST /rest/api/3/workflows` (`twg api jira:/rest/api/3/workflows -X POST`) returns the real workflow definition for a project+issue-type — no human needed at all when it works. As of 2026-09 this reliably fails for most accounts (a `twg`-OAuth-scope wall, then — if routed around via Basic Auth with a personal API token — a Jira project-permission wall; both confirmed by direct testing, not assumed). Try it anyway before falling back: don't skip straight to asking a human on the assumption it'll fail, since permission grants can change, and this is what makes the skill actually automatic for whichever accounts and projects it does work for.
 2. **If that fails, ask for the screenshot.** Have the person open any issue, click its status field, choose **View Workflow**, turn on **Show transition labels**, and share the result. This needs a human, but only once per project, ever.
 3. **If a screenshot isn't practical**, fall back to walking a couple of real tickets live — slower, and it won't surface branches no ticket happens to be sitting in, but it needs nothing from the other person.
-4. Whichever step succeeds, write the result back to `status-map.local.json` yourself, and — if a persistent memory system is available in this environment — save a short pointer memory noting where the graph now lives and when it was captured, so a future session doesn't ask again. The config file is the source of truth; memory just points at it.
+4. Whichever step succeeds, write the result back to `status-map.local.json` in `${XDG_CONFIG_HOME:-$HOME/.config}/agent-toolkit/` yourself (create the folder if needed, and copy over any entries from a legacy copy next to this skill the first time), and — if a persistent memory system is available in this environment — save a short pointer memory noting where the graph now lives and when it was captured, so a future session doesn't ask again. The config file is the source of truth; memory just points at it.
 
 ## Reaching a milestone can take more than one transition
 
@@ -59,4 +59,4 @@ This is a Jira-workflow habit, not tied to a specific project or ticket prefix. 
 
 ## References
 
-- `references/status-map.md` — format for `status-map.local.json`, default matching heuristics, and an example.
+- `references/status-map.md` — where `status-map.local.json` lives, its format, default matching heuristics, and an example.

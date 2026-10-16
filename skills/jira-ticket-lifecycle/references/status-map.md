@@ -4,7 +4,14 @@ description: Format and defaults for the optional status-map.local.json used by 
 
 # Status map
 
-`status-map.local.json`, if present next to this skill's `SKILL.md`, holds per-project status vocabulary and empirically-walked paths so `jira-ticket-lifecycle` doesn't have to re-derive them by trial and error every time. It's local, personal configuration — gitignored in this repo (`*.local.json`), and not meant to be committed with company-specific project keys or status names. Each person or org configuring this skill for their own boards keeps their own copy.
+`status-map.local.json`, if present, holds per-project status vocabulary and empirically-walked paths so `jira-ticket-lifecycle` doesn't have to re-derive them by trial and error every time. It's local, personal configuration — gitignored in this repo (`*.local.json`), and not meant to be committed with company-specific project keys or status names. Each person or org configuring this skill for their own boards keeps their own copy.
+
+## Where it lives
+
+The file lives at `${XDG_CONFIG_HOME:-$HOME/.config}/agent-toolkit/status-map.local.json`, outside any plugin folder, so it survives plugin updates (an installed plugin's folder is versioned and replaced on update, which would silently drop anything saved inside it).
+
+- **Read order:** that user-level file first, then a `status-map.local.json` next to this skill's `SKILL.md` as a legacy fallback. If both exist, the user-level file wins.
+- **Write location:** always the user-level file. Create the folder if needed. The first time you write, copy any `projects`/`workflows` entries found only in a legacy copy next to the skill, so nothing saved before this change is lost. Never delete the legacy copy.
 
 If the file is missing entirely, or a project isn't listed in it, the skill falls back to the `default` matching heuristics below — good enough for a simple, unforked workflow, but more likely to hit an ambiguous fork that needs a human decision.
 
