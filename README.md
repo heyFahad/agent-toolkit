@@ -5,7 +5,7 @@ A personal git/PR workflow, Jira lifecycle, coding style, and writing-convention
 - [`git-workflow`](plugins/git-workflow): branching, dual-PR (production + pre-prod), stacked epics, staging-conflict resolution
 - [`package-manager-safety`](plugins/package-manager-safety): lockfile verification before install/add commands
 - [`github-tooling`](plugins/github-tooling): `gh` CLI auth-propagation safety, bot-review triage calibration
-- [`pr-conventions`](plugins/pr-conventions): PR title format, commit message format, no AI attribution footers
+- [`pr-conventions`](plugins/pr-conventions): PR title format, commit message format, no AI attribution footers, giving a review on someone else's PR (inline comments in a pending review, with a guard hook)
 - [`atlassian-workflow`](plugins/atlassian-workflow): Atlassian tooling preference, Jira ticket lifecycle
 - [`writing-conventions`](plugins/writing-conventions): per-surface hyperlink/formatting rules, an anti-AI-slop humanizing pass
 - [`coding-style`](plugins/coding-style): a shareable ESLint config plus an auto-fix hook

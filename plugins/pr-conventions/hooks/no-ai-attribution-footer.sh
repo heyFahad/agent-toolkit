@@ -13,7 +13,7 @@ INPUT=$(cat)
 COMMAND=$(printf '%s' "$INPUT" | jq -r '.tool_input.command // ""')
 
 # Only fire on commands that actually write a commit message or PR/issue body.
-if ! printf '%s' "$COMMAND" | grep -qiE '\bgit\s+commit\b|\bgh\s+(pr|issue)\s+(create|edit)\b.*--body\b'; then
+if ! printf '%s' "$COMMAND" | grep -qiE '\bgit\s+commit\b|\bgh\s+(pr|issue)\s+(create|edit)\b.*--body\b|\bgh\s+pr\s+(review|comment)\b|\bgh\s+api\b.*/(reviews|comments)\b'; then
   exit 0
 fi
 

@@ -2,7 +2,7 @@
   "$schema": "https://www.schemastore.org/claude-code-plugin-manifest.json",
   "name": "pr-conventions",
   "description": "Pull request and commit message conventions",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "author": {
     "name": "Fahad Javed",
     "email": "fahad@heyfahad.dev",
@@ -13,6 +13,7 @@
     "pull-requests",
     "commit-messages",
     "gitmoji",
-    "conventional-commits"
+    "conventional-commits",
+    "code-review"
   ]
 }

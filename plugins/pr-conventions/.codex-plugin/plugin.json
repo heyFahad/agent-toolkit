@@ -4,7 +4,7 @@
   "interface": {
     "displayName": "PR Conventions",
     "shortDescription": "Pull request and commit message conventions",
-    "longDescription": "Gitmoji-style PR titles, Conventional Commits message format, atomic-commit discipline, and a hook that blocks AI/co-author attribution footers from commit messages and PR descriptions.",
+    "longDescription": "Gitmoji-style PR titles, Conventional Commits message format, atomic-commit discipline, and a hook that blocks AI/co-author attribution footers from commit messages and PR descriptions. Also a workflow for reviewing someone else's PR with inline comments in a pending review, and a hook that blocks long or itemised review bodies and unpreviewed submits.",
     "developerName": "Fahad Javed",
     "category": "Developer Tools",
     "capabilities": [
@@ -15,7 +15,7 @@
       "Write a gitmoji-style title and Conventional Commits message for this change"
     ]
   },
-  "version": "1.0.0",
+  "version": "1.1.0",
   "author": {
     "name": "Fahad Javed",
     "email": "fahad@heyfahad.dev",
