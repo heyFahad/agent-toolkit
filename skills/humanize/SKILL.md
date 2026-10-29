@@ -10,7 +10,17 @@ metadata:
 
 Wikipedia's WikiProject AI Cleanup read thousands of AI-written edits and catalogued the patterns that gave them away. This skill inverts that catalog: instead of using it to detect machine prose, use it to avoid producing any.
 
-The full catalog is in `references/tells.md`, organized to mirror the source page. Read it before any substantial writing or editing task. The load-bearing parts are below.
+The full catalog is in `references/tells.md`, organized to mirror the source page. Read it before any substantial writing or editing task. The load-bearing parts are below. For something short (a review comment, a commit body, a chat reply under about 100 words), skip the catalog and run the quick check at the end of "Start from the reader" and the hard defaults.
+
+## Start from the reader
+
+Text can avoid every tell below and still fail, because the reader cannot follow it. Before writing, settle three things:
+
+1. **Who reads this, and what do they already know?** A teammate who wrote the code, a reviewer who did not, and someone opening it in three months need different amounts of explanation. If you are unsure, write for the one with the least context.
+2. **What is the one point?** Say it in a sentence before drafting. If you cannot, the draft will wander.
+3. **Does any term need outside context?** An ADR number, a phase name, a ticket key, an internal acronym. Explain it in a few words the first time, or link it. A bare label is shorthand to you and noise to them.
+
+Quick check when you finish: could someone who reads only this text understand the problem and what to do about it? If they would have to open three other documents first, add the missing context or cut the claim.
 
 ## The one idea underneath all of it
 
@@ -36,11 +46,11 @@ These have no legitimate use in ordinary prose. Do not produce them.
 
 6. **Em dashes.** Use commas, colons, parentheses, or a full stop. Standing rule regardless of the rest of this skill.
 
-7. **Formatting tics.** No title case in headings. No emoji as bullets or section markers. No mechanical `**Bold lead-in:** description` list items repeated down a page. No bolding every key term. No horizontal rule before every heading. No small tables for content that is two sentences of prose. No curly quotes pasted into plain-text contexts.
+7. **Formatting tics.** No title case in headings. No emoji as bullets or section markers (one status or severity marker inside a label, like `🟠 **Medium:**` on a review comment, is fine, as is a short bold label that is not a repeated list pattern). No mechanical `**Bold lead-in:** description` list items repeated down a page. No bolding every key term. No horizontal rule before every heading. No small tables for content that is two sentences of prose. No curly quotes pasted into plain-text contexts.
 
 8. **Chatbot residue.** Nothing from the conversation layer reaches the deliverable: no "Certainly!", "I hope this helps," "You're absolutely right," "Feel free to adjust," "As of my last update," no `[insert detail here]` placeholders, no "Here is the draft you requested" wrapped around the draft.
 
-9. **Fabrication.** Never invent a citation, DOI, ISBN, URL, statistic, quote, or named expert. Never write "industry reports suggest" or "experts argue" with nothing behind it. If a source is unknown, say so plainly or drop the claim. Do not claim something is "not widely documented" and then speculate about what it probably is; that whole move, including the claim of absence, is invention.
+9. **Fabrication.** Never invent a citation, DOI, ISBN, URL, statistic, quote, or named expert. Never write "industry reports suggest" or "experts argue" with nothing behind it. If a source is unknown, say so plainly or drop the claim. Do not claim something is "not widely documented" and then speculate about what it probably is; that whole move, including the claim of absence, is invention. The same goes for attribution: in text that will be posted under someone's name, never write a first-person claim of work they did not do ("I tested," "I ran," "I compared"). Say what the text itself supports, and keep your own verification in the conversation.
 
 Items 4 and 5 are classed on the source page as **historical** indicators, common in 2022 to 2024 models and rarer now. They stay hard rules here because they carry no information either way.
 
@@ -102,6 +112,12 @@ After: Three things get better: p95 latency drops from 800ms to about 200ms, the
 **5. Commit body**
 Before: Refactored the queue configuration to ensure alignment with best practices and improve maintainability, while preserving existing job behavior and retry semantics.
 After: Move the lock duration and retry backoff into one config object. Same values as before, just no longer duplicated across four workers.
+
+**6. Review comment: shorthand the reader cannot follow**
+Before: Medium. With Phase 4 skipped and ADR-048 D1 unmet, a wrong or missing registry entry first shows up as a production 404 with no trace beyond the access log.
+After: 🟠 **Medium:** If a request matches no registry entry, this returns a 404 and the only record is the access log. We skipped the log-only trial run (shadow mode) before turning enforcement on, so a wrong entry would first show up as real users getting 404s. Could we log a warning here when a request is refused as undeclared?
+
+The "before" has no listed tell, but it names two things only the author knows and states a conclusion without the case. The "after" says what happens, explains the one term, and asks for a specific change.
 
 ## Do not over-correct
 

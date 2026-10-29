@@ -23,4 +23,9 @@ This is strictly better than manually writing `` [`85e5005`](url) ``.
 
 This is GitHub-specific: no other URL (Jira, Confluence, Slack, or otherwise) gets this treatment. It's also scoped to GitHub-native surfaces specifically. A Markdown file *in* a GitHub repo (`docs/*.md`, `README.md`) or a wiki page still needs an explicit Markdown link, per [GitHub's own docs on autolinked references](https://docs.github.com/en/get-started/writing-on-github/working-with-advanced-formatting/autolinked-references-and-urls), which explicitly scope autolinking out of those contexts.
 
+## Links that are not a bare GitHub resource
+
+- **A non-GitHub link inside a GitHub comment** (Jira, Confluence, a dashboard) gets a named Markdown link, `[TN-594](https://...)`. GitHub does not title these for you, and a bare long URL reads as noise. Name it for what the reader will find.
+- **Pointing at specific lines**: paste a permalink with a line range, bare and on its own line, for example `https://github.com/O/R/blob/<sha>/docs/design.md#L20-L24`. GitHub expands it into an inline snippet of just those lines, which beats a heading anchor that drops the reader into a long document with nothing marked. Pin it to a commit SHA, not a branch, so it keeps pointing at the same text. For a Markdown file, a plain click on the link scrolls but does not highlight; `?plain=1` before the `#` opens the source view with the lines marked.
+
 If this rule is violated in a way a script can check (a backtick-wrapped `github.com` URL, SHA, or `#123`-style reference inside a `gh` comment/review/PR-body command), this plugin's `github-comment-formatting-gate` hook denies the command before it runs.
