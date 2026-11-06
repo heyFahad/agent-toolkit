@@ -4,7 +4,7 @@
   "interface": {
     "displayName": "Atlassian Workflow",
     "shortDescription": "Atlassian (Jira/Confluence/Bitbucket) tooling and workflow conventions",
-    "longDescription": "Prefers the twg CLI over Jira/Confluence MCP tools when available, and keeps a Jira ticket's status and assignee in sync with the git/PR workflow automatically.",
+    "longDescription": "Prefers the twg CLI over Jira/Confluence MCP tools when available, reads a Jira ticket in full (comments, history, parent) before work starts, and keeps a Jira ticket's status and assignee in sync with the git/PR workflow automatically.",
     "developerName": "Fahad Javed",
     "category": "Productivity",
     "capabilities": [
@@ -15,7 +15,7 @@
       "Pick up this Jira ticket and move it through the workflow"
     ]
   },
-  "version": "1.1.1",
+  "version": "1.2.0",
   "author": {
     "name": "Fahad Javed",
     "email": "fahad@heyfahad.dev",
