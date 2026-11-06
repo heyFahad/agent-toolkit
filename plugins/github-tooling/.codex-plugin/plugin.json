@@ -4,7 +4,7 @@
   "interface": {
     "displayName": "GitHub Tooling",
     "shortDescription": "GitHub CLI tooling conventions and safety checks",
-    "longDescription": "Auth-propagation safety for gh CLI calls made from inside a nested script, plus guidance for calibrating automated bot PR review triage tooling.",
+    "longDescription": "Auth-propagation safety for gh CLI calls made from inside a nested script, and check-pr: Copilot, human review and CI triage across a ticket's main and pre-prod PRs.",
     "developerName": "Fahad Javed",
     "category": "Developer Tools",
     "capabilities": [
@@ -15,7 +15,7 @@
       "Triage the bot review findings on this PR"
     ]
   },
-  "version": "1.1.0",
+  "version": "1.2.0",
   "author": {
     "name": "Fahad Javed",
     "email": "fahad@heyfahad.dev",
