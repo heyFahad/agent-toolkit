@@ -34,15 +34,16 @@ Review the whole change, not a sample. A change that is meant to preserve behavi
    - `🟠 **Medium:**` fix it, but not a blocker. Edge-case bug, missing error handling, missing test for risky logic, maintainability that will cost later.
    - `🟡 **Low:**` cosmetic. Naming, unused imports, comments, style.
    - A plain question has no label. A concern you could not verify says so in the comment and is not `High`.
-4. **One issue per comment**: what is wrong, the concrete failing scenario, what to do. Use a ```` ```suggestion ```` block when the fix is mechanical and local.
-5. **Body is a summary**: the verdict and the reason in plain words, two or three lines. No list, no repeat of the inline comments. If the PR is a draft or its description lists unfinished items, say whether your approval covers only the code. No test reports (see "Writing the comments").
-6. **Verdict**
+4. **Most severe first.** Order the `comments` array by severity: every `High`, then every `Medium`, then every `Low`, then unlabelled questions. Within one level, keep file and line order. GitHub lists a review's comments in the order they were created, so this is the order the author sees in the Conversation tab, in the notification email and in the `mark-preview.sh` output. The preview in chat follows the same order. The Files changed tab still places each comment on its line; nothing changes that.
+5. **One issue per comment**: what is wrong, the concrete failing scenario, what to do. Use a ```` ```suggestion ```` block when the fix is mechanical and local.
+6. **Body is a summary**: the verdict and the reason in plain words, two or three lines. No list, no repeat of the inline comments. If the PR is a draft or its description lists unfinished items, say whether your approval covers only the code. No test reports (see "Writing the comments").
+7. **Verdict**
    - `REQUEST_CHANGES` if any comment is `High`.
    - `APPROVE` if nothing is `High`. Inline `Medium` and `Low` comments alongside an approval are fine and encouraged.
    - `COMMENT` only when you cannot conclude: a review you could not finish (and have said why), an open question that must be answered first, or an unverified concern that might be `High`.
    - Your own PR (author equals `gh api user -q .login`): `COMMENT` at most.
-7. **Several PRs**: one review, one verdict, one preview per PR. Never batch-submit. A cross-PR concern is an inline comment on the PR where the fix belongs, naming the other PR by bare URL.
-8. **No AI or co-author footer.** Writing rules are in the next section.
+8. **Several PRs**: one review, one verdict, one preview per PR. Never batch-submit. A cross-PR concern is an inline comment on the PR where the fix belongs, naming the other PR by bare URL.
+9. **No AI or co-author footer.** Writing rules are in the next section.
 
 `gh pr review` cannot attach inline comments. Never use it for a review that has findings. It is only for a short verdict on a PR with none.
 
@@ -59,7 +60,7 @@ One test decides everything here: **could someone who reads only this comment un
 
 ## Flow
 
-1. Get the context, anchor (rule 2) and write the comments. When delegating to subagents, the prompt must require, per finding: file, repo line number at the head SHA, side, severity, and the line's text. Give them the head SHA and the commands above. Re-anchor anything that comes back without them.
+1. Get the context, anchor (rule 2) and write the comments. When delegating to subagents, the prompt must require, per finding: file, repo line number at the head SHA, side, severity, and the line's text. Give them the head SHA and the commands above. Re-anchor anything that comes back without them. Merge their findings and sort them by severity (rule 4) before building the payload.
 2. Create the review **pending**: no `event` field. Run it with `GH_TOKEN=$(gh auth token)` if it goes through a script.
 
    ```bash
@@ -74,7 +75,7 @@ One test decides everything here: **could someone who reads only this comment un
 
    The response `id` is the review id. Pending reviews are visible only to you. To change a comment, delete the pending review (`gh api -X DELETE repos/O/R/pulls/N/reviews/<id>`) and create it again.
 3. `bash scripts/mark-preview.sh O/R N <review id>` (this skill's `scripts/` directory). It prints the comments as GitHub stored them and records the preview marker.
-4. **Show the preview in chat, then stop and wait**: per PR, the verdict, the summary body, and every comment with file, line and severity. Say plainly if any finding is not fully anchored or verified. Do not run step 5 in the same turn.
+4. **Show the preview in chat, then stop and wait**: per PR, the verdict, the summary body, and every comment with file, line and severity, most severe first. Say plainly if any finding is not fully anchored or verified. Do not run step 5 in the same turn.
 5. After the user says go, submit:
 
    ```bash
@@ -87,7 +88,7 @@ The `review-guard` hook (same plugin) denies the shortcuts it can detect: a long
 
 ## Example
 
-PR 12 adds a token check and renames a helper. Two findings.
+PR 12 adds a token check and renames a helper. Two findings. The `High` goes first in both the payload and the preview because the order is by severity, not by file.
 
 Pending review payload:
 
