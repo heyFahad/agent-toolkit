@@ -4,7 +4,7 @@
   "interface": {
     "displayName": "Git Workflow",
     "shortDescription": "Git branching, pull request, and merge/deploy workflow conventions",
-    "longDescription": "Standard branching model, dual-PR (production + pre-prod) workflow, stacked-PR management for multi-subtask epics, and a pre-prod merge-conflict pre-check before opening a staging PR.",
+    "longDescription": "Standard branching model, dual-PR (production + pre-prod) workflow, stacked-PR management for multi-subtask epics, a resolver that finds each repo's pre-prod branch, a pre-check that blocks pre-prod PRs that would conflict or show unrelated squash-merge files, and parking a finished branch.",
     "developerName": "Fahad Javed",
     "category": "Developer Tools",
     "capabilities": [
@@ -12,11 +12,11 @@
       "Pull Requests"
     ],
     "defaultPrompt": [
-      "Open the standard main + staging PRs for this branch",
+      "Open the standard main + pre-prod PRs for this branch",
       "Set up a stacked-epic trunk for this feature"
     ]
   },
-  "version": "1.1.0",
+  "version": "1.2.0",
   "author": {
     "name": "Fahad Javed",
     "email": "fahad@heyfahad.dev",

@@ -2,7 +2,7 @@
 
 A personal git/PR workflow, Jira lifecycle, coding style, and writing-convention toolkit for coding agents (Claude Code, Codex, or any tool that reads `AGENTS.md` and the open [Agent Skills](https://agentskills.io) format). Distributed as independent plugins, each covering one concern (see the list below for the current set).
 
-- [`git-workflow`](plugins/git-workflow): branching, dual-PR (production + pre-prod), stacked epics, staging-conflict resolution
+- [`git-workflow`](plugins/git-workflow): branching, dual-PR (production + pre-prod) with pre-prod branch detection, stacked epics, clean pre-prod PRs (conflicts and squash-merge noise), parking finished branches
 - [`package-manager-safety`](plugins/package-manager-safety): lockfile verification before install/add commands
 - [`github-tooling`](plugins/github-tooling): `gh` CLI auth-propagation safety, bot-review triage calibration
 - [`pr-conventions`](plugins/pr-conventions): PR title format, commit message format, no AI attribution footers, giving a review on someone else's PR (inline comments in a pending review, with a guard hook)
