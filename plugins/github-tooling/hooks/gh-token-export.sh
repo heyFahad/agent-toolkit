@@ -8,8 +8,9 @@
 # unless GH_TOKEN is exported inline in the same command.
 #
 # How it decides (everything else passes):
-#   - The command is split into simple commands at ; & | ( ) and backticks,
-#     and only what each one *executes* is looked at: `bash X` / `sh X` /
+#   - The command is split into simple commands at ; & | ( ) and backticks
+#     (not inside quotes, comments or a <<'EOF' heredoc body, where they
+#     separate nothing), and only what each one *executes* is looked at: `bash X` / `sh X` /
 #     `zsh X`, `python3 X` / `node X` / `ruby X` / `perl X`, and a path or
 #     `*.sh` at command position (`./X`, `dir/X`, `X.sh`). Scripts passed to
 #     cat, find, grep, sed, ls, chmod, git and the like, or to `bash -n`, are
@@ -150,6 +151,66 @@ strip_shell() {
   function runs(s) { gsub(/\\./, "", s); return s ~ /\$\(|`/ }'
 }
 
+# Replace ; & | ( ) and backticks with spaces wherever they can't separate
+# commands, so the split below only cuts where the shell would: inside
+# single quotes, inside double quotes with no $( or backtick, in comments,
+# and in the body of a heredoc with a quoted delimiter (<<'EOF'). Text that
+# runs as code stays as it is: a double-quoted string with $( or a backtick,
+# an unquoted heredoc body, and a quoted argument to `-c` or `eval`.
+blank_quoted_separators() {
+  awk '
+    function blank(s) { gsub(/[;&|()`]/, " ", s); return s }
+    function runs(s) { gsub(/\\./, "", s); return s ~ /\$\(|`/ }
+    BEGIN { st = ""; buf = ""; res = ""; hd = ""; pend = "" }
+    {
+      line = $0
+      if (hd != "") {
+        t = line
+        if (hdtab) sub(/^\t+/, "", t)
+        if (t == hd) hd = ""
+        res = res (hdq ? blank(line) : line) "\n"
+        next
+      }
+      out = ""; n = length(line)
+      for (k = 1; k <= n; k++) {
+        c = substr(line, k, 1)
+        if (st == "sq") {
+          if (c == "\047") { out = out (code ? buf : blank(buf)) c; buf = ""; st = "" } else buf = buf c
+          continue
+        }
+        if (st == "dq") {
+          if (c == "\\") { buf = buf c substr(line, k + 1, 1); k++; continue }
+          if (c == "\"") { out = out ((code || runs(buf)) ? buf : blank(buf)) c; buf = ""; st = ""; continue }
+          buf = buf c
+          continue
+        }
+        if (c == "\\") { out = out c substr(line, k + 1, 1); k++; continue }
+        if (c == "\047" || c == "\"") {
+          code = (out ~ /(^|[ \t;&|(\/])(ba|z|da|k)?sh([ \t]+-[A-Za-z]+)*[ \t]+-[A-Za-z]*c[ \t]+$/ || out ~ /(^|[ \t;&|(])eval[ \t]+$/)
+          st = (c == "\047") ? "sq" : "dq"
+          out = out c; buf = ""
+          continue
+        }
+        if (c == "#" && (k == 1 || substr(line, k - 1, 1) ~ /[ \t;&|(]/)) { out = out blank(substr(line, k)); break }
+        if (c == "<" && substr(line, k, 2) == "<<" && substr(line, k, 3) != "<<<") {
+          rest = substr(line, k + 2)
+          tab = (substr(rest, 1, 1) == "-")
+          if (tab) rest = substr(rest, 2)
+          sub(/^[ \t]+/, "", rest)
+          if (match(rest, /^[\047"]?[A-Za-z0-9_.-]+[\047"]?/)) {
+            pend = substr(rest, 1, RLENGTH); pendq = (pend ~ /[\047"]/); pendtab = tab
+            gsub(/[\047"]/, "", pend)
+          }
+        }
+        out = out c
+      }
+      if (st != "") { res = res out; buf = buf "\n" }
+      else res = res out "\n"
+      if (st == "" && pend != "") { hd = pend; hdq = pendq; hdtab = pendtab; pend = "" }
+    }
+    END { if (st != "") res = res buf; printf "%s", res }'
+}
+
 while IFS= read -r seg; do
   W=()
   read -ra W <<<"$seg" || true
@@ -233,6 +294,6 @@ while IFS= read -r seg; do
       esac
       ;;
   esac
-done < <(printf '%s\n' "$COMMAND" | tr ';&|()`' '\n\n\n\n\n\n')
+done < <(printf '%s\n' "$COMMAND" | blank_quoted_separators | tr ';&|()`' '\n\n\n\n\n\n')
 
 exit 0
