@@ -1,11 +1,25 @@
 ---
 name: jira-ticket-lifecycle
-description: Keep a Jira ticket's status and assignee in sync with the git/PR workflow whenever picking up or working on a ticket, resolving each project's own status names and transition graph rather than assuming a universal one. Use as soon as work starts on a ticket, and again once its PR(s) are opened.
+description: Read a Jira ticket in full (comments, history, parent, links) before planning any work on it, then keep its status and assignee in sync with the git/PR workflow, resolving each project's own status names and transition graph rather than assuming a universal one. Use as soon as a ticket is picked up or mentioned as the next piece of work, and again once its PR(s) are opened.
 metadata:
   category: atlassian-workflow
 ---
 
 # Jira ticket lifecycle management
+
+## Read the whole ticket before planning anything
+
+A ticket's description is often its oldest part. Scope changes, decisions, half-finished fixes, and "actually, don't do X" usually land in comments or in later edits, and an epic's background often lives only on the parent. Planning from the summary and description alone means building against a version of the ticket nobody holds any more. So before planning, estimating, or writing code for a ticket, read all of it:
+
+1. **The ticket itself, in full.** `twg jira workitem get <KEY> --full -o json` (all fields, the complete comment thread, and remote links such as PRs and Confluence pages). A plain `get` without `--comments`/`--full` doesn't promise the complete thread. On a large payload `twg` prints only a short summary inline and writes the real content to the file named under `output_files.stdout`: open that file and read the description and every comment. The inline summary is a pointer, not the ticket.
+2. **Its history.** `twg jira workitem changelog query --issue-id <KEY> --first 100 -o json` (follow `pageInfo.nextCursor` with `--after` if `hasNextPage` is true). Skim it for what the current fields don't show: description or summary edits after creation, moves back to an earlier status (QA bounced it, or it was reopened), reassignments, and scope fields changing (sprint, fix version, story points). Status moves forward and routine field noise can be ignored.
+3. **Its neighbours.** The parent (epic or story) and any linked issues that block it, are blocked by it, or duplicate it, fetched in one call: `twg jira workitem get <PARENT> <LINKED...> -o json`. Comments on those are optional unless the ticket points at them.
+
+Then, before anything else, write a short **current understanding** for the person doing the work: what's being asked *now*, with anything a later comment or edit changed from the description called out as such ("description says X; the 3 Nov comment narrows it to Y"). Where comments disagree with each other or with the description and the newer one doesn't clearly settle it, list the conflict and ask; don't quietly pick a side. If a comment says part of the work is already done (a merged PR, a config change already made), say so, since it changes the plan.
+
+Without `twg`, the Atlassian MCP equivalents are `getJiraIssue` plus `listJiraIssueComments`; the same rule applies of reading the comments, not just the fields.
+
+## Keep status and assignee in sync
 
 Whenever picking up or working on a Jira ticket, keep the ticket's Jira status and assignee in sync with the git/PR workflow, without needing to be asked each time:
 
