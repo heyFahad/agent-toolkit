@@ -39,8 +39,8 @@ Every push and PR to `main` (`.github/workflows/validate.yml`) checks:
 - the Codex marketplace manifest, by actually registering it with the real `codex` CLI and confirming its plugin list matches the Claude Code marketplace's exactly (`claude plugin validate` doesn't understand Codex's marketplace schema, so this uses Codex's own tooling instead, checked against the Claude Code manifest as the source of truth rather than a hardcoded count)
 - every plugin directory, with plain (non-strict) `claude plugin validate`, since the symlink notice above would otherwise fail a strict check
 - the canonical `skills/` directory, with `claude plugin validate --strict` (no symlinks there to trip that check)
-- every hook script, for valid bash syntax and the executable bit
-- every `*.test.sh` under `plugins/` (plain bash plus `jq`, no framework; run one directly with `bash`)
+- every shell script under `plugins/` and `skills/` (hooks and skill helper scripts), for valid bash syntax and the executable bit
+- every `*.test.sh` under `plugins/` and `skills/` (plain bash plus `jq`, no framework; run one directly with `bash`)
 - every `hooks.json`'s `if` patterns, for valid wildcard syntax (`claude plugin validate` never reads `hooks.json` at all, so this is the only check that catches it)
 
 Run the same checks locally before opening a PR; the commands are in `.github/workflows/validate.yml`.
