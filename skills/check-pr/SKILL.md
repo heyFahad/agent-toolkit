@@ -1,13 +1,13 @@
 ---
 name: check-pr
-description: Use when checking your own PR's CI and review feedback, getting a ticket's PRs clean, fixing a failing build, or triaging Copilot or human review comments, across both the main PR and its pre-prod PR. Requests Copilot reviews, assesses every finding, fixes on the feature branch, replies, and gives one clean/not-clean answer. Not for reviewing someone else's PR (see give-pr-review).
+description: Use when checking your own PR's CI and review feedback, getting a ticket's PRs clean, fixing a failing build, or triaging Copilot or human review comments, across both the main PR and its pre-prod PR. Requests Copilot reviews, assesses every finding, fixes on the feature branch, replies, gives one clean/not-clean answer, and parks the branch once every PR is clean. Not for reviewing someone else's PR (see give-pr-review).
 metadata:
   category: github-tooling
 ---
 
 # Check a ticket's PRs
 
-One pass over a ticket's PRs: request Copilot, read CI and every unresolved review thread on both PRs, fix what is real, answer the rest, and say whether each PR is clean. For repeated passes, wrap this skill in `/loop`.
+One pass over a ticket's PRs: request Copilot, read CI and every unresolved review thread on both PRs, fix what is real, answer the rest, and say whether each PR is clean. Once they all are, park the branch. For repeated passes, wrap this skill in `/loop`.
 
 ## Scripts
 
@@ -87,6 +87,20 @@ After a round that produced real fixes, request Copilot again on both PRs (step 
 ## 8. Report
 
 Run `pr-gate.sh` on each PR and tell the user, per PR: clean or not, every `blocking` reason, and any `warnings` worth knowing. Name anything waiting on a human: requested changes, threads only they can resolve, follow-up tickets you offered.
+
+## 9. Park the branch
+
+When `pr-gate.sh` says every PR is clean, the ticket's feedback is done, so run the `park-branch` skill (`git-workflow` plugin). It removes the branch's worktree, switches back to the default branch, updates it, and deletes the local feature and `conflicts/...` branches. Those branches stay on the remote, and the PRs don't need to be merged first. If a reviewer comments later, `git switch <branch>` brings the branch back.
+
+Run it without asking only when all of these hold:
+
+- **Every PR is clean.** If any PR still has a `blocking` reason, the branch has more work coming. Don't park and don't offer.
+- **No PR is a draft.** `pr-gate.sh` reports a draft only as a warning, but a draft usually means the author is still working on it.
+- **The working tree has no changes**: `git status --porcelain` prints nothing, in the checkout you're in and in the branch's worktree if it has one. Staged changes may be a review checkpoint the user keeps on purpose, and `park-branch`'s stash would bring them back unstaged.
+
+If every PR is clean but a draft or local changes stop you, don't park. Offer it instead, name what stopped you, and wait for the user's yes.
+
+Park at most once per ticket. Under `/loop`, do it on the first pass that comes back clean and end the loop there, since there is nothing left to check. Report what `park-branch` removed along with step 8's report. If `park-branch` isn't available (the `git-workflow` plugin isn't installed), skip this step.
 
 ## What this covers
 
