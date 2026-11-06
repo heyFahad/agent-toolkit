@@ -26,7 +26,7 @@ fixture subst-gh.sh '#!/bin/bash' "login=\$($G api user --jq .login)" 'echo "$lo
 fixture if-gh.sh '#!/bin/bash' "if $G auth status >/dev/null 2>&1; then echo ok; fi"
 fixture dq-subst-gh.sh '#!/bin/bash' "echo \"login: \$($G api user --jq .login)\""
 fixture escaped.sh '#!/bin/bash' "echo \"prefix with GH_TOKEN=\\\$($G auth token) first\""
-fixture stack.sh'#!/bin/bash' "$G-stack submit"
+fixture stack.sh '#!/bin/bash' "$G-stack submit"
 fixture mentions-gh.sh '#!/bin/bash' "# Needs $G installed; see '$G pr view' docs." "echo 'run: $G pr view 12'"
 fixture tool.py 'import subprocess' "subprocess.run([\"$G\", \"api\", \"user\"], check=True)"
 fixture clean.py 'print("hello")'
@@ -94,6 +94,34 @@ expect "abs path"              deny  "$TMP/calls-gh.sh --flag"
 expect "bash -c ./script"      deny  "bash -c './calls-gh.sh'"
 expect "piped into"            deny  "echo x | bash calls-gh.sh"
 expect "cd'd clean script"     allow "cd sub && ./clean.sh"
+
+# --- separators inside quotes, comments and quoted heredocs separate nothing
+expect "sed with ; in quotes"  allow "sed -i '' -e 's/a/b/; s/c/d/' sub/clean.sh"
+expect "grep with \\| pattern" allow "grep -n -E 'a|b/c' README.md"
+expect "dq with ; and /"       allow 'echo "x; ./calls-gh.sh" > /dev/null'
+expect "jq pipes in quotes"    allow "jq -r '.[] | .a/.b' f.json"
+expect "awk with ; in quotes"  allow "awk '{ a = 1; print \$1 }' sub/clean.sh"
+expect "comment with ;"        allow "ls # then; ./calls-gh.sh"
+expect "quoted heredoc body"   allow "cat > /dev/null <<'EOF'
+Wrap it in \`/loop\` for repeated passes; see ./calls-gh.sh (old).
+EOF"
+expect "quoted heredoc, -EOF"  allow "cat <<-\"EOF\"
+	run \`./calls-gh.sh\` | tee x
+	EOF"
+expect "after a quoted heredoc" deny "cat <<'EOF'
+text; more
+EOF
+bash calls-gh.sh"
+expect "unquoted heredoc runs"  deny "cat <<EOF
+\$(./calls-gh.sh)
+EOF"
+expect "after a quoted ;"      deny  "echo 'a;b'; bash calls-gh.sh"
+expect "\$(script) in a string" deny 'echo "login: $(./calls-gh.sh)"'
+expect "bash -c '...; script'" deny  "bash -c 'echo hi; ./calls-gh.sh'"
+expect "sh -lc \"...; script\"" deny "sh -lc \"cd sub && ./calls-gh.sh\""
+expect "eval '...; script'"    deny  "eval 'true; ./calls-gh.sh'"
+expect "quote spans lines"     deny  "echo 'a;
+b'; bash calls-gh.sh"
 
 # --- known wrappers and unreadable scripts
 expect "gh-stack submit"       deny  "gh-stack submit"
