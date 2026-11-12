@@ -144,6 +144,34 @@ expect "back-merge branch"      allow 'gh pr create --base dev --title x --body 
 files=$(git diff --name-only origin/dev...conflicts/backmerge-r1)
 if [ -z "$files" ]; then pass=$((pass + 1)); else fail=$((fail + 1)); echo "FAIL: back-merge branch PR would show: $files"; fi
 
+# --- a noise list far bigger than a pipe buffer still gets a deny, not a
+# crash: sampling it must not SIGPIPE the writer under pipefail
+# (cut from the root commit, so merging it into dev doesn't bring main's
+# squash commits along and quietly clean up the later cases' noise)
+git switch -q -c feature/big "$(git rev-list --max-parents=0 main)"
+mkdir -p noise
+i=0
+while [ "$i" -lt 4000 ]; do
+  printf '%s\n' "$i" > "noise/file-$i-with-a-long-enough-name-to-fill-a-pipe-buffer.txt"
+  i=$((i + 1))
+done
+git add noise
+git commit -q -m "feat: big ticket"
+git push -q -u origin feature/big
+git switch -q dev
+git merge -q --no-ff -m "Merge feature/big into dev" feature/big
+git push -q origin dev
+git switch -q main
+git merge -q --squash feature/big >/dev/null
+git commit -q -m "feat: big ticket (#3)"
+git push -q origin main
+expect "huge back-merge noise"  deny  'gh pr create --base dev --head main --title x --body y' "noise/file-"
+git switch -q -c feature/after-big main
+commit after-big.txt "after big" "feat: after big"
+git push -q -u origin feature/after-big
+expect "huge feature noise"     deny  'gh pr create --base dev --title x --body y' "noise/file-"
+git switch -q feature/b
+
 # --- once main is back-merged into dev with a merge commit, no noise
 git switch -q dev
 git merge -q --no-edit origin/main
