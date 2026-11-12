@@ -71,7 +71,9 @@ Each pre-prod round that merges gets a new PR for the next round, but there's on
 
 Once QA signs off, merge the `main` PR. That's what ships to production.
 
-After a release, `main` should be merged back into the pre-prod branch with a merge commit (a back-merge PR from `main`, merged with `gh pr merge --merge`, never squashed). A squash copies `main`'s content without making `main`'s commits part of the pre-prod branch's history, so the next feature branch's pre-prod PR would show the same unrelated files again. The `clean-preprod-pr` skill covers checking for and offering that PR.
+After a release, `main` should be merged back into the pre-prod branch with a merge commit (a back-merge PR, merged with `gh pr merge --merge`, never squashed). A squash copies `main`'s content without making `main`'s commits part of the pre-prod branch's history, so the next feature branch's pre-prod PR would show the same unrelated files again.
+
+The back-merge PR gets the same pre-check as any other pre-prod PR. Straight from `main`, it usually lists files the pre-prod branch already has, so it normally goes out from a `conflicts/backmerge-<release>` branch cut from the pre-prod branch with `main` merged in. The `clean-preprod-pr` skill has the check, the recipe, and when offering the PR is due.
 
 ## Parking the branch
 
