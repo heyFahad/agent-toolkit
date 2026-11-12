@@ -105,7 +105,8 @@ expect "noisy, env prefix"      deny  'GH_TOKEN=$(gh auth token) gh pr create --
 expect "noisy, after cd"        deny  "cd $REPO && gh pr create --base dev --title x --body y" "a1.txt"
 expect "noisy, --head"          deny  'gh pr create --base dev --head feature/b --title x --body y' "a1.txt"
 expect "noisy, owner:head"      deny  'gh pr create --base dev --head someone:feature/b --title x --body y' "a1.txt"
-expect "suggests back-merge"    deny  'gh pr create --base dev --title x --body y' "gh pr list --base dev --head main --state open"
+expect "suggests back-merge"    deny  'gh pr create --base dev --title x --body y' "gh pr list --base dev --state open"
+expect "back-merge via branch"  deny  'gh pr create --base dev --title x --body y' "conflicts/backmerge-<release>"
 expect "says no squash"         deny  'gh pr create --base dev --title x --body y' "never squashed"
 expect "says no cherry-pick"    deny  'gh pr create --base dev --title x --body y' "do not cherry-pick"
 out=$(run_hook 'gh pr create --base dev --title x --body y')
@@ -115,7 +116,7 @@ else
   pass=$((pass + 1))
 fi
 
-# --- the deliberate conflicts branch is clean, and so is a back-merge PR
+# --- the deliberate conflicts branch is clean
 git switch -q -c conflicts/TAL-1-b origin/dev
 git merge -q --no-edit feature/b
 git push -q -u origin conflicts/TAL-1-b
@@ -123,7 +124,25 @@ expect "conflicts branch"       allow 'gh pr create --base dev --title x --body 
 files=$(git diff --name-only origin/dev...conflicts/TAL-1-b)
 if [ "$files" = "b.txt" ]; then pass=$((pass + 1)); else fail=$((fail + 1)); echo "FAIL: conflicts branch PR would show: $files"; fi
 git switch -q feature/b
-expect "back-merge PR"          allow 'gh pr create --base dev --head main --title x --body y'
+
+# --- a back-merge straight from main lists ticket A, which dev already has
+expect "back-merge from main"   deny  'gh pr create --base dev --head main --title x --body y' "a1.txt"
+expect "back-merge recipe"      deny  'gh pr create --base dev --head main --title x --body y' "git merge --no-ff origin/main"
+expect "back-merge no squash"   deny  'gh pr create --base dev --head main --title x --body y' "never squashed"
+out=$(run_hook 'gh pr create --base dev --head main --title x --body y')
+if printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecisionReason' | grep -qF 'would list 2 file(s) that the merge would not change (it really changes 0 file(s)'; then
+  pass=$((pass + 1))
+else
+  fail=$((fail + 1)); echo "FAIL: back-merge deny miscounts files: $out" | head -c 600; echo
+fi
+
+# ...and from a conflicts/backmerge-... branch its files tab is empty
+git switch -q -c conflicts/backmerge-r1 origin/dev
+git merge -q --no-ff --no-edit origin/main
+git push -q -u origin conflicts/backmerge-r1
+expect "back-merge branch"      allow 'gh pr create --base dev --title x --body y'
+files=$(git diff --name-only origin/dev...conflicts/backmerge-r1)
+if [ -z "$files" ]; then pass=$((pass + 1)); else fail=$((fail + 1)); echo "FAIL: back-merge branch PR would show: $files"; fi
 
 # --- once main is back-merged into dev with a merge commit, no noise
 git switch -q dev
@@ -131,6 +150,13 @@ git merge -q --no-edit origin/main
 git push -q origin dev
 git switch -q feature/b
 expect "after back-merge"       allow 'gh pr create --base dev --title x --body y'
+
+# --- a back-merge that only brings what dev lacks is fine straight from main
+git switch -q main
+commit hotfix.txt "hotfix" "fix: hotfix straight to main (#2)"
+git push -q origin main
+expect "clean back-merge"       allow 'gh pr create --base dev --head main --title x --body y'
+git switch -q feature/b
 
 # --- a real conflict is still caught first
 git switch -q dev
