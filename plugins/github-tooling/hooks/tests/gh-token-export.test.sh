@@ -229,6 +229,34 @@ expect "cp a clean script"     allow "cp sub/clean.sh copy.sh && bash copy.sh"
 expect "cp into a new dir"     deny  "mkdir -p out && cp calls-gh.sh out/ && bash out/calls-gh.sh"
 expect "printf'd script"       allow "printf 'echo hi\\n' > gen.sh && bash gen.sh"
 expect "touched script"        allow "touch empty.sh && bash empty.sh"
+expect "touch a new gh script" deny  "cat > new.sh <<'EOF'
+$G pr list
+EOF
+touch new.sh && bash new.sh"
+expect "append to a gh script" deny  "cat >> calls-gh.sh <<'EOF'
+echo done
+EOF
+bash calls-gh.sh"
+expect "tee -a to a gh script" deny  "tee -a calls-gh.sh >/dev/null <<'EOF'
+echo done
+EOF
+bash calls-gh.sh"
+expect "append gh to new file" deny  "cat >> new.sh <<'EOF'
+$G pr list
+EOF
+bash new.sh"
+expect "append to clean script" allow "cat >> sub/clean.sh <<'EOF'
+echo done
+EOF
+bash sub/clean.sh"
+expect "copy, then source changes" deny "cp calls-gh.sh copy.sh && cat > calls-gh.sh <<'EOF'
+echo hi
+EOF
+bash copy.sh"
+expect "dir copy, then source changes" deny "cp -r sub copied && cat > sub/calls-gh.sh <<'EOF'
+echo hi
+EOF
+bash copied/calls-gh.sh"
 expect "cp -r a gh dir"        deny  "cp -r sub copied && bash copied/calls-gh.sh"
 expect "cp -r a clean dir"     allow "cp -r sub copied && bash copied/clean.sh"
 

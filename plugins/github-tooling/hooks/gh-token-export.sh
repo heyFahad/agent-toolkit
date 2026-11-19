@@ -27,11 +27,13 @@
 #     and are checked.
 #   - A script written earlier in the same command does not exist yet when
 #     this hook runs, so what goes into it is checked instead: a heredoc
-#     body written by `cat > f` or `tee f`, the source of `cp`/`mv`/
+#     body written by `cat > f` or `tee f`, or the source of `cp`/`mv`/
 #     `install`/`ln` (for a copied directory, the same file inside the
-#     source), or nothing for a new file made by `touch`. A file written
-#     some other way (`printf ... > f`, `sed ... > f`) is let through
-#     unchecked, since its content can't be known before the command runs.
+#     source) as it was when copied. An append (`>>`, `tee -a`, `touch`)
+#     checks what the file held before as well as what was added. A file
+#     replaced some other way (`printf ... > f`, `sed ... > f`) is let
+#     through unchecked, since its content can't be known before the
+#     command runs.
 #   - Each executed script is read, and the command is denied only if the
 #     script calls `gh` or `gh-stack`. In a shell script that means at
 #     command position (start of line, after ; & | ( or $(, or after
@@ -196,6 +198,17 @@ remember_write() {
   WR_DATA+=("${src:-$3}")
 }
 
+# $1 = path token, $2 = w (replace) | a (append), $3 = body | unknown,
+# $4 = the body. Appending what can't be known adds nothing to check, but
+# what the file held before still runs.
+write() {
+  if [ "$2" = a ]; then
+    if [ "$3" = body ]; then remember_write "$1" append "$4"; else remember_write "$1" append ""; fi
+  else
+    remember_write "$1" "$3" "$4"
+  fi
+}
+
 # Remember the files the current simple command writes, from its name
 # ($1), its heredoc's index ($2, if any) and split_redirects' ARGS and
 # OUT_FILES.
@@ -205,24 +218,32 @@ note_writes() {
   if [ -n "$hd" ] && [ -n "${HD_BODY[$hd]+x}" ]; then
     how=body body=${HD_BODY[$hd]}
   fi
-  for t in ${OUT_FILES[@]+"${OUT_FILES[@]}"}; do
-    # Only cat with no file arguments copies its stdin as it is.
-    if [ "$name" = cat ] && [ "${#ARGS[@]}" -eq 0 ]; then
-      remember_write "$t" "$how" "$body"
-    else
-      remember_write "$t" unknown ""
-    fi
+  local mode=w
+  # Only cat with no file arguments copies its stdin as it is.
+  if [ "$name" != cat ] || [ "${#ARGS[@]}" -ne 0 ]; then
+    how=unknown body=""
+  fi
+  for ((k = 0; k < ${#OUT_FILES[@]}; k++)); do
+    write "${OUT_FILES[$k]}" "${OUT_MODES[$k]}" "$how" "$body"
   done
   case "$name" in
     tee)
+      how=unknown body=""
+      if [ -n "$hd" ] && [ -n "${HD_BODY[$hd]+x}" ]; then
+        how=body body=${HD_BODY[$hd]}
+      fi
       for t in ${ARGS[@]+"${ARGS[@]}"}; do
-        case "$t" in -*) ;; *) remember_write "$t" "$how" "$body" ;; esac
+        case "$t" in -a | --append) mode=a ;; esac
+      done
+      for t in ${ARGS[@]+"${ARGS[@]}"}; do
+        case "$t" in -*) ;; *) write "$t" "$mode" "$how" "$body" ;; esac
       done
       ;;
     touch)
-      # A new file is empty; an existing one keeps its content.
+      # Makes a missing file empty and leaves an existing one as it was:
+      # appending nothing does both.
       for t in ${ARGS[@]+"${ARGS[@]}"}; do
-        case "$t" in -*) ;; *) [ -e "$(abspath "$t")" ] || remember_write "$t" body "" ;; esac
+        case "$t" in -*) ;; *) remember_write "$t" append "" ;; esac
       done
       ;;
     cp | mv | install | ln)
@@ -251,38 +272,43 @@ note_writes() {
   return 0
 }
 
-# $1 = script token, $2 = shell | other | auto, $3 = how many copies deep
-# this is (cp a b; cp b c; bash c), $4 = the token as the command wrote it.
+# $1 = script token, $2 = shell | other | auto, $3 = the token as the
+# command wrote it, $4 = only look at writes before this index (what the
+# file held at that point), $5 = 1 if a missing file counts as empty.
 check_script() {
-  local tok=$1 kind=$2 depth=${3:-0} shown=${4:-$1} p a f k w
+  local tok=$1 kind=$2 shown=${3:-$1} limit=${4:-${#WR_PATHS[@]}} optional=${5:-0} p a f k w
   p=$(expand "$(unquote "$tok")")
   # Built from a variable this command does not set: see the header.
   [ -n "$p" ] || return 0
   # Written earlier in this command: check what went into it. A copied
-  # directory (cp -r a b) maps b/x to a/x.
+  # directory (cp -r a b) maps b/x to a/x. Each step back looks only at
+  # writes made before it, so this always ends.
   a=$(abspath "$p")
-  for ((k = ${#WR_PATHS[@]} - 1; k >= 0; k--)); do
+  for ((k = limit - 1; k >= 0; k--)); do
     w=${WR_PATHS[$k]}
     [ "$w" != "$a" ] || break
     if [ "${WR_KINDS[$k]}" = alias ] && [[ $a == "$w"/* ]]; then
-      a=${WR_DATA[$k]}${a#"$w"}
-      break
+      # Inside a copied directory: the same file in the source, as it was.
+      check_script "${WR_DATA[$k]}${a#"$w"}" "$kind" "$shown" "$k" "$optional"
+      return 0
     fi
   done
   if [ "$k" -ge 0 ]; then
-    if [ "${WR_PATHS[$k]}" != "$(abspath "$p")" ]; then
-      # Inside a copied directory: check the same file in the source.
-      if [ "$depth" -lt 5 ]; then check_script "$a" "$kind" $((depth + 1)) "$shown"; fi
-      return 0
-    fi
     case "${WR_KINDS[$k]}" in
       body) check_text "$shown" "$kind" "$p" "${WR_DATA[$k]}" ;;
-      alias) if [ "$depth" -lt 5 ]; then check_script "${WR_DATA[$k]}" "$kind" $((depth + 1)) "$shown"; fi ;;
+      # A copy holds what its source held when it was copied.
+      alias) check_script "${WR_DATA[$k]}" "$kind" "$shown" "$k" "$optional" ;;
+      # Appended to: what the file held before, then what was added.
+      append)
+        check_script "$a" "$kind" "$shown" "$k" 1
+        check_text "$shown" "$kind" "$p" "${WR_DATA[$k]}"
+        ;;
     esac
     return 0
   fi
   f=$(resolve "$p")
   if [ -z "$f" ] || [ ! -f "$f" ] || [ ! -r "$f" ]; then
+    [ "$optional" -eq 0 ] || return 0
     deny "this command runs \`$shown\`, which could not be read to check whether it shells out to \`gh\` from its own subprocess."
   fi
   # A compiled binary at a path (./bin/tool, /usr/bin/git) is not text and
@@ -539,6 +565,7 @@ split_redirects() {
   local k=$1 a
   ARGS=()
   OUT_FILES=()
+  OUT_MODES=()
   STDIN_FILE=
   while [ "$k" -lt "$n" ]; do
     a=${W[$k]}
@@ -550,12 +577,16 @@ split_redirects() {
       [0-9]'<') k=$((k + 1)) ;;
       [0-9]'<'*) ;;
       '>&'* | [0-9]'>&'*) ;;
-      '>' | '>>' | '>|' | '&>' | '&>>' | [0-9]'>' | [0-9]'>>')
+      '>>' | '&>>' | [0-9]'>>')
         k=$((k + 1))
-        [ "$k" -ge "$n" ] || OUT_FILES+=("${W[$k]}")
+        [ "$k" -ge "$n" ] || { OUT_FILES+=("${W[$k]}"); OUT_MODES+=(a); }
         ;;
-      '>>'* | '&>>'* | [0-9]'>>'*) OUT_FILES+=("${a#*>>}") ;;
-      '>'* | '&>'* | [0-9]'>'*) OUT_FILES+=("${a#*>}") ;;
+      '>' | '>|' | '&>' | [0-9]'>')
+        k=$((k + 1))
+        [ "$k" -ge "$n" ] || { OUT_FILES+=("${W[$k]}"); OUT_MODES+=(w); }
+        ;;
+      '>>'* | '&>>'* | [0-9]'>>'*) OUT_FILES+=("${a#*>>}"); OUT_MODES+=(a) ;;
+      '>'* | '&>'* | [0-9]'>'*) OUT_FILES+=("${a#*>}"); OUT_MODES+=(w) ;;
       *) ARGS+=("$a") ;;
     esac
     k=$((k + 1))
