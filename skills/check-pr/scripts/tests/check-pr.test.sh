@@ -93,21 +93,21 @@ calls() { grep -c "$1" "$GH_CALLS" || true; }
 # ---------------------------------------------------------------- find-pr-pair
 cat >"$FX/pulls.json" <<'EOF'
 {"data":{"repository":{"defaultBranchRef":{"name":"main"},"pullRequests":{"nodes":[
- {"number":1,"url":"u1","title":"t","isDraft":true,"headRefName":"feat/ATC-1-thing","baseRefName":"main","headRefOid":"a1"},
- {"number":2,"url":"u2","title":"t","isDraft":false,"headRefName":"feat/ATC-1-thing","baseRefName":"develop","headRefOid":"a1"},
- {"number":3,"url":"u3","title":"t","isDraft":false,"headRefName":"conflicts/ATC-1-thing","baseRefName":"staging","headRefOid":"c3"},
- {"number":4,"url":"u4","title":"t","isDraft":false,"headRefName":"conflicts/fix-ATC-1","baseRefName":"dev","headRefOid":"c4"},
+ {"number":1,"url":"u1","title":"t","isDraft":true,"headRefName":"feat/PROJ-1-thing","baseRefName":"main","headRefOid":"a1"},
+ {"number":2,"url":"u2","title":"t","isDraft":false,"headRefName":"feat/PROJ-1-thing","baseRefName":"develop","headRefOid":"a1"},
+ {"number":3,"url":"u3","title":"t","isDraft":false,"headRefName":"conflicts/PROJ-1-thing","baseRefName":"staging","headRefOid":"c3"},
+ {"number":4,"url":"u4","title":"t","isDraft":false,"headRefName":"conflicts/fix-PROJ-1","baseRefName":"dev","headRefOid":"c4"},
  {"number":5,"url":"u5","title":"t","isDraft":false,"headRefName":"conflicts/renamed","baseRefName":"dev","headRefOid":"c5"},
  {"number":6,"url":"u6","title":"t","isDraft":false,"headRefName":"conflicts/unrelated","baseRefName":"dev","headRefOid":"c6"},
- {"number":7,"url":"u7","title":"t","isDraft":false,"headRefName":"conflicts/ATC-10-other","baseRefName":"dev","headRefOid":"c7"},
- {"number":8,"url":"u8","title":"t","isDraft":false,"headRefName":"feat/ATC-10-other","baseRefName":"main","headRefOid":"a8"},
- {"number":9,"url":"u9","title":"t","isDraft":false,"headRefName":"conflicts/feat/ATC-1-thing","baseRefName":"main","headRefOid":"c9"}
+ {"number":7,"url":"u7","title":"t","isDraft":false,"headRefName":"conflicts/PROJ-10-other","baseRefName":"dev","headRefOid":"c7"},
+ {"number":8,"url":"u8","title":"t","isDraft":false,"headRefName":"feat/PROJ-10-other","baseRefName":"main","headRefOid":"a8"},
+ {"number":9,"url":"u9","title":"t","isDraft":false,"headRefName":"conflicts/feat/PROJ-1-thing","baseRefName":"main","headRefOid":"c9"}
 ]}}}}
 EOF
 # base...head -> what GitHub's compare endpoint says; anything else is a 404.
-printf 'feat%%2FATC-1-thing...conflicts%%2Frenamed\tahead\nfeat%%2FATC-1-thing...conflicts%%2Funrelated\tdiverged\n' >"$FX/compare.tsv"
+printf 'feat%%2FPROJ-1-thing...conflicts%%2Frenamed\tahead\nfeat%%2FPROJ-1-thing...conflicts%%2Funrelated\tdiverged\n' >"$FX/compare.tsv"
 
-run find-pr-pair.sh -R o/r feat/ATC-1-thing
+run find-pr-pair.sh -R o/r feat/PROJ-1-thing
 check "pair: exit 0" 0 "$CODE"
 check "pair: default branch" '"main"' "$(q .defaultBranch)"
 check "pair: main PR" 1 "$(q .main.number)"
@@ -116,16 +116,16 @@ check "pair: preprod PRs and how they matched" \
   "$(q '[.preprod[] | [.number, .matchedBy]]')"
 check "pair: compare only for name/ticket misses" 3 "$(calls /compare/)"
 
-run find-pr-pair.sh -R o/r feat/ATC-10-other
-check "pair: ATC-10 does not pick up ATC-1" '[8,[7]]' "$(q '[.main.number, [.preprod[].number]]')"
+run find-pr-pair.sh -R o/r feat/PROJ-10-other
+check "pair: PROJ-10 does not pick up PROJ-1" '[8,[7]]' "$(q '[.main.number, [.preprod[].number]]')"
 
 run find-pr-pair.sh -R o/r feat/nothing-open
 check "pair: no PRs" '[null,[]]' "$(q '[.main, .preprod]')"
 
-run find-pr-pair.sh -R o/r conflicts/ATC-1-thing
+run find-pr-pair.sh -R o/r conflicts/PROJ-1-thing
 check "pair: refuses a conflicts branch" 2 "$CODE"
 
-run find-pr-pair.sh feat/ATC-1-thing
+run find-pr-pair.sh feat/PROJ-1-thing
 check "pair: repo from gh repo view" '"o/r"' "$(q .repo)"
 check "pair: exported the token itself" 0 "$(calls 'GH_TOKEN=unset api')"
 

@@ -60,7 +60,7 @@ expect "generic search"        allow "$TW" mcp__someserver__search '{"query":"x"
 expect "gmail on uuid server"  allow "$TW" mcp__8129d24e-7e93__get_thread '{"id":"x"}'
 
 # --- twg installed and signed in: Atlassian tools are denied with a twg hint
-expect "getJiraIssue (uuid)"   deny "$TW" "${UUID}__getJiraIssue" '{"cloudId":"c","issueIdOrKey":"ATC-1"}' "twg jira workitem get"
+expect "getJiraIssue (uuid)"   deny "$TW" "${UUID}__getJiraIssue" '{"cloudId":"c","issueIdOrKey":"PROJ-1"}' "twg jira workitem get"
 expect "JQL search"            deny "$TW" "${UUID}__searchJiraIssuesUsingJql" '{"jql":"x"}' "workitem query"
 expect "transition"            deny "$TW" "${UUID}__transitionJiraIssue" '{}' "workitem transition"
 expect "confluence"            deny "$TW" "${UUID}__getConfluenceContent" '{}' "twg confluence"
