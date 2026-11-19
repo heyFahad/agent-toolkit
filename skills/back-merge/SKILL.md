@@ -45,7 +45,7 @@ git diff --name-only $(git merge-base origin/<pre-prod> origin/main) origin/main
 git diff --name-only origin/<pre-prod> $(git merge-tree --write-tree origin/<pre-prod> origin/main | head -n1)
 ```
 
-- If `git merge-tree` reports nothing to merge (the pre-prod branch already contains `main`), there's no back-merge to do.
+- If the pre-prod branch already contains `main` (`git merge-base --is-ancestor origin/main origin/<pre-prod>`), there's no merge to do, but still run the drift audit (step 4) with `--merged origin/<pre-prod>`. A past merge that dropped a fix leaves exactly this state: git says everything is merged while the fix is missing. If the audit finds anything, cut `conflicts/backmerge-<release>` from the pre-prod branch and commit the reconciliation on it as in step 6, without a merge commit.
 - Open it straight from `main` only when there's no conflict and both lists match. That happens when `main` got something the pre-prod branch never saw, such as a hotfix, and nothing else since the last back-merge. Still run the drift audit (step 4) on the merged result.
 - Otherwise, and with squash-merged releases that's nearly always, it goes out from a `conflicts/backmerge-<release>` branch cut from the pre-prod branch. Its files tab shows only what the merge really changes.
 
