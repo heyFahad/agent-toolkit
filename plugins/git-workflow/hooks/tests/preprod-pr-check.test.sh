@@ -102,7 +102,7 @@ expect "noisy, --base="         deny  'gh pr create --base=dev --title "x" --bod
 expect "noisy, -B"              deny  'gh pr create -B dev -t "x" -b "y"' "a2.txt"
 expect "noisy, quoted base"     deny  "gh pr create --base 'dev' --title x --body y" "a1.txt"
 # shellcheck disable=SC2016 # the hook must see the literal $(...)
-expect "noisy, env prefix"      deny  'GH_TOKEN=$(gh auth token) gh pr create --base dev --title x --body y' "a1.txt"
+expect "noisy, env prefix"      deny  'GH_TOKEN=$(env -u GH_TOKEN -u GITHUB_TOKEN gh auth token) gh pr create --base dev --title x --body y' "a1.txt"
 expect "noisy, after cd"        deny  "cd $REPO && gh pr create --base dev --title x --body y" "a1.txt"
 expect "noisy, --head"          deny  'gh pr create --base dev --head feature/b --title x --body y' "a1.txt"
 expect "noisy, owner:head"      deny  'gh pr create --base dev --head someone:feature/b --title x --body y' "a1.txt"

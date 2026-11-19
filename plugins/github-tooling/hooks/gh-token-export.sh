@@ -88,7 +88,7 @@ WR_DATA=()
 HD_BODY=()
 
 deny() {
-  local reason="GH_TOKEN export check: $1 macOS Keychain-backed \`gh\` auth can silently fail to propagate through that extra process boundary, producing a \`404\` that reads like a permissions bug. Prefix this command with \`GH_TOKEN=\$(gh auth token)\` in the same shell invocation before retrying."
+  local reason="GH_TOKEN export check: $1 macOS Keychain-backed \`gh\` auth can silently fail to propagate through that extra process boundary, producing a \`404\` that reads like a permissions bug. Prefix this command with \`GH_TOKEN=\$(env -u GH_TOKEN -u GITHUB_TOKEN gh auth token)\` in the same shell invocation before retrying. The \`env -u\` matters: \`gh auth token\` prints an exported \`GH_TOKEN\` or \`GITHUB_TOKEN\` instead of the keyring login, and that token may lack the scopes this command needs."
   jq -n --arg reason "$reason" '{
     hookSpecificOutput: {
       hookEventName: "PreToolUse",

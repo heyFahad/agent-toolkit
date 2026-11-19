@@ -33,7 +33,7 @@ out() {
   if [ -n "$jqf" ]; then jq -r "$jqf" "$1"; else cat "$1"; fi
 }
 case "$1 ${2:-}" in
-  "auth token") echo stub-token; exit 0 ;;
+  "auth token") echo "${GH_TOKEN:-${GITHUB_TOKEN:-stub-token}}"; exit 0 ;;
   "repo view") echo o/r; exit 0 ;;
 esac
 all="$*"
@@ -128,6 +128,12 @@ check "pair: refuses a conflicts branch" 2 "$CODE"
 run find-pr-pair.sh feat/PROJ-1-thing
 check "pair: repo from gh repo view" '"o/r"' "$(q .repo)"
 check "pair: exported the token itself" 0 "$(calls 'GH_TOKEN=unset api')"
+
+# An exported GITHUB_TOKEN can have fewer scopes than the keyring login, and
+# `gh auth token` would echo it back; the scripts must skip it.
+GITHUB_TOKEN=env-token run find-pr-pair.sh feat/ATC-1-thing
+check "pair: ignores an exported GITHUB_TOKEN" 0 "$(calls 'GH_TOKEN=env-token')"
+check "pair: used the keyring token" 0 "$(grep -v '^GH_TOKEN=stub-token ' "$GH_CALLS" | grep -vc ' auth token' || true)"
 
 # --------------------------------------------------------------- review-threads
 cat >"$FX/threads-1.json" <<'EOF'

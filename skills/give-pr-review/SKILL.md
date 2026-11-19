@@ -61,7 +61,7 @@ One test decides everything here: **could someone who reads only this comment un
 ## Flow
 
 1. Get the context, anchor (rule 2) and write the comments. When delegating to subagents, the prompt must require, per finding: file, repo line number at the head SHA, side, severity, and the line's text. Give them the head SHA and the commands above. Re-anchor anything that comes back without them. Merge their findings and sort them by severity (rule 4) before building the payload.
-2. Create the review **pending**: no `event` field. Run it with `GH_TOKEN=$(gh auth token)` if it goes through a script.
+2. Create the review **pending**: no `event` field. Run it with `GH_TOKEN=$(env -u GH_TOKEN -u GITHUB_TOKEN gh auth token)` if it goes through a script.
 
    ```bash
    gh api repos/O/R/pulls/N/reviews --input - <<'EOF'

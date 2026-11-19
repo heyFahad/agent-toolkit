@@ -78,6 +78,7 @@ expect "env-prefixed gh"       allow "GH_REPO=o/r gh pr view 12"
 expect "gh after cd"           allow "cd sub && gh pr list"
 expect "inline GH_TOKEN"       allow "GH_TOKEN=x bash calls-gh.sh"
 expect "GH_TOKEN for gh-stack" allow "GH_TOKEN=x gh-stack submit"
+expect "documented recipe"     allow 'GH_TOKEN=$(env -u GH_TOKEN -u GITHUB_TOKEN gh auth token) bash calls-gh.sh'
 
 # --- running a script that calls gh
 expect "bash script calls gh"  deny  "bash calls-gh.sh"
