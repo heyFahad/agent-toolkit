@@ -12,17 +12,19 @@
 #   --merged   the merged pre-prod state to audit (default: HEAD)
 #   --merge    the back-merge commit, for report 3 (default: the newest merge
 #              on --merged's first-parent line, if its second parent is on
-#              the default branch)
+#              the default branch; failing that, the same on the branch the
+#              newest merge brought in, as when the back-merge PR has merged)
 #   --default  the default branch as released (default: origin/HEAD, or
 #              origin/<the default branch gh reports>)
 #   --since    how far back to look for released commits (default: 90 days ago)
 #   --ticket   extended regex for ticket keys in commit messages
 #              (default: [A-Z][A-Z0-9]+-[0-9]+, Jira-style keys)
 #
-# Two reports:
+# Three reports:
 #   1. Released changes missing from the merged state: non-merge commits on
 #      the default branch whose change is still there but is not in the merged
-#      state, with the lines that are missing. Usually a past conflict
+#      state: lines they added that are missing, and lines they removed (or
+#      files they deleted) that are back. Usually a past conflict
 #      resolution that took the pre-prod side. Git counts those commits as
 #      merged, so no later back-merge brings them back on its own.
 #   2. Differences no unreleased ticket explains: files that differ between
@@ -130,19 +132,26 @@ echo "== Released changes missing from $MERGED"
 for c in $(git rev-list --no-merges --since="$SINCE" "$DEFAULT"); do
   git diff "$c^" "$c" > "$TMP/patch" 2>/dev/null || continue
   [ -s "$TMP/patch" ] || continue
-  # Still on the default branch, and not in the merged state.
-  GIT_INDEX_FILE="$TMP/idx-default" git apply --cached --check -R "$TMP/patch" 2>/dev/null || continue
+  # The whole change is in the merged state: nothing to check.
   GIT_INDEX_FILE="$TMP/idx-merged" git apply --cached --check -R "$TMP/patch" 2>/dev/null && continue
 
-  # A patch also fails when only its context moved. Count the commit's added
-  # lines that are still on the default branch but absent from the merged
-  # file, and report the commit only if there are any.
+  # A patch also fails when only its context moved, or when a later commit
+  # changed part of it, so check line by line instead. Count the commit's
+  # added lines that are still on the default branch but absent from the
+  # merged file, and its removed lines that are gone from the default
+  # branch's file but still in the merged one. Report the commit only if
+  # there are any.
   report=""
   for f in $(git diff --name-only "$c^" "$c"); do
+    # Same file on both sides: nothing of this commit can be missing from it.
+    git diff --quiet "$DEFAULT" "$MERGED" -- "$f" && continue
     trimmed "$DEFAULT" "$f" > "$TMP/default-lines"
     trimmed "$MERGED" "$f" > "$TMP/merged-lines"
-    git diff -U0 "$c^" "$c" -- "$f" | sed -n 's/^+\([^+]\)/\1/p' \
+    git diff -U0 "$c^" "$c" -- "$f" > "$TMP/file-patch"
+    sed -n 's/^+\([^+]\)/\1/p' "$TMP/file-patch" \
       | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' | awk 'length($0) > 3' > "$TMP/added"
+    sed -n 's/^-\([^-]\)/\1/p' "$TMP/file-patch" \
+      | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' | awk 'length($0) > 3' > "$TMP/removed"
     live=0 missing=0 sample=""
     while IFS= read -r line; do
       grep -Fxq -- "$line" "$TMP/default-lines" || continue
@@ -152,11 +161,27 @@ for c in $(git rev-list --no-merges --since="$SINCE" "$DEFAULT"); do
         [ -z "$sample" ] && sample=$line
       fi
     done < "$TMP/added"
+    gone=0 back=0 back_sample=""
+    while IFS= read -r line; do
+      grep -Fxq -- "$line" "$TMP/default-lines" && continue
+      gone=$((gone + 1))
+      if grep -Fxq -- "$line" "$TMP/merged-lines"; then
+        back=$((back + 1))
+        [ -z "$back_sample" ] && back_sample=$line
+      fi
+    done < "$TMP/removed"
     if [ "$missing" -gt 0 ]; then
       absent=""
       git cat-file -e "$MERGED:$f" 2>/dev/null || absent=" (file absent)"
       report="$report    $missing/$live lines missing  $f$absent
       e.g. $(printf '%s' "$sample" | cut -c1-100)
+"
+    fi
+    if [ "$back" -gt 0 ]; then
+      deleted=""
+      git cat-file -e "$DEFAULT:$f" 2>/dev/null || deleted=" (file deleted on $DEFAULT)"
+      report="$report    $back/$gone removed lines still present  $f$deleted
+      e.g. $(printf '%s' "$back_sample" | cut -c1-100)
 "
     fi
   done
@@ -204,13 +229,28 @@ fi
 # --- 3. Drift in the back-merge's conflicted files
 echo
 if [ -z "$MERGE" ]; then
-  # The newest merge on the first-parent line, past any reconciliation
+  # The newest merge on a first-parent line, past any reconciliation
   # commits, if it merged the default branch in.
-  for c in $(git rev-list --first-parent "$MERGED"); do
-    git rev-parse --verify -q "$c^2" >/dev/null || continue
-    if git merge-base --is-ancestor "$c^2" "$DEFAULT"; then MERGE=$c; fi
-    break
-  done
+  backmerge_on() { # ref -> that merge's id on stdout, or nothing
+    local c
+    for c in $(git rev-list --first-parent "$1"); do
+      git rev-parse --verify -q "$c^2" >/dev/null || continue
+      if git merge-base --is-ancestor "$c^2" "$DEFAULT"; then echo "$c"; fi
+      return
+    done
+  }
+  MERGE=$(backmerge_on "$MERGED")
+  # Once the back-merge PR has merged, the tip is the PR's own merge commit,
+  # whose second parent is the back-merge branch: look on that branch too,
+  # for a back-merge that this merge brought in (not an older one the
+  # branch was cut after).
+  if [ -z "$MERGE" ]; then
+    tip=$(git rev-list --first-parent --merges -n1 "$MERGED")
+    if [ -n "$tip" ]; then
+      MERGE=$(backmerge_on "$tip^2")
+      if [ -n "$MERGE" ] && git merge-base --is-ancestor "$MERGE" "$tip^1"; then MERGE=""; fi
+    fi
+  fi
 fi
 if [ -z "$MERGE" ]; then
   echo "== Conflicted files: skipped, $MERGED doesn't end in a back-merge (pass --merge <commit>)"
@@ -220,7 +260,16 @@ elif ! git rev-parse --verify -q "$MERGE^2" >/dev/null; then
 else
   P=$(git rev-parse "$MERGE^1") D=$(git rev-parse "$MERGE^2")
   echo "== Conflicted files in $(git rev-parse --short "$MERGE"), against $DEFAULT's side ($(git rev-parse --short "$D"))"
-  git merge-tree --write-tree --name-only --no-messages "$P" "$D" 2>/dev/null | sed 1d > "$TMP/conflicted"
+  # Exit 0 is a clean merge and 1 a conflicted one; anything else is an error
+  # (an old git, a missing object), not "no conflicts".
+  git merge-tree --write-tree --name-only --no-messages "$P" "$D" > "$TMP/merge-tree" 2> "$TMP/merge-tree.err"
+  status=$?
+  if [ "$status" -gt 1 ]; then
+    echo "git merge-tree failed (exit $status), so the conflicted files are unknown:" >&2
+    cat "$TMP/merge-tree.err" >&2
+    exit 1
+  fi
+  sed 1d "$TMP/merge-tree" > "$TMP/conflicted"
   [ -s "$TMP/conflicted" ] || echo "  none: the merge had no conflicts"
   while IFS= read -r f; do
     [ -n "$f" ] || continue

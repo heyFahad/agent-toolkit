@@ -199,5 +199,49 @@ backmerge bm-extra 'header\nbody fixed\nfooter\nconst NO_OPTIONS = [];\n' \
 audit --default main --since "10 years ago"
 has "more drift after than before is flagged" '^  d\.txt: 3 .* 5 after  MORE DRIFT AFTER THE MERGE'
 
+# A merge-tree failure is an error, not "no conflicts".
+REAL_GIT=$(command -v git)
+mkdir -p "$TMP/badgit"
+# shellcheck disable=SC2016 # expanded by the stub, not here
+printf '#!/bin/bash\n[ "$1" = merge-tree ] && { echo "fatal: simulated" >&2; exit 128; }\nexec "%s" "$@"\n' "$REAL_GIT" > "$TMP/badgit/git"
+chmod +x "$TMP/badgit/git"
+PATH="$TMP/badgit:$PATH" audit --default main --since "10 years ago"
+exits "merge-tree failure: exits 1" 1
+has "merge-tree failure: says so" 'git merge-tree failed'
+
+# Once the back-merge PR has merged into dev, report 3 finds the back-merge
+# through the PR's merge commit.
+git switch -q dev
+git merge -q --no-ff -m "Merge pull request #9 from example/conflicts/backmerge-r2" bm-dev
+audit --merged dev --default main --since "10 years ago"
+exits "after the PR merged: exits 0" 0
+has "after the PR merged: finds the back-merge" "^== Conflicted files in $(git rev-parse --short bm-dev^),"
+
+# --- report 1: fixes lost when a later commit changed part of the patch,
+# and fixes that only delete a line or a file
+git init -q -b main "$TMP/rel"
+cd "$TMP/rel" || exit 1
+put x.txt 'x one\nx two\n'
+put y.txt 'y one original\n'
+put z.txt 'keep this line\nremove this buggy line\n'
+put w.txt 'whole file to delete\n'
+git add . && git commit -q -m "chore: initial"
+git branch dev
+put x.txt 'x one\nx two fixed in release\n'
+put y.txt 'y one fixed in release\n'
+git commit -q -am "fix(TT-50): fix x and y"
+put x.txt 'x one\nx two reworked later\n'
+git commit -q -am "fix(TT-51): rework x"
+put z.txt 'keep this line\n'
+git rm -q w.txt
+git commit -q -am "fix(TT-52): drop the buggy line and the old file"
+git switch -q dev
+git merge -q -s ours --no-edit main
+audit --merged dev --default main --since "10 years ago"
+exits "lost fixes: exits 2" 2
+has "a partly reworked commit still reports its other file" '1/1 lines missing  y\.txt'
+has "a removed line that came back is reported" '1/1 removed lines still present  z\.txt$'
+has "a deleted file that came back is reported" 'removed lines still present  w\.txt \(file deleted on main\)'
+
 echo "backmerge-drift-audit: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

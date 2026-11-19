@@ -99,7 +99,7 @@ How far back `--since` reaches matters. Report 1 below checks `main`'s commits o
 
 Without `--default` it audits against `origin/HEAD`, or the default branch `gh` reports, and stops with an error if neither works. It prints three reports:
 
-1. **Released changes missing from the merged state**: commits on `main` whose change is still on `main` but not in the merge, with the lines that are missing.
+1. **Released changes missing from the merged state**: commits on `main` whose change is still on `main` but not in the merge: lines they added that are missing, and lines they removed (or files they deleted) that are back. Each commit is checked line by line, so one whose change was later edited on `main` still counts for the parts that are left.
 2. **Differences no unreleased ticket explains**: files that differ, where no commit touching them on the pre-prod side names a ticket `main` hasn't shipped. The pre-prod side's commits include the merges that brought work in, since a ticket's key is sometimes only in its branch name or PR title.
 3. **Drift in the back-merge's conflicted files**: for each file that conflicted, how many lines differ from `main`'s side before and after the merge, flagged when there are more after. It also lists lines that only moved and hunks that only changed whitespace or comments, each traced with `git blame` to its commit: `unreleased work (KEY)` stays, `DRIFT` goes back to `main`'s version (the first rows of step 3's table). It finds the back-merge commit itself, past any reconciliation commits; pass `--merge <commit>` if it can't. Report 2 can't see this drift when an unreleased ticket also touched the file, which is common in conflicted files.
 
@@ -189,4 +189,4 @@ It must be merged with a merge commit (`gh pr merge <n> --merge`), never squashe
 
 ## Afterwards
 
-Run the audit again once the PR has merged (`--merged origin/<pre-prod>`). Report 1 should be empty apart from fixes you confirmed had moved, and report 2 should list only the pre-prod-only items the user still has to decide on.
+Run the audit again once the PR has merged (`--merged origin/<pre-prod>`). Report 3 then finds the back-merge commit through the PR's merge commit. If it says it skipped, pass `--merge` with the merge commit from step 3 (`git rev-list --first-parent --merges -n1 origin/conflicts/backmerge-<release>`). Report 1 should be empty apart from fixes you confirmed had moved, and report 2 should list only the pre-prod-only items the user still has to decide on.
