@@ -1,6 +1,6 @@
 ---
 name: back-merge
-description: Back-merge the default branch into the pre-prod branch (dev, develop, staging, ...) after a release or hotfix, and reconcile the drift between them so the pre-prod branch is the default branch plus unreleased work and nothing else. Use when asked for a back-merge or to sync the pre-prod branch with main, after a release ships, when the preprod-pr-check hook reports a noisy back-merge, or when QA's build seems to be missing a fix that is live in production.
+description: Back-merge the default branch into the pre-prod branch (dev, develop, staging, ...), or into a long-running feature, epic or version branch (an epic trunk, a 2.0 branch), after a release or hotfix, and reconcile the drift so the target is the default branch plus its own unreleased work and nothing else. Use when asked for a back-merge or to sync a long-lived branch with main, after a release ships, when the preprod-pr-check hook reports a noisy back-merge, when QA's build seems to be missing a fix that is live in production, or when a long-running branch keeps conflicting with main.
 metadata:
   category: git-workflow
 ---
@@ -10,6 +10,8 @@ metadata:
 The goal is not only a merge commit. When the back-merge lands, the pre-prod branch should be **the default branch plus unreleased work, and nothing else**. QA tests the pre-prod branch, so every difference that isn't unreleased work means QA tests something production doesn't run.
 
 Below, `<pre-prod>` is the branch `branching-pr-workflow`'s `scripts/resolve-preprod-branch.sh` prints (never assume a name), `main` is the repo's default branch, and `<release>` is the release name or date (e.g. `2025.01.15`).
+
+The steps are written for the pre-prod branch. Back-merging into a long-running feature, epic or version branch works the same way, with the differences listed in "Into a long-running feature branch" near the end.
 
 ## Why the two drift apart
 
@@ -186,6 +188,23 @@ It must be merged with a merge commit (`gh pr merge <n> --merge`), never squashe
 
 - If `main` got more commits since, merge `origin/main` into the same branch again in the worktree, resolve as in step 3, rerun steps 4 and 5, and push. Ask first, like any push.
 - If an earlier resolution was wrong, or the branch now conflicts with the pre-prod branch, redo the merge on a fresh branch from `origin/<pre-prod>`, rerun steps 4 and 5, then ask the user before force-pushing it over the PR's branch.
+
+## Into a long-running feature branch
+
+A branch that lives through several releases (an epic trunk from `stacked-epics`, a `2.0` version branch) needs `main` merged into it too, or it meets every release's conflicts at once when it finally ships. Drift gets in the same way: a conflict resolved toward the feature side drops `main`'s fix, and later merges count it as merged. So the goal is the same, with the feature branch as the target: **`main` plus the branch's own work, and nothing else**.
+
+What carries over unchanged:
+
+- Step 3: merge `--no-ff` in a separate worktree, and resolve with the same table. "Unreleased work" is the branch's own commits, `origin/main..origin/<branch>`, with the same ticket-key test, since parts of the branch may already have shipped to `main` as squash commits.
+- Step 4: the audit, with `--merged` on the merged feature branch.
+- Steps 5 and 6: verification against the branch's tip, and the commit layout.
+
+What differs:
+
+- Skip steps 1 and 2. There's no pre-prod branch to resolve and no noise check: that check is about a PR's files tab on the pre-prod branch.
+- Where the merge lands follows the repo's rules for that branch. If it's protected or shared, open a PR into it from a `backmerge/<release>-into-<branch>` branch cut from it. Otherwise merge in the worktree and push to it, after asking the user, like any push.
+- Do it after every release, not only before the branch ships. Each release you skip adds its conflicts and its chances of drift to the next merge.
+- Never rebase a shared feature branch onto `main` instead: that rewrites history everyone else has.
 
 ## Afterwards
 
