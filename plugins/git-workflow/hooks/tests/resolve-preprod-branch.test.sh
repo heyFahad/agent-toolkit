@@ -32,7 +32,7 @@ export STUB_DEFAULT=main STUB_PR_BASES="$TMP/pr-bases"
 
 git init -q --bare -b main "$TMP/origin.git"
 git clone -q "$TMP/origin.git" "$TMP/work" 2>/dev/null
-cd "$TMP/work"
+cd "$TMP/work" || exit 1
 git commit -q --allow-empty -m initial
 git push -q origin HEAD:main
 
@@ -40,6 +40,7 @@ pass=0 fail=0
 
 expect() { # name, expected stdout, expected exit code, [args]
   local out code
+  # shellcheck disable=SC2086 # split on purpose: "--set staging" is two args
   out=$(bash "$RESOLVER" ${4:-} 2>/dev/null)
   code=$?
   if [ "$out" = "$2" ] && [ "$code" = "$3" ]; then
@@ -107,6 +108,15 @@ for url in git@github.com:Example-Org/Example-App.git https://github.com/example
   if [ "$key" = "example-org/example-app" ]; then pass=$((pass + 1)); else fail=$((fail + 1)); echo "FAIL: key for $url is $key"; fi
   reset_state
 done
+
+# --- --default: gh first, then origin/HEAD, else exit 1
+git update-ref refs/remotes/origin/old-main HEAD
+git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/old-main
+STUB_DEFAULT=main expect "--default asks gh first"        "main" 0 --default
+git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
+STUB_DEFAULT='' expect "--default falls back to origin/HEAD" "main" 0 --default
+git symbolic-ref --delete refs/remotes/origin/HEAD
+STUB_DEFAULT='' expect "--default fails when neither tells" "" 1 --default
 
 echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]

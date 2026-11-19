@@ -27,6 +27,7 @@ Use the `gh-stack` CLI extension, rooted at the parent branch as the stack's tru
 - When subtasks are independent of each other, give each its own branch off the trunk (its own single-link stack) rather than linking them in a chain.
 - Before starting a new subtask, run `gh stack sync`. It fetches, detects any subtask PRs merged since the last sync, fast-forwards the trunk, and cascades a rebase through every branch above the merge point (handles both regular and squash merges). This replaces manually checking whether the parent has gone stale.
 - Branch each new subtask off the current top of the relevant stack via `gh stack add`, not a fresh `git checkout -b` off the parent directly. The latter is what silently goes stale the moment an earlier subtask's PR merges.
+- `gh stack sync` keeps subtasks in step with the trunk, not the trunk with `main`. After each release, back-merge `main` into the trunk as the `back-merge` skill describes, then sync the stacks onto it.
 
 ## Deploying to the pre-prod branch
 

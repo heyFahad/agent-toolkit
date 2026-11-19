@@ -35,7 +35,7 @@ printf 'dev\ndev\nmain\n' > "$STUB_PR_BASES"
 REPO="$TMP/work"
 git init -q --bare -b main "$TMP/origin.git"
 git clone -q "$TMP/origin.git" "$REPO" 2>/dev/null
-cd "$REPO"
+cd "$REPO" || exit 1
 git switch -q -c main 2>/dev/null || true
 commit() { # file, content, message
   mkdir -p "$(dirname "$1")"
@@ -101,6 +101,7 @@ expect "noisy, --base"          deny  'gh pr create --base dev --draft --title "
 expect "noisy, --base="         deny  'gh pr create --base=dev --title "x" --body "y"' "conflicts/<ticket>-<slug>"
 expect "noisy, -B"              deny  'gh pr create -B dev -t "x" -b "y"' "a2.txt"
 expect "noisy, quoted base"     deny  "gh pr create --base 'dev' --title x --body y" "a1.txt"
+# shellcheck disable=SC2016 # the hook must see the literal $(...)
 expect "noisy, env prefix"      deny  'GH_TOKEN=$(gh auth token) gh pr create --base dev --title x --body y' "a1.txt"
 expect "noisy, after cd"        deny  "cd $REPO && gh pr create --base dev --title x --body y" "a1.txt"
 expect "noisy, --head"          deny  'gh pr create --base dev --head feature/b --title x --body y' "a1.txt"
@@ -109,6 +110,7 @@ expect "suggests back-merge"    deny  'gh pr create --base dev --title x --body 
 expect "back-merge via branch"  deny  'gh pr create --base dev --title x --body y' "conflicts/backmerge-<release>"
 expect "says no squash"         deny  'gh pr create --base dev --title x --body y' "never squashed"
 expect "says no cherry-pick"    deny  'gh pr create --base dev --title x --body y' "do not cherry-pick"
+expect "points at back-merge"   deny  'gh pr create --base dev --title x --body y' "following the back-merge skill"
 out=$(run_hook 'gh pr create --base dev --title x --body y')
 if printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecisionReason' | sed -n '/--- files only/,$p' | grep -qx 'b.txt'; then
   fail=$((fail + 1)); echo "FAIL: the branch's own file is listed as noise"
@@ -129,6 +131,7 @@ git switch -q feature/b
 expect "back-merge from main"   deny  'gh pr create --base dev --head main --title x --body y' "a1.txt"
 expect "back-merge recipe"      deny  'gh pr create --base dev --head main --title x --body y' "git merge --no-ff origin/main"
 expect "back-merge no squash"   deny  'gh pr create --base dev --head main --title x --body y' "never squashed"
+expect "back-merge skill"       deny  'gh pr create --base dev --head main --title x --body y' "Follow the back-merge skill"
 out=$(run_hook 'gh pr create --base dev --head main --title x --body y')
 if printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecisionReason' | grep -qF 'would list 2 file(s) that the merge would not change (it really changes 0 file(s)'; then
   pass=$((pass + 1))
@@ -194,6 +197,7 @@ git switch -q -c feature/c main
 commit app.txt "c's line one" "feat: c edit"
 git push -q -u origin feature/c
 expect "conflict"               deny  'gh pr create --base dev --title x --body y' "CONFLICT"
+expect "conflict skill"         deny  'gh pr create --base dev --title x --body y' "Follow the clean-preprod-pr skill"
 
 # --- when the resolver can't decide, a long-lived name is still checked
 git push -q origin main:staging
