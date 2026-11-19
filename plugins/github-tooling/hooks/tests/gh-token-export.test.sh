@@ -126,7 +126,52 @@ b'; bash calls-gh.sh"
 # --- known wrappers and unreadable scripts
 expect "gh-stack submit"       deny  "gh-stack submit"
 expect "missing script"        deny  "bash nope.sh"
-expect "variable path"         deny  'bash "$SCRIPT_DIR/run.sh"'
+
+# --- heredoc bodies are the reader's stdin, not commands
+expect "data heredoc, \$a/\$b"   allow "cat > /dev/null <<'EOF'
+report=\"\$report \$missing/\$live\"
+EOF"
+expect "unquoted data heredoc" allow "cat > /dev/null <<EOF
+report=\"\$report \$missing/\$live\"
+EOF"
+expect "commit msg heredoc"    allow "git commit -m \"\$(cat <<'EOF'
+fix(x): quieter output
+
+sub/calls-gh.sh no longer prints twice.
+EOF
+)\""
+expect "backtick in heredoc"   deny  "cat <<EOF
+\`./calls-gh.sh\`
+EOF"
+expect "bash reads heredoc"    deny  "bash <<'EOF'
+./calls-gh.sh
+EOF"
+expect "heredoc piped to sh"   deny  "cat <<'EOF' | sh
+./calls-gh.sh
+EOF"
+expect "bash -s heredoc args"  allow "bash -s calls-gh.sh <<'EOF'
+echo \"\$1\"
+EOF"
+
+# --- script paths built from variables
+expect "variable path"         allow 'bash "$SCRIPT_DIR/run.sh"'
+expect "for-loop variable"     allow 'for t in sub/*.sh; do bash $t; done'
+expect "TMPDIR python path"    allow 'python3 "$TMPDIR/x.py"'
+expect "assigned path"         deny  's=calls-gh.sh; bash "$s"'
+expect "exported dir"          deny  'export D=sub && bash "${D}/calls-gh.sh"'
+expect "assigned clean path"   allow 's=sub/clean.sh; bash $s'
+
+# --- a lone - means the script comes from stdin
+expect "python3 - \"\$f\" heredoc" allow "f=calls-gh.sh; python3 - \"\$f\" <<'EOF'
+import sys
+print(open(sys.argv[1]).read())
+EOF"
+expect "python3 - heredoc gh"  deny  "python3 - <<'EOF'
+import subprocess
+subprocess.run([\"$G\", \"api\", \"user\"])
+EOF"
+expect "python3 < gh script"   deny  "python3 < tool.py"
+expect "bash < gh script"      deny  "bash < calls-gh.sh"
 
 # --- this repo's own test files mention gh but never call it at command position
 expect "this test file"        allow "bash $HERE/gh-token-export.test.sh"
