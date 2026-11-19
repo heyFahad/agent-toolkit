@@ -172,6 +172,62 @@ subprocess.run([\"$G\", \"api\", \"user\"])
 EOF"
 expect "python3 < gh script"   deny  "python3 < tool.py"
 expect "bash < gh script"      deny  "bash < calls-gh.sh"
+expect "bash - script"         deny  "bash - calls-gh.sh"
+expect "python3 -W x heredoc"  deny  "python3 -W ignore <<'EOF'
+import subprocess
+subprocess.run([\"$G\", \"api\", \"user\"])
+EOF"
+
+# --- readers that only parse or don't take the heredoc as code
+expect "bash -n heredoc"       allow "bash -n <<'EOF'
+./calls-gh.sh
+EOF"
+expect "bash -s -n heredoc"    allow "bash -s -n <<'EOF'
+./calls-gh.sh
+EOF"
+expect "piped to bash script"  allow "cat <<'EOF' | bash sub/clean.sh
+./calls-gh.sh
+EOF"
+expect "piped to python file"  allow "cat <<'EOF' | python3 clean.py
+subprocess.run([\"$G\", \"api\", \"user\"])
+EOF"
+expect "multi-line \$( in body" deny  "cat <<EOF
+\$(
+./calls-gh.sh
+)
+EOF"
+
+# --- assignments expand when they run, not when used
+expect "reassigned source var" allow 't=sub/clean.sh; s=$t; t=calls-gh.sh; bash "$s"'
+expect "self-extending var"    deny  's=.; s="$s/calls-gh.sh"; bash "$s"'
+
+# --- a script written earlier in the same command
+expect "new script, clean"     allow "cat > new.sh <<'EOF'
+echo hi
+EOF
+bash new.sh"
+expect "new script calls gh"   deny  "cat > new.sh <<'EOF'
+#!/bin/bash
+$G api user
+EOF
+chmod +x new.sh && ./new.sh"
+expect "overwritten gh script" allow "cat > calls-gh.sh <<'EOF'
+echo hi
+EOF
+bash calls-gh.sh"
+expect "tee'd python script"   deny  "tee new.py >/dev/null <<'EOF'
+import subprocess
+subprocess.run([\"$G\", \"pr\", \"list\"])
+EOF
+python3 new.py"
+expect "written after cd"      deny  "cd sub && cat > new.sh <<'EOF'
+$G pr list
+EOF
+cd .. && bash sub/new.sh"
+expect "cp a gh script"        deny  "cp calls-gh.sh copy.sh && bash copy.sh"
+expect "cp a clean script"     allow "cp sub/clean.sh copy.sh && bash copy.sh"
+expect "cp into a new dir"     deny  "mkdir -p out && cp calls-gh.sh out/ && bash out/calls-gh.sh"
+expect "printf'd script"       allow "printf 'echo hi\\n' > gen.sh && bash gen.sh"
 
 # --- this repo's own test files mention gh but never call it at command position
 expect "this test file"        allow "bash $HERE/gh-token-export.test.sh"

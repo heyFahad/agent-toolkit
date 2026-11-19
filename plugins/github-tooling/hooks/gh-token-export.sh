@@ -21,10 +21,16 @@
 #     <<EOF` or `cat <<EOF | bash` run it as shell, so its lines are checked
 #     like the command's own; `python3 <<EOF` or `python3 - "$f" <<EOF` run
 #     it as a script, so it is checked like a Python/Node/... script file.
-#     For any other reader (cat, tee, git commit -F-, `bash x.sh`) the body
-#     is data and skipped, except that with an unquoted delimiter (<<EOF,
-#     not <<'EOF') the `$(...)` and backticks inside it run first and are
-#     checked.
+#     For any other reader (cat, tee, git commit -F-, `bash x.sh`, `bash -n`)
+#     the body is data and skipped, except that with an unquoted delimiter
+#     (<<EOF, not <<'EOF') the `$(...)` and backticks inside it run first
+#     and are checked.
+#   - A script written earlier in the same command does not exist yet when
+#     this hook runs, so what goes into it is checked instead: a heredoc
+#     body written by `cat > f` or `tee f`, or the source of `cp`/`mv`/
+#     `install`/`ln`. A file written some other way (`printf ... > f`,
+#     `sed ... > f`) is let through unchecked, since its content can't be
+#     known before the command runs.
 #   - Each executed script is read, and the command is denied only if the
 #     script calls `gh` or `gh-stack`. In a shell script that means at
 #     command position (start of line, after ; & | ( or $(, or after
@@ -63,9 +69,18 @@ SHELL_GH_RE="${POS}(gh[[:space:]]|gh-stack([[:space:]]|\$))"
 # first element of an argument list such as ["gh", "api", ...].
 OTHER_GH_RE='(^|[^A-Za-z0-9_.-])gh(-stack)?([[:space:]]|["'"'"'],)'
 
-# Variables assigned earlier in this command (`name=value`), newest last.
+# Variables assigned earlier in this command (`name=value`), newest last,
+# with their values already expanded. A value that can't be expanded is
+# stored as a lone backtick, which no path resolves through.
 VAR_NAMES=(HOME)
 VAR_VALS=("$HOME")
+# Files written earlier in this command, newest last: absolute path, how
+# (body | alias | unknown) and the heredoc body or the source path.
+WR_PATHS=()
+WR_KINDS=()
+WR_DATA=()
+# Heredoc bodies by index, from blank_quoted_separators.
+HD_BODY=()
 
 deny() {
   local reason="GH_TOKEN export check: $1 macOS Keychain-backed \`gh\` auth can silently fail to propagate through that extra process boundary, producing a \`404\` that reads like a permissions bug. Prefix this command with \`GH_TOKEN=\$(gh auth token)\` in the same shell invocation before retrying."
@@ -89,11 +104,22 @@ unquote() {
   printf '%s' "$p"
 }
 
-# Record a `name=value` word so later $name / ${name} can be resolved.
+# Record a `name=value` word so later $name / ${name} can be resolved. The
+# value is expanded now, as the shell does: `s=$t; t=x; bash "$s"` runs
+# the old $t.
 remember() {
   [[ $1 =~ ^[A-Za-z_][A-Za-z0-9_]*= ]] || return 0
+  local raw=${1#*=} val
+  val=$(unquote "$raw")
+  if [ -n "$val" ]; then
+    case "$raw" in
+      # Single-quoted: a literal, and a literal $ is no path to resolve.
+      \'*) case "$val" in *'$'* | *'`'*) val='`' ;; esac ;;
+      *) val=$(expand "$val"); [ -n "$val" ] || val='`' ;;
+    esac
+  fi
   VAR_NAMES+=("${1%%=*}")
-  VAR_VALS+=("$(unquote "${1#*=}")")
+  VAR_VALS+=("$val")
 }
 
 # Print $1 with every $name / ${name} replaced by its value from this
@@ -133,21 +159,130 @@ resolve() {
   printf '%s' "$p"
 }
 
-# $1 = script token as written, $2 = shell | other | auto
+# Print a token as an absolute, tidied path, or nothing if it has a
+# variable this command does not set.
+abspath() {
+  local p part parts=() out=()
+  p=$(expand "$(unquote "$1")")
+  [ -n "$p" ] || return 0
+  case "$p" in /*) ;; *) p="$DIR/$p" ;; esac
+  IFS=/ read -ra parts <<<"$p"
+  for part in ${parts[@]+"${parts[@]}"}; do
+    case "$part" in
+      '' | .) ;;
+      ..) [ "${#out[@]}" -eq 0 ] || out=("${out[@]:0:${#out[@]}-1}") ;;
+      *) out+=("$part") ;;
+    esac
+  done
+  p=
+  for part in ${out[@]+"${out[@]}"}; do p="$p/$part"; done
+  printf '%s' "${p:-/}"
+}
+
+# $1 = path token written by this command, $2 = body | alias | unknown,
+# $3 = the heredoc body, or the source path's token.
+remember_write() {
+  local a src=""
+  a=$(abspath "$1")
+  case "$a" in '' | /dev/*) return 0 ;; esac
+  if [ "$2" = alias ]; then
+    src=$(abspath "$3")
+    # A source path this hook can't resolve leaves the copy unknown too.
+    [ -n "$src" ] || { remember_write "$1" unknown ""; return 0; }
+  fi
+  WR_PATHS+=("$a")
+  WR_KINDS+=("$2")
+  WR_DATA+=("${src:-$3}")
+}
+
+# Remember the files the current simple command writes, from its name
+# ($1), its heredoc's index ($2, if any) and split_redirects' ARGS and
+# OUT_FILES.
+note_writes() {
+  local name=$1 hd=$2 how=unknown body="" t k m dest d
+  local files=()
+  if [ -n "$hd" ] && [ -n "${HD_BODY[$hd]+x}" ]; then
+    how=body body=${HD_BODY[$hd]}
+  fi
+  for t in ${OUT_FILES[@]+"${OUT_FILES[@]}"}; do
+    # Only cat with no file arguments copies its stdin as it is.
+    if [ "$name" = cat ] && [ "${#ARGS[@]}" -eq 0 ]; then
+      remember_write "$t" "$how" "$body"
+    else
+      remember_write "$t" unknown ""
+    fi
+  done
+  case "$name" in
+    tee)
+      for t in ${ARGS[@]+"${ARGS[@]}"}; do
+        case "$t" in -*) ;; *) remember_write "$t" "$how" "$body" ;; esac
+      done
+      ;;
+    cp | mv | install | ln)
+      k=0 m=${#ARGS[@]}
+      while [ "$k" -lt "$m" ]; do
+        case "${ARGS[$k]}" in
+          -m | -o | -g | -S) k=$((k + 1)) ;;
+          -*) ;;
+          *) files+=("${ARGS[$k]}") ;;
+        esac
+        k=$((k + 1))
+      done
+      m=${#files[@]}
+      if [ "$m" -ge 2 ]; then
+        dest=${files[$((m - 1))]}
+        for ((k = 0; k < m - 1; k++)); do
+          d=$dest
+          if [ "$m" -gt 2 ] || [[ $dest == */ ]] || [ -d "$(abspath "$dest")" ]; then
+            d="${dest%/}/$(basename -- "$(unquote "${files[$k]}")")"
+          fi
+          remember_write "$d" alias "${files[$k]}"
+        done
+      fi
+      ;;
+  esac
+  return 0
+}
+
+# $1 = script token as written, $2 = shell | other | auto, $3 = how many
+# copies deep this is (cp a b; cp b c; bash c).
 check_script() {
-  local tok=$1 kind=$2 p f first="" re
+  local tok=$1 kind=$2 depth=${3:-0} p a f k
   p=$(expand "$(unquote "$tok")")
   # Built from a variable this command does not set: see the header.
   [ -n "$p" ] || return 0
+  # Written earlier in this command: check what went into it.
+  a=$(abspath "$p")
+  for ((k = ${#WR_PATHS[@]} - 1; k >= 0; k--)); do
+    [ "${WR_PATHS[$k]}" != "$a" ] || break
+  done
+  if [ "$k" -ge 0 ]; then
+    case "${WR_KINDS[$k]}" in
+      body) check_text "$tok" "$kind" "$p" "${WR_DATA[$k]}" ;;
+      alias) if [ "$depth" -lt 5 ]; then check_script "${WR_DATA[$k]}" "$kind" $((depth + 1)); fi ;;
+    esac
+    return 0
+  fi
   f=$(resolve "$p")
   if [ -z "$f" ] || [ ! -f "$f" ] || [ ! -r "$f" ]; then
     deny "this command runs \`$tok\`, which could not be read to check whether it shells out to \`gh\` from its own subprocess."
   fi
+  # A compiled binary at a path (./bin/tool, /usr/bin/git) is not text and
+  # is not something this hook can judge.
+  if [ -s "$f" ] && ! grep -qI '' "$f"; then
+    return 0
+  fi
+  check_text "$tok" "$kind" "$f" "$(cat "$f")"
+}
+
+# $1 = script token, $2 = shell | other | auto, $3 = its path, $4 = its text
+check_text() {
+  local tok=$1 kind=$2 text=$4 first re
   if [ "$kind" = auto ]; then
-    case "$f" in
+    case "$3" in
       *.py | *.js | *.mjs | *.cjs | *.ts | *.rb | *.pl) kind=other ;;
       *)
-        IFS= read -r first <"$f" || true
+        first=${text%%$'\n'*}
         case "$first" in
           '#!'*python* | '#!'*node* | '#!'*ruby* | '#!'*perl* | '#!'*deno* | '#!'*bun*) kind=other ;;
           *) kind=shell ;;
@@ -155,16 +290,10 @@ check_script() {
         ;;
     esac
   fi
-  # A compiled binary at a path (./bin/tool, /usr/bin/git) is not text and
-  # is not something this hook can judge.
-  if [ -s "$f" ] && ! grep -qI '' "$f"; then
-    return 0
-  fi
   if [ "$kind" = shell ]; then
-    text=$(strip_shell <"$f")
+    text=$(strip_shell <<<"$text")
     re=$SHELL_GH_RE
   else
-    text=$(cat "$f")
     re=$OTHER_GH_RE
   fi
   if grep -qE -- "$re" <<<"$text"; then
@@ -242,36 +371,60 @@ blank_quoted_separators() {
       }
       return out
     }
-    # How a heredoc body is used, from the command text before << (pre) and
-    # the rest of the line (post): "code" (a shell runs it), "script" (an
-    # interpreter runs it) or "data".
-    function kind(pre, post,   w, nw, i, a, cmd, shell) {
-      if (post ~ /\|[ \t]*([^ \t|;&]*\/)?(ba|z|da|k)?sh([ \t;&|)]|$)/) return "code"
-      if (post ~ /\|[ \t]*([^ \t|;&]*\/)?(python[0-9.]*|node|ruby|perl)([ \t;&|)]|$)/) return "script"
-      sub(/.*[;&|(`]/, "", pre)
-      nw = split(pre, w, /[ \t\n]+/)
+    # How the simple command in s uses its stdin: "code" (a shell runs it),
+    # "script" (an interpreter runs it) or "data". Sets rcmd to its name.
+    function reader(s,   w, nw, i, a, shell, sflag, syn, endopts) {
+      rcmd = ""
+      nw = split(s, w, /[ \t\n]+/)
       for (i = 1; i <= nw; i++)
-        if (w[i] != "" && w[i] !~ /^[A-Za-z_][A-Za-z0-9_]*=/ && w[i] !~ /^(then|do|else|if|elif|while|until|exec|command|time|nohup|env|sudo|nice|!|[{])$/) break
+        if (w[i] != "" && w[i] !~ /^\037/ && w[i] !~ /^[A-Za-z_][A-Za-z0-9_]*=/ && w[i] !~ /^(then|do|else|if|elif|while|until|exec|command|time|nohup|env|sudo|nice|!|[{])$/) break
       if (i > nw) return "data"
-      cmd = w[i]; gsub(/[\047"]/, "", cmd); sub(/.*\//, "", cmd)
-      if (cmd ~ /^(ba|z|da|k)?sh$/) shell = 1
-      else if (cmd ~ /^(python[0-9.]*|node|ruby|perl)$/) shell = 0
+      rcmd = w[i]; gsub(/[\047"]/, "", rcmd); sub(/.*\//, "", rcmd)
+      if (rcmd ~ /^(ba|z|da|k)?sh$/) shell = 1
+      else if (rcmd ~ /^(python[0-9.]*|node|ruby|perl)$/) shell = 0
       else return "data"
+      sflag = syn = endopts = 0
       for (i++; i <= nw; i++) {
         a = w[i]
-        if (a == "") continue
-        if (a == "-") break
+        if (a == "" || a ~ /^\037/) continue
         if (a ~ /^[0-9&]*[<>]+[&|]?$/) { i++; continue }
         if (a ~ /^[0-9&]*[<>]/) continue
-        if (shell) {
-          if (a ~ /^[-+][oO]$/) { i++; continue }
-          if (a ~ /^-[A-Za-z]*c/) return "data"
-          if (a ~ /^-[A-Za-z]*s/) break
-        } else if (a ~ /^(-c|-m|-e|-p|--eval|--print)$/) return "data"
-        if (a ~ /^[-+]/) continue
+        if (!endopts && a ~ /^[-+]/) {
+          if (shell) {
+            # For a shell, - and -- both end the options.
+            if (a == "-" || a == "--") endopts = 1
+            else if (a ~ /^[-+][oO]$/ || a == "--rcfile" || a == "--init-file") i++
+            else if (a ~ /^--/) { }
+            else if (a ~ /^-[A-Za-z]*c/) return "data"
+            else {
+              if (a ~ /^-[A-Za-z]*n/) syn = 1
+              if (a ~ /^-[A-Za-z]*s/) sflag = 1
+            }
+          } else {
+            # For an interpreter, a lone - is the script on stdin.
+            if (a == "-") break
+            if (a ~ /^(-c|-m|-e|-p|--eval|--print)$/) return "data"
+            if (a ~ /^(-W|-X|-r|-I|--require|--import)$/) i++
+          }
+          continue
+        }
+        # An operand is the script file, unless bash -s reads stdin anyway.
+        if (shell && sflag) break
         return "data"
       }
+      # bash -n only parses its input.
+      if (syn) return "data"
       return shell ? "code" : "script"
+    }
+    # How a heredoc body is used, from the command text before << (pre) and
+    # the rest of the line (post). Piped on from cat or tee, it is what the
+    # next command reads.
+    function kind(pre, post,   k) {
+      sub(/.*[;&|(`]/, "", pre)
+      k = reader(pre)
+      if (k == "data" && rcmd ~ /^(cat|tee)$/ && match(post, /[^|]\|[^;&|)]*/))
+        k = reader(substr(post, RSTART + 2, RLENGTH - 2))
+      return k
     }
     # Note a heredoc whose << is at position k of line.
     function heredoc(pre, line, k,   rest, tab) {
@@ -283,7 +436,30 @@ blank_quoted_separators() {
         pend = substr(rest, 1, RLENGTH); pendq = (pend ~ /[\047"]/); pendtab = tab
         gsub(/[\047"]/, "", pend)
         pendkind = kind(pre, substr(line, k))
+        pendidx = ++hdn
       }
+    }
+    # A word that tells the main loop which heredoc (by index) this simple
+    # command reads.
+    function marker() { return pend != "" ? "\037" pendidx " " : "" }
+    # Scan the code in a heredoc body on its own, without the quote state around
+    # the heredoc, and add it to res on lines of its own.
+    function emit(body,   sst, sbuf, scode) {
+      if (body != "") {
+        sst = st; sbuf = buf; scode = code; st = ""; buf = ""
+        body = scan(body)
+        if (st != "") body = body ((code || runs(buf)) ? buf : blank(buf))
+        st = sst; buf = sbuf; code = scode; pend = ""
+      }
+      res = res "\n" body "\n"
+    }
+    # The end of the current heredoc: check the $(...) of an unquoted data
+    # or script body as a whole, since one can span lines, and hand the body
+    # to the main loop.
+    function endhd() {
+      if (hdkind != "code" && !hdq) emit(substs(hdbody))
+      files = files hdidx "\037" hdbody "\035"
+      hd = ""
     }
     # One line of code, with quote state (st, buf, code) carried across lines.
     function scan(line,   out, n, k, c) {
@@ -297,7 +473,7 @@ blank_quoted_separators() {
         if (st == "dq") {
           if (c == "\\") { buf = buf c substr(line, k + 1, 1); k++; continue }
           if (c == "\"") { out = out ((code || runs(buf)) ? buf : blank(buf)) c; buf = ""; st = ""; continue }
-          if (c == "<" && substr(line, k, 2) == "<<" && substr(line, k, 3) != "<<<" && insubst(buf)) heredoc(buf, line, k)
+          if (c == "<" && substr(line, k, 2) == "<<" && substr(line, k, 3) != "<<<" && insubst(buf)) { heredoc(buf, line, k); buf = buf marker() }
           buf = buf c
           continue
         }
@@ -309,46 +485,42 @@ blank_quoted_separators() {
           continue
         }
         if (c == "#" && (k == 1 || substr(line, k - 1, 1) ~ /[ \t;&|(]/)) { out = out blank(substr(line, k)); break }
-        if (c == "<" && substr(line, k, 2) == "<<" && substr(line, k, 3) != "<<<") heredoc(out, line, k)
+        if (c == "<" && substr(line, k, 2) == "<<" && substr(line, k, 3) != "<<<") { heredoc(out, line, k); out = out marker() }
         out = out c
       }
       return out
     }
-    BEGIN { st = ""; buf = ""; res = ""; hd = ""; pend = ""; bodies = "" }
+    BEGIN { st = ""; buf = ""; res = ""; hd = ""; pend = ""; bodies = ""; files = ""; hdn = 0 }
     {
       line = $0
       if (hd != "") {
         t = line
         if (hdtab) sub(/^\t+/, "", t)
-        if (t == hd) { hd = ""; next }
+        if (t == hd) { endhd(); next }
+        hdbody = hdbody line "\n"
         if (hdkind == "script") bodies = bodies line "\n"
-        if (hdkind == "code") body = line
-        else if (!hdq) body = substs(line)
-        else body = ""
-        if (body != "") {
-          # Scan the body on its own, without the quote state around the heredoc.
-          sst = st; sbuf = buf; scode = code; st = ""; buf = ""
-          body = scan(body)
-          if (st != "") body = body ((code || runs(buf)) ? buf : blank(buf))
-          st = sst; buf = sbuf; code = scode; pend = ""
-        }
-        # On a line of its own, so it never extends an unfinished line.
-        res = res "\n" body "\n"
+        if (hdkind == "code") emit(line)
         next
       }
       out = scan(line)
       if (st != "") { res = res out; buf = buf "\n" }
       else res = res out "\n"
-      if (pend != "") { hd = pend; hdq = pendq; hdtab = pendtab; hdkind = pendkind; pend = "" }
+      if (pend != "") { hd = pend; hdq = pendq; hdtab = pendtab; hdkind = pendkind; hdidx = pendidx; hdbody = ""; pend = "" }
     }
-    END { if (st != "") res = res buf; printf "%s\036%s", res, bodies }'
+    END {
+      if (hd != "") endhd()
+      if (st != "") res = res buf
+      printf "%s\036%s\036%s", res, bodies, files
+    }'
 }
 
-# Split W[$1..] into ARGS, leaving out redirections, and set STDIN_FILE to
-# the file a `< file` redirection reads, if any.
+# Split W[$1..] into ARGS, leaving out redirections. Set STDIN_FILE to the
+# file a `< file` redirection reads, if any, and OUT_FILES to the files a
+# `>` or `>>` redirection writes.
 split_redirects() {
   local k=$1 a
   ARGS=()
+  OUT_FILES=()
   STDIN_FILE=
   while [ "$k" -lt "$n" ]; do
     a=${W[$k]}
@@ -357,21 +529,48 @@ split_redirects() {
       '<<'*) ;;
       '<') k=$((k + 1)); STDIN_FILE=${W[$k]:-} ;;
       '<'*) STDIN_FILE=${a#<} ;;
-      '>' | '>>' | '>|' | '&>' | '&>>' | [0-9]'>' | [0-9]'>>' | [0-9]'<') k=$((k + 1)) ;;
-      '>'* | '&>'* | [0-9]'>'* | [0-9]'<'*) ;;
+      [0-9]'<') k=$((k + 1)) ;;
+      [0-9]'<'*) ;;
+      '>&'* | [0-9]'>&'*) ;;
+      '>' | '>>' | '>|' | '&>' | '&>>' | [0-9]'>' | [0-9]'>>')
+        k=$((k + 1))
+        [ "$k" -ge "$n" ] || OUT_FILES+=("${W[$k]}")
+        ;;
+      '>>'* | '&>>'* | [0-9]'>>'*) OUT_FILES+=("${a#*>>}") ;;
+      '>'* | '&>'* | [0-9]'>'*) OUT_FILES+=("${a#*>}") ;;
       *) ARGS+=("$a") ;;
     esac
     k=$((k + 1))
   done
 }
 
+# res \036 stdin scripts \036 heredoc bodies (index \037 body \035 ...)
 SCANNED=$(printf '%s\n' "$COMMAND" | blank_quoted_separators)
+HEREDOCS=${SCANNED##*$'\036'}
+SCANNED=${SCANNED%$'\036'*}
 STDIN_SCRIPTS=${SCANNED#*$'\036'}
 SCANNED=${SCANNED%%$'\036'*}
+while :; do
+  case "$HEREDOCS" in *$'\035'*) ;; *) break ;; esac
+  rec=${HEREDOCS%%$'\035'*}
+  HEREDOCS=${HEREDOCS#*$'\035'}
+  HD_BODY[${rec%%$'\037'*}]=${rec#*$'\037'}
+done
 
 while IFS= read -r seg; do
   W=()
   read -ra W <<<"$seg" || true
+  # Take out the heredoc marker, if any (see marker() above).
+  hd=
+  case "$seg" in
+    *$'\037'*)
+      V=()
+      for w in ${W[@]+"${W[@]}"}; do
+        case "$w" in $'\037'*) hd=${w#$'\037'} ;; *) V+=("$w") ;; esac
+      done
+      W=(${V[@]+"${V[@]}"})
+      ;;
+  esac
   n=${#W[@]}
   i=0
   # Skip env assignments, shell keywords and transparent wrappers.
@@ -397,6 +596,9 @@ while IFS= read -r seg; do
     \"* | \'* | '~/'*) cmd=$(unquote "$cmd") ;;
   esac
   i=$((i + 1))
+  # The files this writes, in case a later command in this one runs them.
+  split_redirects "$i"
+  note_writes "${cmd##*/}" "$hd"
 
   case "${cmd##*/}" in
     gh)
@@ -426,7 +628,8 @@ while IFS= read -r seg; do
           --) j=$((j + 1)); break ;;
           -o | +o | -O | +O | --rcfile | --init-file) j=$((j + 2)); continue ;;
           --*) ;;
-          -) from_stdin=1; break ;;
+          # Like --, a lone - ends the options: `bash - x.sh` runs x.sh.
+          -) j=$((j + 1)); break ;;
           -* | +*)
             case "$a" in -*n*) syntax_only=1 ;; esac
             case "$a" in -*c*) inline=1 ;; esac
