@@ -32,6 +32,7 @@ fixture tool.py 'import subprocess' "subprocess.run([\"$G\", \"api\", \"user\"],
 fixture clean.py 'print("hello")'
 fixture sub/calls-gh.sh '#!/bin/bash' "$G pr list"
 fixture sub/clean.sh '#!/bin/bash' 'echo clean'
+fixture sub/tool.py 'print("clean")'
 fixture plugins/x/hooks/foo.sh '#!/bin/bash' 'cat >/dev/null' 'exit 0'
 fixture plugins/x/hooks/tests/foo.test.sh '#!/bin/bash' 'echo "{}" | bash "$(dirname "$0")/../foo.sh"' 'echo "1 passed, 0 failed"'
 fixture skills/jira-ticket-lifecycle/SKILL.md '# Jira ticket lifecycle'
@@ -126,7 +127,178 @@ b'; bash calls-gh.sh"
 # --- known wrappers and unreadable scripts
 expect "gh-stack submit"       deny  "gh-stack submit"
 expect "missing script"        deny  "bash nope.sh"
-expect "variable path"         deny  'bash "$SCRIPT_DIR/run.sh"'
+
+# --- heredoc bodies are the reader's stdin, not commands
+expect "data heredoc, \$a/\$b"   allow "cat > /dev/null <<'EOF'
+report=\"\$report \$missing/\$live\"
+EOF"
+expect "unquoted data heredoc" allow "cat > /dev/null <<EOF
+report=\"\$report \$missing/\$live\"
+EOF"
+expect "commit msg heredoc"    allow "git commit -m \"\$(cat <<'EOF'
+fix(x): quieter output
+
+sub/calls-gh.sh no longer prints twice.
+EOF
+)\""
+expect "backtick in heredoc"   deny  "cat <<EOF
+\`./calls-gh.sh\`
+EOF"
+expect "bash reads heredoc"    deny  "bash <<'EOF'
+./calls-gh.sh
+EOF"
+expect "heredoc piped to sh"   deny  "cat <<'EOF' | sh
+./calls-gh.sh
+EOF"
+expect "bash -s heredoc args"  allow "bash -s calls-gh.sh <<'EOF'
+echo \"\$1\"
+EOF"
+
+# --- script paths built from variables
+expect "variable path"         allow 'bash "$SCRIPT_DIR/run.sh"'
+expect "for-loop variable"     allow 'for t in sub/*.sh; do bash $t; done'
+expect "TMPDIR python path"    allow 'python3 "$TMPDIR/x.py"'
+expect "assigned path"         deny  's=calls-gh.sh; bash "$s"'
+expect "exported dir"          deny  'export D=sub && bash "${D}/calls-gh.sh"'
+expect "assigned clean path"   allow 's=sub/clean.sh; bash $s'
+
+# --- a lone - means the script comes from stdin
+expect "python3 - \"\$f\" heredoc" allow "f=calls-gh.sh; python3 - \"\$f\" <<'EOF'
+import sys
+print(open(sys.argv[1]).read())
+EOF"
+expect "python3 - heredoc gh"  deny  "python3 - <<'EOF'
+import subprocess
+subprocess.run([\"$G\", \"api\", \"user\"])
+EOF"
+expect "python3 < gh script"   deny  "python3 < tool.py"
+expect "bash < gh script"      deny  "bash < calls-gh.sh"
+expect "bash - script"         deny  "bash - calls-gh.sh"
+expect "python3 -W x heredoc"  deny  "python3 -W ignore <<'EOF'
+import subprocess
+subprocess.run([\"$G\", \"api\", \"user\"])
+EOF"
+
+# --- readers that only parse or don't take the heredoc as code
+expect "bash -n heredoc"       allow "bash -n <<'EOF'
+./calls-gh.sh
+EOF"
+expect "bash -s -n heredoc"    allow "bash -s -n <<'EOF'
+./calls-gh.sh
+EOF"
+expect "piped to bash script"  allow "cat <<'EOF' | bash sub/clean.sh
+./calls-gh.sh
+EOF"
+expect "piped to python file"  allow "cat <<'EOF' | python3 clean.py
+subprocess.run([\"$G\", \"api\", \"user\"])
+EOF"
+expect "multi-line \$( in body" deny  "cat <<EOF
+\$(
+./calls-gh.sh
+)
+EOF"
+
+# --- assignments expand when they run, not when used
+expect "reassigned source var" allow 't=sub/clean.sh; s=$t; t=calls-gh.sh; bash "$s"'
+expect "self-extending var"    deny  's=.; s="$s/calls-gh.sh"; bash "$s"'
+
+# --- a script written earlier in the same command
+expect "new script, clean"     allow "cat > new.sh <<'EOF'
+echo hi
+EOF
+bash new.sh"
+expect "new script calls gh"   deny  "cat > new.sh <<'EOF'
+#!/bin/bash
+$G api user
+EOF
+chmod +x new.sh && ./new.sh"
+expect "overwritten gh script" allow "cat > calls-gh.sh <<'EOF'
+echo hi
+EOF
+bash calls-gh.sh"
+expect "tee'd python script"   deny  "tee new.py >/dev/null <<'EOF'
+import subprocess
+subprocess.run([\"$G\", \"pr\", \"list\"])
+EOF
+python3 new.py"
+expect "written after cd"      deny  "cd sub && cat > new.sh <<'EOF'
+$G pr list
+EOF
+cd .. && bash sub/new.sh"
+expect "cp a gh script"        deny  "cp calls-gh.sh copy.sh && bash copy.sh"
+expect "cp a clean script"     allow "cp sub/clean.sh copy.sh && bash copy.sh"
+expect "cp into a new dir"     deny  "mkdir -p out && cp calls-gh.sh out/ && bash out/calls-gh.sh"
+expect "printf'd script"       allow "printf 'echo hi\\n' > gen.sh && bash gen.sh"
+expect "touched script"        allow "touch empty.sh && bash empty.sh"
+expect "touch a new gh script" deny  "cat > new.sh <<'EOF'
+$G pr list
+EOF
+touch new.sh && bash new.sh"
+expect "append to a gh script" deny  "cat >> calls-gh.sh <<'EOF'
+echo done
+EOF
+bash calls-gh.sh"
+expect "tee -a to a gh script" deny  "tee -a calls-gh.sh >/dev/null <<'EOF'
+echo done
+EOF
+bash calls-gh.sh"
+expect "append gh to new file" deny  "cat >> new.sh <<'EOF'
+$G pr list
+EOF
+bash new.sh"
+expect "append to clean script" allow "cat >> sub/clean.sh <<'EOF'
+echo done
+EOF
+bash sub/clean.sh"
+expect "copy, then source changes" deny "cp calls-gh.sh copy.sh && cat > calls-gh.sh <<'EOF'
+echo hi
+EOF
+bash copy.sh"
+expect "dir copy, then source changes" deny "cp -r sub copied && cat > sub/calls-gh.sh <<'EOF'
+echo hi
+EOF
+bash copied/calls-gh.sh"
+expect "cp -n over a gh script" deny "cp -n sub/clean.sh calls-gh.sh; bash calls-gh.sh"
+expect "cp -f over a gh script" allow "cp -f sub/clean.sh calls-gh.sh; bash calls-gh.sh"
+expect "ln -s over a gh script" deny "ln -s sub/clean.sh calls-gh.sh; bash calls-gh.sh"
+
+# --- what a shell heredoc body does stays in its child shell
+expect "heredoc shell's var"   deny  "s=calls-gh.sh; bash <<'EOF'
+s=sub/clean.sh
+EOF
+bash \"\$s\""
+expect "heredoc shell's cd"    deny  "bash <<'EOF'
+cd sub
+EOF
+python3 tool.py"
+expect "quote spans body lines" allow "bash <<'EOF'
+printf '%s\\n' 'message
+./calls-gh.sh
+end'
+EOF"
+expect "multi-line quoted text" allow "echo 'start
+./calls-gh.sh
+end'"
+expect "comment in shell body" allow "bash <<'EOF'
+# ./calls-gh.sh is not run here
+echo hi
+EOF"
+
+# --- the rest of the command decides who reads the heredoc
+expect "cat file ignores stdin" allow "cat sub/clean.sh <<'EOF' | bash
+./calls-gh.sh
+EOF"
+expect "cat - reads stdin"     deny  "cat - <<'EOF' | bash
+./calls-gh.sh
+EOF"
+expect "script after delimiter" allow "bash <<'EOF' sub/clean.sh
+./calls-gh.sh
+EOF"
+expect "-n after delimiter"    allow "bash <<'EOF' -n
+./calls-gh.sh
+EOF"
+expect "cp -r a gh dir"        deny  "cp -r sub copied && bash copied/calls-gh.sh"
+expect "cp -r a clean dir"     allow "cp -r sub copied && bash copied/clean.sh"
 
 # --- this repo's own test files mention gh but never call it at command position
 expect "this test file"        allow "bash $HERE/gh-token-export.test.sh"
