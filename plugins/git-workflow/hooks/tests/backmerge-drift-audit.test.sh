@@ -219,7 +219,7 @@ has "more drift after than before is flagged" '^  d\.txt: 3 .* 5 after  MORE DRI
 REAL_GIT=$(command -v git)
 mkdir -p "$TMP/badgit"
 # shellcheck disable=SC2016 # expanded by the stub, not here
-printf '#!/bin/bash\n[ "$1" = merge-tree ] && { echo "fatal: simulated" >&2; exit 128; }\nexec "%s" "$@"\n' "$REAL_GIT" > "$TMP/badgit/git"
+printf '#!/bin/bash\ncase " $* " in *" merge-tree "*) echo "fatal: simulated" >&2; exit 128 ;; esac\nexec "%s" "$@"\n' "$REAL_GIT" > "$TMP/badgit/git"
 chmod +x "$TMP/badgit/git"
 PATH="$TMP/badgit:$PATH" audit --default main --since "10 years ago"
 exits "merge-tree failure: exits 1" 1
@@ -241,10 +241,15 @@ put x.txt 'x one\nx two\n'
 put y.txt 'y one original\n'
 put z.txt 'keep this line\nremove this buggy line\n'
 put w.txt 'whole file to delete\n'
+put 'two  spaces.txt' 'spaced one original\n'
+put '[ab].txt' 'bracket one original\n'
+put a.txt 'decoy a original\n'
 git add . && git commit -q -m "chore: initial"
 git branch dev
 put x.txt 'x one\nx two fixed in release\n'
 put y.txt 'y one fixed in release\n'
+put 'two  spaces.txt' 'spaced one fixed in release\n'
+put '[ab].txt' 'bracket one fixed in release\n'
 git commit -q -am "fix(TT-50): fix x and y"
 put x.txt 'x one\nx two reworked later\n'
 git commit -q -am "fix(TT-51): rework x"
@@ -258,6 +263,15 @@ exits "lost fixes: exits 2" 2
 has "a partly reworked commit still reports its other file" '1/1 lines missing  y\.txt'
 has "a removed line that came back is reported" '1/1 removed lines still present  z\.txt$'
 has "a deleted file that came back is reported" 'removed lines still present  w\.txt \(file deleted on main\)'
+has "a file name with two spaces stays whole" '1/1 lines missing  two  spaces\.txt$'
+has "a file name with glob characters stays whole" '1/1 lines missing  \[ab\]\.txt$'
+lacks "glob characters don't match other files" '  a\.txt$'
+
+# The same audit from a subdirectory of the repo.
+mkdir -p sub && cd sub || exit 1
+audit --merged dev --default main --since "10 years ago"
+has "from a subdirectory: still reports the lost fix" '1/1 lines missing  y\.txt'
+cd .. || exit 1
 
 echo "backmerge-drift-audit: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

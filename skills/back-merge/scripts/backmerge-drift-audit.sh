@@ -112,6 +112,11 @@ git rev-parse --verify -q "$DEFAULT^{commit}" >/dev/null || { echo "not a commit
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
+# Every path given to git below is a real file name relative to the repo's
+# top, never a pattern: a name like "[ab].txt" must not match a.txt.
+cd "$(git rev-parse --show-toplevel)" || exit 1
+export GIT_LITERAL_PATHSPECS=1
+
 # Index files holding each tree, so `git apply --cached --check` can test a
 # patch against either one without touching the working tree.
 GIT_INDEX_FILE="$TMP/idx-default" git read-tree "$DEFAULT" || exit 1
@@ -146,7 +151,8 @@ for c in $(git rev-list --no-merges --since="$SINCE" "$DEFAULT"); do
   # branch's file but still in the merged one. Report the commit only if
   # there are any.
   report=""
-  for f in $(git diff --name-only "$c^" "$c"); do
+  # NUL-separated on fd 3, so names with spaces or glob characters stay whole.
+  while IFS= read -r -d '' f <&3; do
     # Same file on both sides: nothing of this commit can be missing from it.
     git diff --quiet "$DEFAULT" "$MERGED" -- "$f" && continue
     trimmed "$DEFAULT" "$f" > "$TMP/default-lines"
@@ -188,7 +194,7 @@ for c in $(git rev-list --no-merges --since="$SINCE" "$DEFAULT"); do
       e.g. $(printf '%s' "$back_sample" | cut -c1-100)
 "
     fi
-  done
+  done 3< <(git diff -z --name-only "$c^" "$c")
   if [ -n "$report" ]; then
     findings=$((findings + 1))
     git show -s --format='  %h %ad %s' --date=short "$c"
@@ -200,7 +206,7 @@ done
 echo
 git log "$DEFAULT" --format='%s%n%b' | keys > "$TMP/shipped"
 git log "$DEFAULT..$MERGED" --format='%s%n%b' | keys > "$TMP/preprod-keys"
-git diff --name-only "$DEFAULT" "$MERGED" > "$TMP/files"
+git -c core.quotePath=false diff --name-only "$DEFAULT" "$MERGED" > "$TMP/files"
 
 if [ ! -s "$TMP/shipped" ] || [ ! -s "$TMP/preprod-keys" ]; then
   if [ -s "$TMP/shipped" ]; then side="$DEFAULT..$MERGED"; else side="$DEFAULT"; fi
@@ -266,7 +272,7 @@ else
   echo "== Conflicted files in $(git rev-parse --short "$MERGE"), against $DEFAULT's side ($(git rev-parse --short "$D"))"
   # Exit 0 is a clean merge and 1 a conflicted one; anything else is an error
   # (an old git, a missing object), not "no conflicts".
-  git merge-tree --write-tree --name-only --no-messages "$P" "$D" > "$TMP/merge-tree" 2> "$TMP/merge-tree.err"
+  git -c core.quotePath=false merge-tree --write-tree --name-only --no-messages "$P" "$D" > "$TMP/merge-tree" 2> "$TMP/merge-tree.err"
   status=$?
   if [ "$status" -gt 1 ]; then
     echo "git merge-tree failed (exit $status), so the conflicted files are unknown:" >&2
