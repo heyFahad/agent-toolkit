@@ -73,20 +73,23 @@ lacks "does not call app.txt unexplained: an unreleased ticket touched it" '^  \
 lacks "reads ticket keys from merge subjects too" 'widget\.txt'
 has "skips report 3 when the tip isn't a back-merge" "Conflicted files: skipped"
 
-# With no --default, it finds the default branch from origin/HEAD...
+# With no --default, it asks gh for the default branch, even when a stale
+# origin/HEAD still points at the old one...
 git update-ref refs/remotes/origin/main main
+git update-ref refs/remotes/origin/old-main main~1
+git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/old-main
+STUB_GH_DEFAULT=main audit --merged dev --since "10 years ago"
+exits "detects the default branch from gh" 2
+has "prefers gh over a stale origin/HEAD" 'between origin/main and dev'
+
+# ...falls back to origin/HEAD when gh can't tell...
 git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
 audit --merged dev --since "10 years ago"
-exits "detects the default branch from origin/HEAD" 2
-has "names the detected default branch" 'between origin/main and dev'
-
-# ...or from gh when origin/HEAD isn't set...
-git symbolic-ref --delete refs/remotes/origin/HEAD
-STUB_GH_DEFAULT=main audit --merged dev --since "10 years ago"
-exits "falls back to gh: exits 2" 2
-has "falls back to gh for the default branch" 'between origin/main and dev'
+exits "falls back to origin/HEAD: exits 2" 2
+has "falls back to origin/HEAD for the default branch" 'between origin/main and dev'
 
 # ...and fails clearly when neither can tell.
+git symbolic-ref --delete refs/remotes/origin/HEAD
 audit --merged dev --since "10 years ago"
 exits "exits 1 when the default branch can't be found" 1
 has "says to pass --default" "can't tell the default branch"

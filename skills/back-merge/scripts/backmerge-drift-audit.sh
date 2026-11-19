@@ -14,8 +14,8 @@
 #              on --merged's first-parent line, if its second parent is on
 #              the default branch; failing that, the same on the branch the
 #              newest merge brought in, as when the back-merge PR has merged)
-#   --default  the default branch as released (default: origin/HEAD, or
-#              origin/<the default branch gh reports>)
+#   --default  the default branch as released (default: origin/<the default
+#              branch gh reports>, or origin/HEAD when gh can't tell)
 #   --since    how far back to look for released commits (default: 90 days ago)
 #   --ticket   extended regex for ticket keys in commit messages
 #              (default: [A-Z][A-Z0-9]+-[0-9]+, Jira-style keys)
@@ -84,19 +84,20 @@ while [ $# -gt 0 ]; do
 done
 
 if [ -z "$DEFAULT" ]; then
-  DEFAULT=$(git symbolic-ref --short -q refs/remotes/origin/HEAD 2>/dev/null || true)
-  if [ -z "$DEFAULT" ]; then
-    name=$(gh repo view --json defaultBranchRef -q .defaultBranchRef.name 2>/dev/null || true)
-    if [ -n "$name" ]; then
-      if git rev-parse --verify -q "refs/remotes/origin/$name" >/dev/null; then
-        DEFAULT="origin/$name"
-      else
-        DEFAULT=$name
-      fi
+  # GitHub's current answer first, as the preprod-pr-check hook does:
+  # origin/HEAD is a local copy that goes stale when the branch is renamed.
+  name=$(gh repo view --json defaultBranchRef -q .defaultBranchRef.name 2>/dev/null || true)
+  if [ -n "$name" ]; then
+    if git rev-parse --verify -q "refs/remotes/origin/$name" >/dev/null; then
+      DEFAULT="origin/$name"
+    else
+      DEFAULT=$name
     fi
+  else
+    DEFAULT=$(git symbolic-ref --short -q refs/remotes/origin/HEAD 2>/dev/null || true)
   fi
   if [ -z "$DEFAULT" ]; then
-    echo "can't tell the default branch: origin/HEAD isn't set and gh couldn't report it." >&2
+    echo "can't tell the default branch: gh couldn't report it and origin/HEAD isn't set." >&2
     echo "Pass --default <ref>, or run: git remote set-head origin --auto" >&2
     exit 1
   fi

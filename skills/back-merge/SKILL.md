@@ -97,7 +97,7 @@ GH_TOKEN=$(gh auth token) bash <this skill>/scripts/backmerge-drift-audit.sh \
 
 How far back `--since` reaches matters. Report 1 below checks `main`'s commits one by one, so it only finds fixes lost inside that window (90 days if you leave it out). Reports 2 and 3 have no window. The first audit on a repo, or the first after a long gap, needs a long window: back to when the pre-prod branch was created, or `--since "2 years ago"`. It runs slower, but a fix lost long ago, in a file that unreleased work also touches, isn't found by anything else. Once a back-merge has been audited and reconciled, later audits only need to reach back to it.
 
-Without `--default` it audits against `origin/HEAD`, or the default branch `gh` reports, and stops with an error if neither works. It prints three reports:
+Without `--default` it audits against the default branch `gh` reports, or `origin/HEAD` when `gh` can't tell, and stops with an error if neither works. It prints three reports:
 
 1. **Released changes missing from the merged state**: commits on `main` whose change is still on `main` but not in the merge: lines they added that are missing, and lines they removed (or files they deleted) that are back. Each commit is checked line by line, so one whose change was later edited on `main` still counts for the parts that are left.
 2. **Differences no unreleased ticket explains**: files that differ, where no commit touching them on the pre-prod side names a ticket `main` hasn't shipped. The pre-prod side's commits include the merges that brought work in, since a ticket's key is sometimes only in its branch name or PR title.
