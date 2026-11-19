@@ -9,7 +9,7 @@ metadata:
 
 The goal is not only a merge commit. When the back-merge lands, the pre-prod branch should be **the default branch plus unreleased work, and nothing else**. QA tests the pre-prod branch, so every difference that isn't unreleased work means QA tests something production doesn't run.
 
-Below, `<pre-prod>` is the branch `branching-pr-workflow`'s `scripts/resolve-preprod-branch.sh` prints (never assume a name), `main` is the repo's default branch, and `<release>` is the release name or date (e.g. `2026.11.18`).
+Below, `<pre-prod>` is the branch `branching-pr-workflow`'s `scripts/resolve-preprod-branch.sh` prints (never assume a name), `main` is the repo's default branch, and `<release>` is the release name or date (e.g. `2025.01.15`).
 
 ## Why the two drift apart
 
@@ -110,10 +110,10 @@ Don't overwrite the pre-prod branch with `main` wholesale to "make them equal". 
 
 ## 5. Verify against the pre-prod baseline
 
-A repo's checks may already fail on the pre-prod branch, so compare instead of expecting a clean run:
+A repo's checks may already fail on the pre-prod branch, so compare instead of expecting a clean run. One example, for a TypeScript repo's type check; the same before-and-after comparison works for any linter or checker whose output lists one problem per line:
 
 ```bash
-# Example for a TypeScript repo: list errors with and without the reconciliation.
+# List errors with and without the reconciliation, ignoring line numbers.
 npx tsc --noEmit | grep 'error TS' | sed -E 's/\([0-9]+,[0-9]+\)//' | sort > /tmp/branch.txt
 git stash; npx tsc --noEmit | grep 'error TS' | sed -E 's/\([0-9]+,[0-9]+\)//' | sort > /tmp/base.txt; git stash pop
 comm -13 /tmp/base.txt /tmp/branch.txt   # new errors: each one needs a look
