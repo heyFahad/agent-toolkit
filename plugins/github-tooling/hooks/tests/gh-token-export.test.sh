@@ -32,6 +32,7 @@ fixture tool.py 'import subprocess' "subprocess.run([\"$G\", \"api\", \"user\"],
 fixture clean.py 'print("hello")'
 fixture sub/calls-gh.sh '#!/bin/bash' "$G pr list"
 fixture sub/clean.sh '#!/bin/bash' 'echo clean'
+fixture sub/tool.py 'print("clean")'
 fixture plugins/x/hooks/foo.sh '#!/bin/bash' 'cat >/dev/null' 'exit 0'
 fixture plugins/x/hooks/tests/foo.test.sh '#!/bin/bash' 'echo "{}" | bash "$(dirname "$0")/../foo.sh"' 'echo "1 passed, 0 failed"'
 fixture skills/jira-ticket-lifecycle/SKILL.md '# Jira ticket lifecycle'
@@ -257,6 +258,45 @@ expect "dir copy, then source changes" deny "cp -r sub copied && cat > sub/calls
 echo hi
 EOF
 bash copied/calls-gh.sh"
+expect "cp -n over a gh script" deny "cp -n sub/clean.sh calls-gh.sh; bash calls-gh.sh"
+expect "cp -f over a gh script" allow "cp -f sub/clean.sh calls-gh.sh; bash calls-gh.sh"
+expect "ln -s over a gh script" deny "ln -s sub/clean.sh calls-gh.sh; bash calls-gh.sh"
+
+# --- what a shell heredoc body does stays in its child shell
+expect "heredoc shell's var"   deny  "s=calls-gh.sh; bash <<'EOF'
+s=sub/clean.sh
+EOF
+bash \"\$s\""
+expect "heredoc shell's cd"    deny  "bash <<'EOF'
+cd sub
+EOF
+python3 tool.py"
+expect "quote spans body lines" allow "bash <<'EOF'
+printf '%s\\n' 'message
+./calls-gh.sh
+end'
+EOF"
+expect "multi-line quoted text" allow "echo 'start
+./calls-gh.sh
+end'"
+expect "comment in shell body" allow "bash <<'EOF'
+# ./calls-gh.sh is not run here
+echo hi
+EOF"
+
+# --- the rest of the command decides who reads the heredoc
+expect "cat file ignores stdin" allow "cat sub/clean.sh <<'EOF' | bash
+./calls-gh.sh
+EOF"
+expect "cat - reads stdin"     deny  "cat - <<'EOF' | bash
+./calls-gh.sh
+EOF"
+expect "script after delimiter" allow "bash <<'EOF' sub/clean.sh
+./calls-gh.sh
+EOF"
+expect "-n after delimiter"    allow "bash <<'EOF' -n
+./calls-gh.sh
+EOF"
 expect "cp -r a gh dir"        deny  "cp -r sub copied && bash copied/calls-gh.sh"
 expect "cp -r a clean dir"     allow "cp -r sub copied && bash copied/clean.sh"
 

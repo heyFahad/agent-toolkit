@@ -19,7 +19,8 @@
 #   - A heredoc body is the reader's stdin, not part of the command. It is
 #     checked as code only when the reader runs it: `bash <<EOF`, `sh -s
 #     <<EOF` or `cat <<EOF | bash` run it as shell, so its lines are checked
-#     like the command's own; `python3 <<EOF` or `python3 - "$f" <<EOF` run
+#     like the command's own (in a child shell: its assignments and `cd`
+#     do not carry over); `python3 <<EOF` or `python3 - "$f" <<EOF` run
 #     it as a script, so it is checked like a Python/Node/... script file.
 #     For any other reader (cat, tee, git commit -F-, `bash x.sh`, `bash -n`)
 #     the body is data and skipped, except that with an unquoted delimiter
@@ -30,7 +31,8 @@
 #     body written by `cat > f` or `tee f`, or the source of `cp`/`mv`/
 #     `install`/`ln` (for a copied directory, the same file inside the
 #     source) as it was when copied. An append (`>>`, `tee -a`, `touch`)
-#     checks what the file held before as well as what was added. A file
+#     checks what the file held before as well as what was added, and so
+#     does a copy that may be skipped (`cp -n`, `ln` without -f). A file
 #     replaced some other way (`printf ... > f`, `sed ... > f`) is let
 #     through unchecked, since its content can't be known before the
 #     command runs.
@@ -188,7 +190,7 @@ remember_write() {
   local a src=""
   a=$(abspath "$1")
   case "$a" in '' | /dev/*) return 0 ;; esac
-  if [ "$2" = alias ]; then
+  if [ "$2" = alias ] || [ "$2" = either ]; then
     src=$(abspath "$3")
     # A source path this hook can't resolve leaves the copy unknown too.
     [ -n "$src" ] || { remember_write "$1" unknown ""; return 0; }
@@ -247,11 +249,23 @@ note_writes() {
       done
       ;;
     cp | mv | install | ln)
+      # A copy that may be skipped (cp -n/-u/-i, ln without -f) leaves the
+      # destination either as it was or as the source.
+      how='alias'
+      [ "$name" != ln ] || how=either
       k=0 m=${#ARGS[@]}
       while [ "$k" -lt "$m" ]; do
         case "${ARGS[$k]}" in
           -m | -o | -g | -S) k=$((k + 1)) ;;
-          -*) ;;
+          --no-clobber | --update* | --interactive) how=either ;;
+          --force) [ "$name" != ln ] || how='alias' ;;
+          --*) ;;
+          -*)
+            case "$name:${ARGS[$k]}" in
+              cp:-*[nui]* | mv:-*[nui]*) how=either ;;
+              ln:-*f*) how='alias' ;;
+            esac
+            ;;
           *) files+=("${ARGS[$k]}") ;;
         esac
         k=$((k + 1))
@@ -264,7 +278,7 @@ note_writes() {
           if [ "$m" -gt 2 ] || [[ $dest == */ ]] || [ -d "$(abspath "$dest")" ]; then
             d="${dest%/}/$(basename -- "$(unquote "${files[$k]}")")"
           fi
-          remember_write "$d" alias "${files[$k]}"
+          remember_write "$d" "$how" "${files[$k]}"
         done
       fi
       ;;
@@ -287,8 +301,10 @@ check_script() {
   for ((k = limit - 1; k >= 0; k--)); do
     w=${WR_PATHS[$k]}
     [ "$w" != "$a" ] || break
-    if [ "${WR_KINDS[$k]}" = alias ] && [[ $a == "$w"/* ]]; then
-      # Inside a copied directory: the same file in the source, as it was.
+    if [[ ${WR_KINDS[$k]} == alias || ${WR_KINDS[$k]} == either ]] && [[ $a == "$w"/* ]]; then
+      # Inside a copied directory: the same file in the source, as it was,
+      # and what was there before if the copy may have been skipped.
+      [ "${WR_KINDS[$k]}" = alias ] || check_script "$a" "$kind" "$shown" "$k" 1
       check_script "${WR_DATA[$k]}${a#"$w"}" "$kind" "$shown" "$k" "$optional"
       return 0
     fi
@@ -298,6 +314,11 @@ check_script() {
       body) check_text "$shown" "$kind" "$p" "${WR_DATA[$k]}" ;;
       # A copy holds what its source held when it was copied.
       alias) check_script "${WR_DATA[$k]}" "$kind" "$shown" "$k" "$optional" ;;
+      # A copy that may have been skipped: what was there, and the source.
+      either)
+        check_script "$a" "$kind" "$shown" "$k" 1
+        check_script "${WR_DATA[$k]}" "$kind" "$shown" "$k" "$optional"
+        ;;
       # Appended to: what the file held before, then what was added.
       append)
         check_script "$a" "$kind" "$shown" "$k" 1
@@ -387,7 +408,7 @@ strip_shell() {
 # checked as a script.
 blank_quoted_separators() {
   awk '
-    function blank(s) { gsub(/[;&|()`]/, " ", s); return s }
+    function blank(s) { gsub(/[;&|()`\n]/, " ", s); return s }
     function runs(s) { gsub(/\\./, "", s); return s ~ /\$\(|`/ }
     # Inside an unclosed $( ... in a double-quoted string.
     function insubst(s,   o, c) {
@@ -466,12 +487,27 @@ blank_quoted_separators() {
     function kind(pre, post,   k) {
       sub(/.*[;&|(`]/, "", pre)
       k = reader(pre)
-      if (k == "data" && rcmd ~ /^(cat|tee)$/ && match(post, /[^|]\|[^;&|)]*/))
+      if (k == "data" && (rcmd == "tee" || (rcmd == "cat" && catstdin(pre))) && match(post, /[^|]\|[^;&|)]*/))
         k = reader(substr(post, RSTART + 2, RLENGTH - 2))
       return k
     }
+    # Whether the cat in s reads its stdin: with no file operand, or with -.
+    function catstdin(s,   w, nw, i, files) {
+      nw = split(s, w, /[ \t\n]+/)
+      for (i = 1; i <= nw && w[i] !~ /^([^ ]*\/)?cat$/; i++) ;
+      files = 0
+      for (i++; i <= nw; i++) {
+        if (w[i] == "" || w[i] ~ /^\037/) continue
+        if (w[i] ~ /^[0-9&]*[<>]+[&|]?$/) { i++; continue }
+        if (w[i] ~ /^[0-9&]*[<>]/) continue
+        if (w[i] == "-") return 1
+        if (w[i] ~ /^-/) continue
+        files = 1
+      }
+      return !files
+    }
     # Note a heredoc whose << is at position k of line.
-    function heredoc(pre, line, k,   rest, tab) {
+    function heredoc(pre, line, k,   rest, tab, tail) {
       rest = substr(line, k + 2)
       tab = (substr(rest, 1, 1) == "-")
       if (tab) rest = substr(rest, 2)
@@ -479,7 +515,11 @@ blank_quoted_separators() {
       if (match(rest, /^[\047"]?[A-Za-z0-9_.-]+[\047"]?/)) {
         pend = substr(rest, 1, RLENGTH); pendq = (pend ~ /[\047"]/); pendtab = tab
         gsub(/[\047"]/, "", pend)
-        pendkind = kind(pre, substr(line, k))
+        # Words after the delimiter belong to the same command
+        # (bash <<EOF x.sh runs x.sh, not the body).
+        tail = substr(rest, RLENGTH + 1)
+        sub(/[;&|)].*/, "", tail)
+        pendkind = kind(pre " " tail, substr(line, k))
         pendidx = ++hdn
       }
     }
@@ -502,11 +542,15 @@ blank_quoted_separators() {
     # to the main loop.
     function endhd() {
       if (hdkind != "code" && !hdq) emit(substs(hdbody))
+      # A shell body runs in a child shell: as a whole, so quotes can span
+      # lines, and between scope markers, so its assignments and cd do not
+      # outlive it.
+      if (hdkind == "code") { res = res "\n\034push\n"; emit(hdbody); res = res "\034pop\n" }
       files = files hdidx "\037" hdbody "\035"
       hd = ""
     }
     # One line of code, with quote state (st, buf, code) carried across lines.
-    function scan(line,   out, n, k, c) {
+    function scan(line,   out, n, k, c, j) {
       out = ""; n = length(line)
       for (k = 1; k <= n; k++) {
         c = substr(line, k, 1)
@@ -523,12 +567,18 @@ blank_quoted_separators() {
         }
         if (c == "\\") { out = out c substr(line, k + 1, 1); k++; continue }
         if (c == "\047" || c == "\"") {
-          code = (out ~ /(^|[ \t;&|(\/])(ba|z|da|k)?sh([ \t]+-[A-Za-z]+)*[ \t]+-[A-Za-z]*c[ \t]+$/ || out ~ /(^|[ \t;&|(])eval[ \t]+$/)
+          code = (out ~ /(^|[ \t\n;&|(\/])(ba|z|da|k)?sh([ \t]+-[A-Za-z]+)*[ \t]+-[A-Za-z]*c[ \t]+$/ || out ~ /(^|[ \t\n;&|(])eval[ \t]+$/)
           st = (c == "\047") ? "sq" : "dq"
           out = out c; buf = ""
           continue
         }
-        if (c == "#" && (k == 1 || substr(line, k - 1, 1) ~ /[ \t;&|(]/)) { out = out blank(substr(line, k)); break }
+        if (c == "#" && (k == 1 || substr(line, k - 1, 1) ~ /[ \t\n;&|(]/)) {
+          # A comment runs to the end of its line (a heredoc body has several).
+          j = index(substr(line, k), "\n")
+          if (j == 0) { out = out blank(substr(line, k)); break }
+          out = out blank(substr(line, k, j - 1)); k += j - 2
+          continue
+        }
         if (c == "<" && substr(line, k, 2) == "<<" && substr(line, k, 3) != "<<<") { heredoc(out, line, k); out = out marker() }
         out = out c
       }
@@ -543,7 +593,6 @@ blank_quoted_separators() {
         if (t == hd) { endhd(); next }
         hdbody = hdbody line "\n"
         if (hdkind == "script") bodies = bodies line "\n"
-        if (hdkind == "code") emit(line)
         next
       }
       out = scan(line)
@@ -606,7 +655,28 @@ while :; do
   HD_BODY[${rec%%$'\037'*}]=${rec#*$'\037'}
 done
 
+SCOPE_N=()
+SCOPE_DIR=()
 while IFS= read -r seg; do
+  # A shell heredoc body runs in a child shell: its assignments and cd end
+  # with it (see endhd() above). Files it writes stay written.
+  case "$seg" in
+    $'\034push')
+      SCOPE_N+=("${#VAR_NAMES[@]}")
+      SCOPE_DIR+=("$DIR")
+      continue
+      ;;
+    $'\034pop')
+      s=$((${#SCOPE_N[@]} - 1))
+      [ "$s" -ge 0 ] || continue
+      VAR_NAMES=("${VAR_NAMES[@]:0:${SCOPE_N[$s]}}")
+      VAR_VALS=("${VAR_VALS[@]:0:${SCOPE_N[$s]}}")
+      DIR=${SCOPE_DIR[$s]}
+      SCOPE_N=("${SCOPE_N[@]:0:$s}")
+      SCOPE_DIR=("${SCOPE_DIR[@]:0:$s}")
+      continue
+      ;;
+  esac
   W=()
   read -ra W <<<"$seg" || true
   # Take out the heredoc marker, if any (see marker() above).
