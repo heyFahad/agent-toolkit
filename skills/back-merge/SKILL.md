@@ -63,14 +63,28 @@ git merge --no-ff origin/main
 
 ### Resolving conflicts
 
-A resolution is permanent: whatever `main` content it drops stays dropped (see above). So:
+`main` is the source of truth: the pre-prod branch should come out of the merge identical to `main`, except where unreleased work changed it.
 
-- **Never resolve a whole file with `--ours`, `--theirs` or `git checkout <side> -- <file>`.** Resolve hunk by hunk.
-- For each hunk, find out where each side's lines came from (`git log -L` or `git log -S` on both branches):
-  - The pre-prod side is unreleased work (a ticket not in `main`'s history): keep it, and fold in `main`'s change if it's still relevant.
-  - The pre-prod side belongs to a ticket that already shipped: `main` holds what production runs. Take `main`'s side unless the pre-prod side is plainly a later fix to the same code.
-  - Import blocks: keep exactly the imports the merged code uses, and check each name against the file's body.
-- After resolving, `git diff origin/<pre-prod> -- <file>` should show only `main`'s changes that belong in the file.
+**Never resolve a whole file with `--ours`, `--theirs` or `git checkout <side> -- <file>`.** Resolve hunk by hunk. Taking `main`'s whole copy of a form component, say, would also delete the pre-prod branch's unreleased import and the three props that use it; taking the pre-prod copy would drop `main`'s fixes for good.
+
+Work is **unreleased** when its commit, in `origin/main..origin/<pre-prod>`, carries at least one ticket key that never appears in `git log origin/main --format=%B`. At least one, not all: an epic's key shows up on both sides as soon as one of its sub-tasks ships, so a commit tagged with the epic and an unshipped sub-task is still unreleased. If the repo's commits carry no ticket keys, ask the user which work is unreleased.
+
+For each hunk, find out where each side's lines came from (`git log -L`, `git log -S` or `git blame` on both branches), then:
+
+| The hunk | Resolve to |
+| --- | --- |
+| The same code on both sides, only moved, reordered, reformatted, with different comments, or with imports in another order | `main`'s version |
+| A change only `main` has (a hotfix, a release-time fix) | `main`'s version |
+| A change only the pre-prod side has, from unreleased work | Keep it, applied to `main`'s layout |
+| A change only the pre-prod side has, from a ticket that already shipped | `main`'s version: it holds what production runs. Keep the pre-prod side only if it's plainly a later fix to the same code, and say so in the PR |
+| Deleted by unreleased pre-prod work, modified on `main` | Keep it deleted, and say in the PR what `main` changed there, in case the unreleased replacement needs it too |
+| Deleted on `main` (shipped), modified on the pre-prod side | Delete it. If the pre-prod change is unreleased work, stop and ask the user where it should go now |
+| The same logic changed differently on each side | `main`'s behaviour plus the unreleased additions. If they can't be combined safely, stop and ask the user |
+| An import block | Exactly the imports the merged code uses, in `main`'s order. Check each name against the file's body |
+
+Resolving a hunk toward the pre-prod side when the table says `main` doesn't postpone the difference, it makes it permanent. Once this merge lands, the merge base moves to `main`'s tip, so every later merge sees the pre-prod version as a change the pre-prod branch made on its own and keeps it without a conflict. Only a manual edit removes it. A dropped fix works the same way (see above).
+
+After resolving a file, `git diff origin/main -- <file>` should show only unreleased work, and `git diff origin/<pre-prod> -- <file>` only `main`'s changes that belong in it.
 
 Finish with `git merge --continue`. This merge commit is commit 1 of the PR, and it stays a pure merge: everything from step 4 goes in commits after it.
 
@@ -108,18 +122,38 @@ A deliberate change on an unreleased ticket can look like drift: a renamed label
 
 Don't overwrite the pre-prod branch with `main` wholesale to "make them equal". That removes every unreleased ticket from QA's build.
 
-## 5. Verify against the pre-prod baseline
+## 5. Verify the merged tree
 
-A repo's checks may already fail on the pre-prod branch, so compare instead of expecting a clean run. One example, for a TypeScript repo's type check; the same before-and-after comparison works for any linter or checker whose output lists one problem per line:
+What needs checking is what the back-merge changes in the pre-prod branch:
 
 ```bash
-# List errors with and without the reconciliation, ignoring line numbers.
-npx tsc --noEmit | grep 'error TS' | sed -E 's/\([0-9]+,[0-9]+\)//' | sort > /tmp/branch.txt
-git stash; npx tsc --noEmit | grep 'error TS' | sed -E 's/\([0-9]+,[0-9]+\)//' | sort > /tmp/base.txt; git stash pop
-comm -13 /tmp/base.txt /tmp/branch.txt   # new errors: each one needs a look
+git diff --stat origin/<pre-prod> HEAD
 ```
 
-A new error is often the "`main` itself is broken" row from the table above. Run lint on the changed files and the full test suite too. The worktree needs its own dependency install (check the committed lockfile first, see `package-manager-safety`).
+If that's empty, CI has already passed this exact tree on the pre-prod branch. Skip the local checks and say so in the PR.
+
+Otherwise run the repo's own CI steps, read from its CI config (e.g. `.github/workflows/*.yml`), never assumed. Match CI's environment, or failures that have nothing to do with the merge get blamed on it:
+
+- The runtime version CI pins (e.g. `node-version-file: .nvmrc`, run through `nvm use`).
+- CI's timezone and locale. GitHub's runners use UTC, so set `TZ=UTC` unless the workflow sets something else.
+- A frozen-lockfile install in the worktree, with the package manager whose lockfile is committed (see `package-manager-safety`).
+
+(Real case: a newer Node major than the pinned one failed eight tests on a back-merge, and the local timezone one more. CI passed all nine.)
+
+A repo's checks may already fail on the pre-prod branch, so before blaming the merge for a failure, run the same check on the pre-prod tip's exact tree. If it fails there too, it isn't the merge's fault: say so in the PR, and propose fixing it separately. One example, for a TypeScript repo's type check; the same before-and-after comparison works for any linter or checker whose output lists one problem per line:
+
+```bash
+# One error per line, line numbers dropped: in the back-merge worktree...
+npx tsc --noEmit | grep 'error TS' | sed -E 's/\([0-9]+,[0-9]+\)//' | sort > <scratch-dir>/branch.txt
+# ...and in a worktree at the pre-prod tip, after its own install.
+git worktree add <scratch-dir>/base origin/<pre-prod>
+(cd <scratch-dir>/base && npx tsc --noEmit) | grep 'error TS' | sed -E 's/\([0-9]+,[0-9]+\)//' | sort > <scratch-dir>/base.txt
+comm -13 <scratch-dir>/base.txt <scratch-dir>/branch.txt   # new errors: each one needs a look
+```
+
+A new error is often the "`main` itself is broken" row from step 4's table.
+
+CI must then pass on the PR's final head before it merges. A green run on an earlier head doesn't count.
 
 ## 6. Commit and open the PR
 
@@ -134,13 +168,20 @@ Separate commits mean any one of them can be reverted without touching the other
 Push, then open the PR against `<pre-prod>` (title per `pr-title-conventions`, e.g. `🔀 Back-merge the <release> release into <pre-prod> and reconcile drift`). The description covers:
 
 - the release and the commits, one line each
-- how each conflict was resolved and why
+- each conflicted file, which row of the resolution table applied, and why
 - what was restored, and which merge had dropped it
-- what was deliberately left as it is: unreleased tickets, and pre-prod-only items waiting for the user's ship-or-remove decision
+- what was deliberately left as it is: unreleased tickets, deletions kept from unreleased work, and pre-prod-only items waiting for the user's ship-or-remove decision
 - any bugs found on `main`, for their own fix there
-- the verification results, measured against the baseline
+- the verification results, measured against the pre-prod tip, or why the checks were skipped
+
+Its files tab shows what the merge and the reconciliation change in the pre-prod branch. An empty tab is fine only when nothing conflicted, or every conflict was unreleased work. Resolving toward `main` normally makes the PR change the conflicted files, and that's what it's for.
 
 It must be merged with a merge commit (`gh pr merge <n> --merge`), never squashed: a squash leaves the merge base where it was, and the noise and drift come back. Close any back-merge PR already open straight from `main`.
+
+### Updating an open back-merge PR
+
+- If `main` got more commits since, merge `origin/main` into the same branch again in the worktree, resolve as in step 3, rerun steps 4 and 5, and push. Ask first, like any push.
+- If an earlier resolution was wrong, or the branch now conflicts with the pre-prod branch, redo the merge on a fresh branch from `origin/<pre-prod>`, rerun steps 4 and 5, then ask the user before force-pushing it over the PR's branch.
 
 ## Afterwards
 
