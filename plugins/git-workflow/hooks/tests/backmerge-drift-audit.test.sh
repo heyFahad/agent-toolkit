@@ -88,6 +88,19 @@ audit --merged dev --since "10 years ago"
 exits "falls back to origin/HEAD: exits 2" 2
 has "falls back to origin/HEAD for the default branch" 'between origin/main and dev'
 
+# The resolver's --default has its own copy of this lookup. Both must pick
+# the same branch, whether gh answers or only origin/HEAD does.
+RESOLVER="$HERE/../../../../skills/branching-pr-workflow/scripts/resolve-preprod-branch.sh"
+same_default() { # name, gh's answer
+  local res
+  res=$(STUB_GH_DEFAULT=$2 bash "$RESOLVER" --default 2>/dev/null)
+  STUB_GH_DEFAULT=$2 audit --merged dev --since "10 years ago"
+  if [ -n "$res" ] && printf '%s\n' "$out" | grep -qF "between origin/$res and dev"; then ok; else no "$1 (resolver said '$res')"; fi
+}
+git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/old-main
+same_default "resolver and audit agree when gh answers" main
+same_default "resolver and audit agree on origin/HEAD alone" ""
+
 # ...and fails clearly when neither can tell.
 git symbolic-ref --delete refs/remotes/origin/HEAD
 audit --merged dev --since "10 years ago"

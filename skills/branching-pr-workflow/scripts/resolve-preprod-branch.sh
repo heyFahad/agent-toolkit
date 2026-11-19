@@ -8,6 +8,9 @@
 #   resolve-preprod-branch.sh --refresh   ignore the cache and infer again
 #   resolve-preprod-branch.sh --set dev   save a per-repo override
 #   resolve-preprod-branch.sh --set none  record that this repo has none
+#   resolve-preprod-branch.sh --default   print the default branch instead
+#                                         (exit 1 if neither gh nor
+#                                         origin/HEAD can tell)
 #
 # Order: per-repo override, then a cached inference, then a fresh
 # inference (the candidate that received the most merged PRs recently).
@@ -37,12 +40,13 @@ CONFIG_DIR="${AGENT_TOOLKIT_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/agent-
 CONFIG_FILE="$CONFIG_DIR/preprod-branches.local.json"
 STATE_DIR="${AGENT_TOOLKIT_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/agent-toolkit}/preprod-branch"
 
-MODE=get
+MODE="get"
 SET_VALUE=""
 case "${1:-}" in
   --refresh) MODE=refresh ;;
+  --default) MODE=default ;;
   --set)
-    MODE=set
+    MODE="set"
     SET_VALUE="${2:-}"
     if [ -z "$SET_VALUE" ]; then
       echo "usage: $0 --set <branch>|none" >&2
@@ -50,12 +54,36 @@ case "${1:-}" in
     fi
     ;;
   "") ;;
-  *) echo "usage: $0 [--refresh | --set <branch>|none]" >&2; exit 1 ;;
+  *) echo "usage: $0 [--refresh | --set <branch>|none | --default]" >&2; exit 1 ;;
 esac
 
 if ! git rev-parse --git-dir >/dev/null 2>&1; then
   echo "resolve-preprod-branch: not inside a git repository" >&2
   exit 1
+fi
+
+# The default branch's name. Ask GitHub first: a local origin/HEAD is set at
+# clone time and goes stale when the default branch is changed later.
+# The back-merge skill's backmerge-drift-audit.sh has its own copy of this
+# lookup, since that skill can be installed without this one; a test in
+# backmerge-drift-audit.test.sh keeps the two in the same order.
+default_branch() {
+  local name
+  name=$(gh repo view --json defaultBranchRef -q .defaultBranchRef.name 2>/dev/null || true)
+  if [ -z "$name" ]; then
+    name=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed -E 's@^refs/remotes/origin/@@' || true)
+  fi
+  printf '%s' "$name"
+}
+
+if [ "$MODE" = default ]; then
+  DEFAULT_BRANCH=$(default_branch)
+  if [ -z "$DEFAULT_BRANCH" ]; then
+    echo "resolve-preprod-branch: can't tell the default branch: gh couldn't report it and origin/HEAD isn't set" >&2
+    exit 1
+  fi
+  echo "$DEFAULT_BRANCH"
+  exit 0
 fi
 
 ORIGIN_URL=$(git remote get-url origin 2>/dev/null || true)
@@ -111,12 +139,7 @@ if [ "$MODE" = get ] && [ -s "$CACHE_FILE" ] && [ -n "$(find "$CACHE_FILE" -mtim
 fi
 
 # 3. Inference.
-# Ask GitHub first: a local origin/HEAD is set at clone time and goes stale
-# when the default branch is changed later.
-DEFAULT_BRANCH=$(gh repo view --json defaultBranchRef -q .defaultBranchRef.name 2>/dev/null || true)
-if [ -z "$DEFAULT_BRANCH" ]; then
-  DEFAULT_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed -E 's@^refs/remotes/origin/@@' || true)
-fi
+DEFAULT_BRANCH=$(default_branch)
 
 # The remote's live branch list; fall back to the last-fetched refs offline.
 REMOTE_BRANCHES=$(git ls-remote --heads origin 2>/dev/null | sed -E 's@^[^[:space:]]+[[:space:]]+refs/heads/@@')

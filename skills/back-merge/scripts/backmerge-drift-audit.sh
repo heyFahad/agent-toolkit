@@ -84,8 +84,11 @@ while [ $# -gt 0 ]; do
 done
 
 if [ -z "$DEFAULT" ]; then
-  # GitHub's current answer first, as the preprod-pr-check hook does:
-  # origin/HEAD is a local copy that goes stale when the branch is renamed.
+  # GitHub's current answer first: origin/HEAD is a local copy that goes
+  # stale when the branch is renamed. branching-pr-workflow's
+  # resolve-preprod-branch.sh --default does the same lookup. This copy stays
+  # because this skill can be installed without that one; a test in
+  # backmerge-drift-audit.test.sh keeps the two in the same order.
   name=$(gh repo view --json defaultBranchRef -q .defaultBranchRef.name 2>/dev/null || true)
   if [ -n "$name" ]; then
     if git rev-parse --verify -q "refs/remotes/origin/$name" >/dev/null; then

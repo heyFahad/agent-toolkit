@@ -20,9 +20,9 @@
 #      merge would actually change, and denies when the first has more. The
 #      back-merge then goes out from conflicts/backmerge-<release>.
 #
-# Branch names are not canonical across repos, so nothing is hardcoded: the
-# default branch comes from gh/git, and the pre-prod branch from the
-# resolver script shipped with the branching-pr-workflow skill.
+# Branch names are not canonical across repos, so nothing is hardcoded: both
+# the default branch (resolver --default) and the pre-prod branch come from
+# the resolver script shipped with the branching-pr-workflow skill.
 #
 # Keep this bash 3.2 compatible: it runs under macOS's /bin/bash.
 set -euo pipefail
@@ -59,9 +59,10 @@ fi
 
 cd "$CWD"
 
-DEFAULT_BRANCH=$(gh repo view --json defaultBranchRef -q .defaultBranchRef.name 2>/dev/null || true)
-if [ -z "$DEFAULT_BRANCH" ]; then
-  DEFAULT_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed -E 's@^refs/remotes/origin/@@' || true)
+# The resolver owns the default-branch lookup (gh, then origin/HEAD).
+DEFAULT_BRANCH=""
+if [ -x "$RESOLVER" ] || [ -f "$RESOLVER" ]; then
+  DEFAULT_BRANCH=$(bash "$RESOLVER" --default 2>/dev/null || true)
 fi
 
 if [ -n "$DEFAULT_BRANCH" ] && [ "$BASE_BRANCH" = "$DEFAULT_BRANCH" ]; then
