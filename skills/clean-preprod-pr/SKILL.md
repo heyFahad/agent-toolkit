@@ -61,7 +61,7 @@ If the pre-prod PR has already merged and another round is needed, re-run the pr
 The unrelated files keep coming back for every ticket until `main` is merged back into the pre-prod branch. When the check reports extra files, or after a release:
 
 1. Look for an open back-merge PR, whose head is `main` or a `conflicts/backmerge-...` branch: `gh pr list --base <pre-prod> --state open --json number,headRefName`.
-2. If there's none, offer to open one. Ask the user first, like any PR.
+2. If there's none, offer to open one. Ask the user first, like any PR. The `back-merge` skill has the whole procedure: the check below, resolving its conflicts without dropping released fixes, and auditing the drift the merge leaves.
 3. It must be merged with a merge commit (`gh pr merge <n> --merge`), never squashed. A squash copies `main`'s content without making `main`'s commits part of the pre-prod branch's history, so the merge base GitHub diffs against doesn't move and the noise stays.
 
 A back-merge fixes future tickets. It doesn't change the decision for the current one: if the check fails now, use the `conflicts/...` branch now.
@@ -88,7 +88,9 @@ With squash merges, the first list nearly always has extra files, since every ti
 ```bash
 git switch -c conflicts/backmerge-<release> origin/<pre-prod>
 git merge --no-ff origin/main
-# on conflicts: resolve, git add <files>, then git merge --continue
+# on conflicts: resolve hunk by hunk as the back-merge skill describes, never a
+# whole file with --ours/--theirs; git add <files>, then git merge --continue
+# then audit and reconcile the drift (back-merge skill, step 3) before pushing
 git push -u origin conflicts/backmerge-<release>
 gh pr create --base <pre-prod> --head conflicts/backmerge-<release> --title "..."
 ```
