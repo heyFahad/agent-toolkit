@@ -228,6 +228,9 @@ expect "cp a gh script"        deny  "cp calls-gh.sh copy.sh && bash copy.sh"
 expect "cp a clean script"     allow "cp sub/clean.sh copy.sh && bash copy.sh"
 expect "cp into a new dir"     deny  "mkdir -p out && cp calls-gh.sh out/ && bash out/calls-gh.sh"
 expect "printf'd script"       allow "printf 'echo hi\\n' > gen.sh && bash gen.sh"
+expect "touched script"        allow "touch empty.sh && bash empty.sh"
+expect "cp -r a gh dir"        deny  "cp -r sub copied && bash copied/calls-gh.sh"
+expect "cp -r a clean dir"     allow "cp -r sub copied && bash copied/clean.sh"
 
 # --- this repo's own test files mention gh but never call it at command position
 expect "this test file"        allow "bash $HERE/gh-token-export.test.sh"

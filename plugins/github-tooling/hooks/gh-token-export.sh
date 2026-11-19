@@ -27,10 +27,11 @@
 #     and are checked.
 #   - A script written earlier in the same command does not exist yet when
 #     this hook runs, so what goes into it is checked instead: a heredoc
-#     body written by `cat > f` or `tee f`, or the source of `cp`/`mv`/
-#     `install`/`ln`. A file written some other way (`printf ... > f`,
-#     `sed ... > f`) is let through unchecked, since its content can't be
-#     known before the command runs.
+#     body written by `cat > f` or `tee f`, the source of `cp`/`mv`/
+#     `install`/`ln` (for a copied directory, the same file inside the
+#     source), or nothing for a new file made by `touch`. A file written
+#     some other way (`printf ... > f`, `sed ... > f`) is let through
+#     unchecked, since its content can't be known before the command runs.
 #   - Each executed script is read, and the command is denied only if the
 #     script calls `gh` or `gh-stack`. In a shell script that means at
 #     command position (start of line, after ; & | ( or $(, or after
@@ -218,6 +219,12 @@ note_writes() {
         case "$t" in -*) ;; *) remember_write "$t" "$how" "$body" ;; esac
       done
       ;;
+    touch)
+      # A new file is empty; an existing one keeps its content.
+      for t in ${ARGS[@]+"${ARGS[@]}"}; do
+        case "$t" in -*) ;; *) [ -e "$(abspath "$t")" ] || remember_write "$t" body "" ;; esac
+      done
+      ;;
     cp | mv | install | ln)
       k=0 m=${#ARGS[@]}
       while [ "$k" -lt "$m" ]; do
@@ -244,35 +251,46 @@ note_writes() {
   return 0
 }
 
-# $1 = script token as written, $2 = shell | other | auto, $3 = how many
-# copies deep this is (cp a b; cp b c; bash c).
+# $1 = script token, $2 = shell | other | auto, $3 = how many copies deep
+# this is (cp a b; cp b c; bash c), $4 = the token as the command wrote it.
 check_script() {
-  local tok=$1 kind=$2 depth=${3:-0} p a f k
+  local tok=$1 kind=$2 depth=${3:-0} shown=${4:-$1} p a f k w
   p=$(expand "$(unquote "$tok")")
   # Built from a variable this command does not set: see the header.
   [ -n "$p" ] || return 0
-  # Written earlier in this command: check what went into it.
+  # Written earlier in this command: check what went into it. A copied
+  # directory (cp -r a b) maps b/x to a/x.
   a=$(abspath "$p")
   for ((k = ${#WR_PATHS[@]} - 1; k >= 0; k--)); do
-    [ "${WR_PATHS[$k]}" != "$a" ] || break
+    w=${WR_PATHS[$k]}
+    [ "$w" != "$a" ] || break
+    if [ "${WR_KINDS[$k]}" = alias ] && [[ $a == "$w"/* ]]; then
+      a=${WR_DATA[$k]}${a#"$w"}
+      break
+    fi
   done
   if [ "$k" -ge 0 ]; then
+    if [ "${WR_PATHS[$k]}" != "$(abspath "$p")" ]; then
+      # Inside a copied directory: check the same file in the source.
+      if [ "$depth" -lt 5 ]; then check_script "$a" "$kind" $((depth + 1)) "$shown"; fi
+      return 0
+    fi
     case "${WR_KINDS[$k]}" in
-      body) check_text "$tok" "$kind" "$p" "${WR_DATA[$k]}" ;;
-      alias) if [ "$depth" -lt 5 ]; then check_script "${WR_DATA[$k]}" "$kind" $((depth + 1)); fi ;;
+      body) check_text "$shown" "$kind" "$p" "${WR_DATA[$k]}" ;;
+      alias) if [ "$depth" -lt 5 ]; then check_script "${WR_DATA[$k]}" "$kind" $((depth + 1)) "$shown"; fi ;;
     esac
     return 0
   fi
   f=$(resolve "$p")
   if [ -z "$f" ] || [ ! -f "$f" ] || [ ! -r "$f" ]; then
-    deny "this command runs \`$tok\`, which could not be read to check whether it shells out to \`gh\` from its own subprocess."
+    deny "this command runs \`$shown\`, which could not be read to check whether it shells out to \`gh\` from its own subprocess."
   fi
   # A compiled binary at a path (./bin/tool, /usr/bin/git) is not text and
   # is not something this hook can judge.
   if [ -s "$f" ] && ! grep -qI '' "$f"; then
     return 0
   fi
-  check_text "$tok" "$kind" "$f" "$(cat "$f")"
+  check_text "$shown" "$kind" "$f" "$(cat "$f")"
 }
 
 # $1 = script token, $2 = shell | other | auto, $3 = its path, $4 = its text
