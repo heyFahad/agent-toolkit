@@ -92,8 +92,10 @@ Finish with `git merge --continue`. This merge commit is commit 1 of the PR, and
 
 ```bash
 GH_TOKEN=$(gh auth token) bash <this skill>/scripts/backmerge-drift-audit.sh \
-  --merged HEAD --since <date of the last clean back-merge, or 90 days>
+  --merged HEAD --since <date of the last audited back-merge>
 ```
+
+How far back `--since` reaches matters. Report 1 below checks `main`'s commits one by one, so it only finds fixes lost inside that window (90 days if you leave it out). Reports 2 and 3 have no window. The first audit on a repo, or the first after a long gap, needs a long window: back to when the pre-prod branch was created, or `--since "2 years ago"`. It runs slower, but a fix lost long ago, in a file that unreleased work also touches, isn't found by anything else. Once a back-merge has been audited and reconciled, later audits only need to reach back to it.
 
 Without `--default` it audits against `origin/HEAD`, or the default branch `gh` reports, and stops with an error if neither works. It prints three reports:
 
