@@ -17,10 +17,12 @@ die() {
 # macOS's Keychain-backed gh credential can fail to reach a nested gh call,
 # which then gets a 404 that looks like a permissions problem. Resolve the
 # token once here so every gh call below (and any child script) inherits it.
+# `env -u` makes `gh auth token` read the keyring login rather than echo back
+# a GITHUB_TOKEN from the environment, which may have fewer scopes.
 ensure_gh_token() {
   if [ -z "${GH_TOKEN:-}" ]; then
     local t
-    t=$(gh auth token 2>/dev/null || true)
+    t=$(env -u GH_TOKEN -u GITHUB_TOKEN gh auth token 2>/dev/null || true)
     if [ -n "$t" ]; then
       GH_TOKEN=$t
       export GH_TOKEN
