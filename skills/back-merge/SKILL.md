@@ -17,26 +17,49 @@ Each ticket reaches the two branches by different routes: the pre-prod branch th
 
 The damaging case is a merge from `main` into the pre-prod branch that resolves a file in the pre-prod branch's favour. Production fixes in that file vanish from the pre-prod branch, but git now counts their commits as merged, so **no later back-merge brings them back**. Only an explicit restore does. (Real case: a feature's `conflicts/` merges pulled in `main`'s history and kept the pre-prod side. A month later the pre-prod branch was still missing a dozen shipped fixes, and three back-merges had gone through without a single conflict on them.)
 
-## 1. Set up
+## 1. Is a back-merge due?
+
+A back-merge is due after every release or hotfix to `main`, and whenever the `clean-preprod-pr` pre-check reports unrelated files on a ticket's pre-prod PR. First look for one that's already open, whose head is `main` or a `conflicts/backmerge-...` branch:
 
 ```bash
 git fetch origin <pre-prod> main
-gh pr list --base <pre-prod> --state open --json number,headRefName   # an open back-merge already?
+gh pr list --base <pre-prod> --state open --json number,headRefName
 ```
+
+If there's none, offer the user to open one. Ask first, like any PR.
+
+## 2. Pre-check: straight from `main`, or from a branch?
+
+A back-merge PR straight from `main` is usually noisy: it lists every squash commit since the last back-merge, even though the pre-prod branch already has almost all of that content from the original ticket commits. (Real case: a back-merge PR from `main` listed 14 files and the merge changed none of them.) There's no "own change" to compare against, so compare what the PR would list with what the merge would really change:
+
+```bash
+# 1. Conflicts: any CONFLICT line means yes.
+git merge-tree --write-tree origin/<pre-prod> origin/main
+
+# 2. Noise: the first list should be the second list, nothing more.
+#    What GitHub's files tab would list:
+git diff --name-only $(git merge-base origin/<pre-prod> origin/main) origin/main
+#    What the merge would really change in the pre-prod branch:
+git diff --name-only origin/<pre-prod> $(git merge-tree --write-tree origin/<pre-prod> origin/main | head -n1)
+```
+
+- If `git merge-tree` reports nothing to merge (the pre-prod branch already contains `main`), there's no back-merge to do.
+- Open it straight from `main` only when there's no conflict and both lists match. That happens when `main` got something the pre-prod branch never saw, such as a hotfix, and nothing else since the last back-merge. Still run the drift audit (step 4) on the merged result.
+- Otherwise, and with squash-merged releases that's nearly always, it goes out from a `conflicts/backmerge-<release>` branch cut from the pre-prod branch. Its files tab shows only what the merge really changes.
+
+The `preprod-pr-check` hook runs this check on `gh pr create --base <pre-prod> --head main` and denies the PR when the lists differ.
+
+## 3. Merge in a separate worktree
 
 Do the work in a separate worktree, so the user's checkout and its uncommitted changes stay untouched:
 
 ```bash
 git worktree add -b conflicts/backmerge-<release> <scratch-dir>/backmerge origin/<pre-prod>
-```
-
-## 2. Pre-check, then merge
-
-Run the back-merge pre-check from the `clean-preprod-pr` skill (conflicts, and files the PR would list that the merge wouldn't change). With squash-merged releases it nearly always calls for the `conflicts/backmerge-<release>` branch above rather than a PR straight from `main`. In the worktree:
-
-```bash
+cd <scratch-dir>/backmerge
 git merge --no-ff origin/main
 ```
+
+`--no-ff` makes sure there's a merge commit even when the pre-prod branch could fast-forward. The merge commit is what makes `main`'s commits part of the pre-prod branch's history.
 
 ### Resolving conflicts
 
@@ -49,9 +72,9 @@ A resolution is permanent: whatever `main` content it drops stays dropped (see a
   - Import blocks: keep exactly the imports the merged code uses, and check each name against the file's body.
 - After resolving, `git diff origin/<pre-prod> -- <file>` should show only `main`'s changes that belong in the file.
 
-Finish with `git merge --continue`. This merge commit is commit 1 of the PR, and it stays a pure merge: everything in step 3 goes in commits after it.
+Finish with `git merge --continue`. This merge commit is commit 1 of the PR, and it stays a pure merge: everything from step 4 goes in commits after it.
 
-## 3. Audit the drift
+## 4. Audit the drift
 
 ```bash
 GH_TOKEN=$(gh auth token) bash <this skill>/scripts/backmerge-drift-audit.sh \
@@ -78,7 +101,7 @@ A deliberate change on an unreleased ticket can look like drift: a renamed label
 
 Don't overwrite the pre-prod branch with `main` wholesale to "make them equal". That removes every unreleased ticket from QA's build.
 
-## 4. Verify against the pre-prod baseline
+## 5. Verify against the pre-prod baseline
 
 A repo's checks may already fail on the pre-prod branch, so compare instead of expecting a clean run:
 
@@ -91,11 +114,11 @@ comm -13 /tmp/base.txt /tmp/branch.txt   # new errors: each one needs a look
 
 A new error is often the "`main` itself is broken" row from the table above. Run lint on the changed files and the full test suite too. The worktree needs its own dependency install (check the committed lockfile first, see `package-manager-safety`).
 
-## 5. Commit and open the PR
+## 6. Commit and open the PR
 
 Commit order on `conflicts/backmerge-<release>`:
 
-1. The merge commit from step 2.
+1. The merge commit from step 3.
 2. One commit per restored ticket, e.g. `fix(<ticket>): restore <the fix> that <pre-prod> lost`. Say in the body which merge dropped it and link the original `main` commit.
 3. One `chore:` commit for the merge leftovers.
 

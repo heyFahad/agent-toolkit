@@ -109,6 +109,7 @@ expect "suggests back-merge"    deny  'gh pr create --base dev --title x --body 
 expect "back-merge via branch"  deny  'gh pr create --base dev --title x --body y' "conflicts/backmerge-<release>"
 expect "says no squash"         deny  'gh pr create --base dev --title x --body y' "never squashed"
 expect "says no cherry-pick"    deny  'gh pr create --base dev --title x --body y' "do not cherry-pick"
+expect "points at back-merge"   deny  'gh pr create --base dev --title x --body y' "following the back-merge skill"
 out=$(run_hook 'gh pr create --base dev --title x --body y')
 if printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecisionReason' | sed -n '/--- files only/,$p' | grep -qx 'b.txt'; then
   fail=$((fail + 1)); echo "FAIL: the branch's own file is listed as noise"
@@ -129,6 +130,7 @@ git switch -q feature/b
 expect "back-merge from main"   deny  'gh pr create --base dev --head main --title x --body y' "a1.txt"
 expect "back-merge recipe"      deny  'gh pr create --base dev --head main --title x --body y' "git merge --no-ff origin/main"
 expect "back-merge no squash"   deny  'gh pr create --base dev --head main --title x --body y' "never squashed"
+expect "back-merge skill"       deny  'gh pr create --base dev --head main --title x --body y' "Follow the back-merge skill"
 out=$(run_hook 'gh pr create --base dev --head main --title x --body y')
 if printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecisionReason' | grep -qF 'would list 2 file(s) that the merge would not change (it really changes 0 file(s)'; then
   pass=$((pass + 1))
@@ -194,6 +196,7 @@ git switch -q -c feature/c main
 commit app.txt "c's line one" "feat: c edit"
 git push -q -u origin feature/c
 expect "conflict"               deny  'gh pr create --base dev --title x --body y' "CONFLICT"
+expect "conflict skill"         deny  'gh pr create --base dev --title x --body y' "Follow the clean-preprod-pr skill"
 
 # --- when the resolver can't decide, a long-lived name is still checked
 git push -q origin main:staging
