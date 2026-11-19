@@ -71,6 +71,7 @@ has "reports the dev-only file no ticket explains" '^  \+[0-9]+/-[0-9]+  notes\.
 lacks "stays quiet about unreleased work" 'feature\.txt'
 lacks "does not call app.txt unexplained: an unreleased ticket touched it" '^  \+[0-9]+/-[0-9]+  app\.txt$'
 lacks "reads ticket keys from merge subjects too" 'widget\.txt'
+has "skips report 3 when the tip isn't a back-merge" "Conflicted files: skipped"
 
 # With no --default, it finds the default branch from origin/HEAD...
 git update-ref refs/remotes/origin/main main
@@ -123,6 +124,80 @@ lacks "no ticket keys: doesn't call them unexplained" 'that no unreleased ticket
 audit --merged dev --default main --since "10 years ago" --ticket '[a-z]+-[0-9]+'
 exits "--ticket: exits 0 once the keys match" 0
 lacks "--ticket: unreleased work is explained" 'feature\.txt'
+
+# --- report 3: a back-merge whose four files all conflict
+# a.txt: shipped ticket TT-10 put a constant in a different place on each
+#        side, and main hotfixed the line next to it.
+# c.txt: TT-10 also reworded a comment differently on each side.
+# d.txt: unreleased TT-20 added a line on dev only.
+# e.txt: unreleased TT-30 moved a constant on dev. Its commit also names epic
+#        TT-1, which main's history mentions too.
+git init -q -b main "$TMP/conf"
+cd "$TMP/conf" || exit 1
+put() { printf '%b' "$2" > "$1"; } # file, content with \n escapes
+put a.txt 'header\nbody\nfooter\n'
+put c.txt 'header\n// fetch the user\nload();\nfooter\n'
+put d.txt 'header\nbody\nfooter\n'
+put e.txt 'header\nconst LIMIT_VALUE = 10;\nbody\nfooter\n'
+git add . && git commit -q -m "chore: initial"
+git branch dev
+put a.txt 'header\nbody\nfooter\nconst NO_OPTIONS = [];\n'
+put c.txt 'header\n// load the user\nload();\nfooter\n'
+git commit -q -am "feat(TT-10): add options and reword (#3)"
+put a.txt 'header\nbody fixed\nfooter\nconst NO_OPTIONS = [];\n'
+put c.txt 'header\n// load the user\nload(true);\nfooter\n'
+put d.txt 'header\nbody fixed\nfooter\n'
+put e.txt 'header\nconst LIMIT_VALUE = 10;\nbody fixed\nfooter\n'
+git commit -q -am "fix(TT-1): hotfix the bodies"
+git switch -q dev
+put a.txt 'header\nconst NO_OPTIONS = [];\nbody\nfooter\n'
+put c.txt 'header\n// fetch the current user\nload();\nfooter\n'
+git commit -q -am "feat(TT-10): add options and reword"
+put d.txt 'header\nfeature line\nbody\nfooter\n'
+git commit -q -am "feat(TT-20): unreleased feature"
+put e.txt 'header\nbody\nfooter\nconst LIMIT_VALUE = 10;\n'
+git commit -q -am "refactor(TT-30): move the limit, part of epic TT-1"
+
+backmerge() { # branch, a.txt, c.txt, d.txt: merge main into dev, resolved so
+  git switch -q -c "$1" dev
+  git merge -q main >/dev/null 2>&1
+  put a.txt "$2"; put c.txt "$3"; put d.txt "$4"
+  put e.txt 'header\nbody fixed\nfooter\nconst LIMIT_VALUE = 10;\n'
+  git add . && git -c core.editor=true merge --continue >/dev/null 2>&1
+}
+
+# Resolved toward dev's layout for a.txt and c.txt.
+backmerge bm-dev 'header\nconst NO_OPTIONS = [];\nbody fixed\nfooter\n' \
+  'header\n// fetch the current user\nload(true);\nfooter\n' 'header\nfeature line\nbody fixed\nfooter\n'
+audit --default main --since "10 years ago"
+exits "toward dev: exits 2" 2
+has "toward dev: before and after counts" '^  a\.txt: 4 line\(s\) differ .* before the merge, 2 after$'
+has "toward dev: a moved constant is drift" 'L2 moved  DRIFT: resolve toward main .*const NO_OPTIONS'
+has "toward dev: a reworded comment is drift" 'L2 cosmetic  DRIFT: resolve toward main .*// fetch the current user'
+lacks "toward dev: an unreleased addition isn't flagged" 'feature line'
+has "an unreleased move is attributed" 'L4 moved  unreleased work \(TT-30, '
+lacks "an epic key on both sides doesn't make it shipped" 'L4 moved  DRIFT'
+
+# A reconciliation commit after the merge clears the drift.
+put a.txt 'header\nbody fixed\nfooter\nconst NO_OPTIONS = [];\n'
+put c.txt 'header\n// load the user\nload(true);\nfooter\n'
+git commit -q -am "chore: take main's layout for merge leftovers"
+audit --default main --since "10 years ago"
+exits "reconciled after the merge: exits 0" 0
+has "finds the back-merge past the reconciliation commit" '^== Conflicted files in '
+
+# Resolved toward main's layout from the start.
+backmerge bm-main 'header\nbody fixed\nfooter\nconst NO_OPTIONS = [];\n' \
+  'header\n// load the user\nload(true);\nfooter\n' 'header\nfeature line\nbody fixed\nfooter\n'
+audit --default main --since "10 years ago"
+exits "toward main: exits 0" 0
+has "toward main: no drift left in a.txt" '^  a\.txt: 4 line\(s\) differ .* before the merge, 0 after$'
+
+# A resolution that adds lines neither side has.
+backmerge bm-extra 'header\nbody fixed\nfooter\nconst NO_OPTIONS = [];\n' \
+  'header\n// load the user\nload(true);\nfooter\n' 'header\nfeature line\nbody fixed\none\ntwo\nthree\nfour\nfooter\n'
+audit --default main --since "10 years ago"
+has "more drift after than before is flagged" '^  d\.txt: 3 .* 5 after  MORE DRIFT AFTER THE MERGE'
 
 echo "backmerge-drift-audit: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

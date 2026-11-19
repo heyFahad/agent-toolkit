@@ -95,10 +95,11 @@ GH_TOKEN=$(gh auth token) bash <this skill>/scripts/backmerge-drift-audit.sh \
   --merged HEAD --since <date of the last clean back-merge, or 90 days>
 ```
 
-Without `--default` it audits against `origin/HEAD`, or the default branch `gh` reports, and stops with an error if neither works. It prints two reports:
+Without `--default` it audits against `origin/HEAD`, or the default branch `gh` reports, and stops with an error if neither works. It prints three reports:
 
 1. **Released changes missing from the merged state**: commits on `main` whose change is still on `main` but not in the merge, with the lines that are missing.
 2. **Differences no unreleased ticket explains**: files that differ, where no commit touching them on the pre-prod side names a ticket `main` hasn't shipped. The pre-prod side's commits include the merges that brought work in, since a ticket's key is sometimes only in its branch name or PR title.
+3. **Drift in the back-merge's conflicted files**: for each file that conflicted, how many lines differ from `main`'s side before and after the merge, flagged when there are more after. It also lists lines that only moved and hunks that only changed whitespace or comments, each traced with `git blame` to its commit: `unreleased work (KEY)` stays, `DRIFT` goes back to `main`'s version (the first rows of step 3's table). It finds the back-merge commit itself, past any reconciliation commits; pass `--merge <commit>` if it can't. Report 2 can't see this drift when an unreleased ticket also touched the file, which is common in conflicted files.
 
 The heuristics behind them, so you know what they can miss:
 
@@ -106,8 +107,9 @@ The heuristics behind them, so you know what they can miss:
 - A ticket counts as shipped once its key appears anywhere in `main`'s history.
 - Report 1 skips binary changes.
 - Report 1 compares lines with their surrounding whitespace trimmed, so reformatted code (rewrapped, quotes or trailing commas changed) can look like missing lines.
+- Report 3 counts a line as moved when, without whitespace, it has at least 8 characters, isn't only punctuation, and is both removed and added against `main`'s side. A comment line starts with `//`, `#`, `/*`, `*`, `<!--` or `{/*`. An unreleased refactor that moves code shows up too, attributed to its ticket.
 
-Both reports are leads. Classify each one before acting, by comparing the two versions (`git diff origin/main HEAD -- <file>`) and grepping the merged tree for the missing lines:
+All three reports are leads. Classify each one before acting, by comparing the two versions (`git diff origin/main HEAD -- <file>`) and grepping the merged tree for the missing lines:
 
 | Finding | What to do |
 | --- | --- |
