@@ -14,6 +14,14 @@ trap 'rm -rf "$TMP"' EXIT
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.com GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.com
 
+# `gh` is a stub: it reports $STUB_GH_DEFAULT as the default branch, or fails
+# when that's empty, so no test reaches the real GitHub.
+mkdir -p "$TMP/bin"
+# shellcheck disable=SC2016 # expanded by the stub, not here
+printf '#!/bin/bash\n[ -n "${STUB_GH_DEFAULT:-}" ] || exit 1\necho "$STUB_GH_DEFAULT"\n' > "$TMP/bin/gh"
+chmod +x "$TMP/bin/gh"
+export PATH="$TMP/bin:$PATH" STUB_GH_DEFAULT=""
+
 git init -q -b main "$TMP/repo"
 cd "$TMP/repo" || exit 1
 
@@ -39,6 +47,14 @@ git add feature.txt && git commit -q -m "feat(TT-3): unreleased feature"
 echo "notes" > notes.md
 git add notes.md && git commit -q -m "docs: dev-only notes"
 
+# A ticket merged into dev whose key is only in the merge commit's subject
+# (its branch name), not in any of its own commits.
+git switch -q -c widget-branch
+echo "widget" > widget.txt
+git add widget.txt && git commit -q -m "feat: add the widget"
+git switch -q dev
+git merge -q --no-ff -m "Merge pull request #7 from example/TT-4-widget" widget-branch
+
 pass=0 fail=0 out="" code=0
 ok() { pass=$((pass + 1)); }
 no() { fail=$((fail + 1)); echo "FAIL: $1"; printf '%s\n' "$out" | sed 's/^/    | /'; }
@@ -54,6 +70,25 @@ has "names the file and the missing line count" '1/1 lines missing  app.txt'
 has "reports the dev-only file no ticket explains" '^  \+[0-9]+/-[0-9]+  notes\.md$'
 lacks "stays quiet about unreleased work" 'feature\.txt'
 lacks "does not call app.txt unexplained: an unreleased ticket touched it" '^  \+[0-9]+/-[0-9]+  app\.txt$'
+lacks "reads ticket keys from merge subjects too" 'widget\.txt'
+
+# With no --default, it finds the default branch from origin/HEAD...
+git update-ref refs/remotes/origin/main main
+git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
+audit --merged dev --since "10 years ago"
+exits "detects the default branch from origin/HEAD" 2
+has "names the detected default branch" 'between origin/main and dev'
+
+# ...or from gh when origin/HEAD isn't set...
+git symbolic-ref --delete refs/remotes/origin/HEAD
+STUB_GH_DEFAULT=main audit --merged dev --since "10 years ago"
+exits "falls back to gh: exits 2" 2
+has "falls back to gh for the default branch" 'between origin/main and dev'
+
+# ...and fails clearly when neither can tell.
+audit --merged dev --since "10 years ago"
+exits "exits 1 when the default branch can't be found" 1
+has "says to pass --default" "can't tell the default branch"
 
 # Restoring the fix and dropping the stray file leaves nothing to review.
 git switch -q -c reconciled dev
@@ -65,6 +100,29 @@ exits "exits 0 once reconciled" 0
 
 audit --merged no-such-ref --default main
 exits "exits 1 on a bad ref" 1
+
+# --- a repo whose ticket keys don't match the default pattern
+git init -q -b main "$TMP/lower"
+cd "$TMP/lower" || exit 1
+echo "base" > base.txt
+git add base.txt && git commit -q -m "chore: initial"
+git branch dev
+echo "fix" >> base.txt
+git commit -q -am "fix(web-1): released fix"
+git switch -q dev
+git merge -q --no-edit main
+echo "feature" > feature.txt
+git add feature.txt && git commit -q -m "feat(web-2): unreleased feature"
+
+audit --merged dev --default main --since "10 years ago"
+exits "no ticket keys: exits 2" 2
+has "no ticket keys: says it can't tell" "Can't tell unreleased work from drift"
+has "no ticket keys: lists every differing file" '^  \+1/-0  feature\.txt$'
+lacks "no ticket keys: doesn't call them unexplained" 'that no unreleased ticket explains'
+
+audit --merged dev --default main --since "10 years ago" --ticket '[a-z]+-[0-9]+'
+exits "--ticket: exits 0 once the keys match" 0
+lacks "--ticket: unreleased work is explained" 'feature\.txt'
 
 echo "backmerge-drift-audit: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

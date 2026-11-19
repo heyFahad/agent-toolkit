@@ -9,10 +9,11 @@
 #                            [--since <date>] [--ticket <regex>]
 #
 #   --merged   the merged pre-prod state to audit (default: HEAD)
-#   --default  the default branch as released (default: origin/main)
+#   --default  the default branch as released (default: origin/HEAD, or
+#              origin/<the default branch gh reports>)
 #   --since    how far back to look for released commits (default: 90 days ago)
 #   --ticket   extended regex for ticket keys in commit messages
-#              (default: [A-Z][A-Z0-9]+-[0-9]+)
+#              (default: [A-Z][A-Z0-9]+-[0-9]+, Jira-style keys)
 #
 # Two reports:
 #   1. Released changes missing from the merged state: non-merge commits on
@@ -22,10 +23,23 @@
 #      merged, so no later back-merge brings them back on its own.
 #   2. Differences no unreleased ticket explains: files that differ between
 #      the two, where no commit touching the file on the pre-prod side names a
-#      ticket the default branch has not shipped.
+#      ticket the default branch has not shipped. The pre-prod side's commits
+#      are its non-merge commits plus the merge commits that brought work in
+#      (their subjects carry branch names and PR titles).
 #
 # Both are leads, not verdicts: a fix can have moved to another file, or been
-# superseded by unreleased work. Check each one before acting on it.
+# superseded by unreleased work. Check each one before acting on it. The
+# heuristics behind them:
+#   - Ticket keys are matched by --ticket, Jira-style by default. GitHub
+#     "#123" references are PR or issue numbers, not ticket keys, and are not
+#     matched. When either side has no keys at all, report 2 can't tell
+#     unreleased work from drift, says so, and lists every differing file.
+#   - A ticket counts as shipped once its key appears anywhere in the default
+#     branch's history, in any commit's message.
+#   - Report 1 skips binary changes (git diff shows no lines for them).
+#   - Report 1 compares lines with surrounding whitespace trimmed, so a
+#     reformatted line (rewrapped, quotes or trailing commas changed) can look
+#     missing even though the change is there.
 #
 # Exit codes: 0 nothing to review, 2 findings printed, 1 usage or git error.
 #
@@ -33,7 +47,7 @@
 set -uo pipefail
 
 MERGED=HEAD
-DEFAULT=origin/main
+DEFAULT=""
 SINCE="90 days ago"
 TICKET='[A-Z][A-Z0-9]+-[0-9]+'
 
@@ -43,10 +57,29 @@ while [ $# -gt 0 ]; do
     --default) DEFAULT=${2:?}; shift 2 ;;
     --since) SINCE=${2:?}; shift 2 ;;
     --ticket) TICKET=${2:?}; shift 2 ;;
-    -h|--help) sed -n '2,32p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,46p' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 1 ;;
   esac
 done
+
+if [ -z "$DEFAULT" ]; then
+  DEFAULT=$(git symbolic-ref --short -q refs/remotes/origin/HEAD 2>/dev/null || true)
+  if [ -z "$DEFAULT" ]; then
+    name=$(gh repo view --json defaultBranchRef -q .defaultBranchRef.name 2>/dev/null || true)
+    if [ -n "$name" ]; then
+      if git rev-parse --verify -q "refs/remotes/origin/$name" >/dev/null; then
+        DEFAULT="origin/$name"
+      else
+        DEFAULT=$name
+      fi
+    fi
+  fi
+  if [ -z "$DEFAULT" ]; then
+    echo "can't tell the default branch: origin/HEAD isn't set and gh couldn't report it." >&2
+    echo "Pass --default <ref>, or run: git remote set-head origin --auto" >&2
+    exit 1
+  fi
+fi
 
 git rev-parse --verify -q "$MERGED^{commit}" >/dev/null || { echo "not a commit: $MERGED" >&2; exit 1; }
 git rev-parse --verify -q "$DEFAULT^{commit}" >/dev/null || { echo "not a commit: $DEFAULT" >&2; exit 1; }
@@ -61,6 +94,14 @@ GIT_INDEX_FILE="$TMP/idx-merged" git read-tree "$MERGED" || exit 1
 
 trimmed() { # ref, path -> the file's lines, trimmed, on stdout (empty if absent)
   git show "$1:$2" 2>/dev/null | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//'
+}
+
+keys() { # stdin: commit messages -> sorted unique ticket keys
+  grep -oE -- "$TICKET" | LC_ALL=C sort -u
+}
+
+difstat() { # path -> "+added/-removed" between the two
+  git diff --numstat "$DEFAULT" "$MERGED" -- "$1" | awk '{print "+" $1 "/-" $2}'
 }
 
 findings=0
@@ -109,19 +150,37 @@ done
 
 # --- 2. Differences no unreleased ticket explains
 echo
-echo "== Differences between $DEFAULT and $MERGED that no unreleased ticket explains"
-git log "$DEFAULT" --format='%s%n%b' | grep -oE "$TICKET" | sort -u > "$TMP/shipped"
+git log "$DEFAULT" --format='%s%n%b' | keys > "$TMP/shipped"
+git log "$DEFAULT..$MERGED" --format='%s%n%b' | keys > "$TMP/preprod-keys"
 git diff --name-only "$DEFAULT" "$MERGED" > "$TMP/files"
-while IFS= read -r f; do
-  [ -n "$f" ] || continue
-  unreleased=$(git log "$DEFAULT..$MERGED" --no-merges --format='%s%n%b' -- "$f" \
-    | grep -oE "$TICKET" | sort -u | comm -23 - "$TMP/shipped")
-  if [ -z "$unreleased" ]; then
+
+if [ ! -s "$TMP/shipped" ] || [ ! -s "$TMP/preprod-keys" ]; then
+  if [ -s "$TMP/shipped" ]; then side="$DEFAULT..$MERGED"; else side="$DEFAULT"; fi
+  echo "== Differences between $DEFAULT and $MERGED (no ticket keys found in $side)"
+  echo "  Can't tell unreleased work from drift without ticket keys on both sides"
+  echo "  (pattern: $TICKET; pass --ticket for another format). Every differing file:"
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
     findings=$((findings + 1))
-    stat=$(git diff --numstat "$DEFAULT" "$MERGED" -- "$f" | awk '{print "+" $1 "/-" $2}')
-    echo "  $stat  $f"
-  fi
-done < "$TMP/files"
+    echo "  $(difstat "$f")  $f"
+  done < "$TMP/files"
+else
+  echo "== Differences between $DEFAULT and $MERGED that no unreleased ticket explains"
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    # The pre-prod side's own commits, plus the merges that brought work in:
+    # a ticket whose key is only in its branch name or PR title shows up only
+    # in the merge commit's subject.
+    unreleased=$( {
+        git log "$DEFAULT..$MERGED" --no-merges --format='%s%n%b' -- "$f"
+        git log "$DEFAULT..$MERGED" --merges --first-parent --format='%s%n%b' -- "$f"
+      } | keys | LC_ALL=C comm -23 - "$TMP/shipped")
+    if [ -z "$unreleased" ]; then
+      findings=$((findings + 1))
+      echo "  $(difstat "$f")  $f"
+    fi
+  done < "$TMP/files"
+fi
 
 echo
 if [ "$findings" -eq 0 ]; then

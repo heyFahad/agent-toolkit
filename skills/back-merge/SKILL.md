@@ -78,15 +78,22 @@ Finish with `git merge --continue`. This merge commit is commit 1 of the PR, and
 
 ```bash
 GH_TOKEN=$(gh auth token) bash <this skill>/scripts/backmerge-drift-audit.sh \
-  --merged HEAD --default origin/main --since <date of the last clean back-merge, or 90 days>
+  --merged HEAD --since <date of the last clean back-merge, or 90 days>
 ```
 
-It prints two reports:
+Without `--default` it audits against `origin/HEAD`, or the default branch `gh` reports, and stops with an error if neither works. It prints two reports:
 
 1. **Released changes missing from the merged state**: commits on `main` whose change is still on `main` but not in the merge, with the lines that are missing.
-2. **Differences no unreleased ticket explains**: files that differ, where no commit touching them on the pre-prod side names a ticket `main` hasn't shipped.
+2. **Differences no unreleased ticket explains**: files that differ, where no commit touching them on the pre-prod side names a ticket `main` hasn't shipped. The pre-prod side's commits include the merges that brought work in, since a ticket's key is sometimes only in its branch name or PR title.
 
-Both are leads. Classify each one before acting, by comparing the two versions (`git diff origin/main HEAD -- <file>`) and grepping the merged tree for the missing lines:
+The heuristics behind them, so you know what they can miss:
+
+- Ticket keys are Jira-style (`ABC-123`) by default. Pass `--ticket <regex>` for another format. GitHub `#123` references are PR or issue numbers, not ticket keys. When either side has no keys at all, report 2 says it can't tell unreleased work from drift and lists every differing file, for you to sort by hand.
+- A ticket counts as shipped once its key appears anywhere in `main`'s history.
+- Report 1 skips binary changes.
+- Report 1 compares lines with their surrounding whitespace trimmed, so reformatted code (rewrapped, quotes or trailing commas changed) can look like missing lines.
+
+Both reports are leads. Classify each one before acting, by comparing the two versions (`git diff origin/main HEAD -- <file>`) and grepping the merged tree for the missing lines:
 
 | Finding | What to do |
 | --- | --- |
