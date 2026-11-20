@@ -91,7 +91,7 @@ Write replies by the `github-native-writing` and `humanize` skills: bare URLs an
 
 ## 7. Re-review, at most once
 
-After a round that produced real fixes, and once step 6's replies are posted, request Copilot again on every PR that passes step 2's three conditions, once per run of this skill. When the new review arrives, do one more pass. Stop as soon as a round brings only false alarms or nitpicks: answer those and finish, without requesting again.
+Once step 6's replies are posted, check step 2's three conditions on each PR again, whether or not the round produced fixes: a PR can come into this run with commits Copilot never saw and an older review's findings still open, and answering those as not applicable fixes nothing but unblocks the request. Request on every PR that now passes, once per run of this skill. When the new review arrives, do one more pass. Stop as soon as a round brings only false alarms or nitpicks: answer those and finish, without requesting again.
 
 ## 8. Report
 
@@ -99,7 +99,7 @@ Run `pr-gate.sh` on each PR and tell the user, per PR: clean or not, every `bloc
 
 ## 9. Mark the pre-prod PR ready
 
-When `pr-gate.sh` reports no `blocking` reason on any PR (a draft is only a warning), the ticket is ready for other developers. If the pre-prod PR is a draft, mark it ready:
+When `pr-gate.sh` reports no `blocking` reason on any PR (a draft is only a warning), and no PR has a Copilot review pending or `stale` (step 7 requests one when it is), the ticket is ready for other developers. If the pre-prod PR is a draft, mark it ready:
 
 ```bash
 gh pr ready <pre-prod-pr>
