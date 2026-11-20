@@ -44,16 +44,11 @@ Before opening the pre-prod PR, run the pre-check in the `clean-preprod-pr` skil
 
 Give both PRs the same title (see `pr-title-conventions`). Apply a **`production`** label (or the repo's equivalent) to the `main` PR only, never to the pre-prod PR, for easy tracking of what's queued to ship.
 
-### Request Copilot's review on both PRs at once
+### Then stop and wait for the user
 
-As soon as both PRs exist, request a Copilot review on both in one go, rather than waiting for one to finish before asking on the other. Drafts are fine: an explicit request works on a draft PR.
+Drafts exist so that a PR opened by mistake does no harm, so don't build on them yet: don't request reviewers, mark anything ready, or run `check-pr`. Give the user both PR links and ask whether they look right and whether to go ahead with `check-pr`, using the harness's question prompt if it has one (the question box in the Claude desktop app, `AskUserQuestion` in Claude Code), otherwise a plain question at the end of the turn. End the turn there.
 
-```bash
-gh pr edit <main-pr> --add-reviewer @copilot
-gh pr edit <pre-prod-pr> --add-reviewer @copilot
-```
-
-The `check-pr` skill (in `github-tooling`) handles the feedback once it arrives, along with CI and any human reviews.
+On the user's go-ahead, run the `check-pr` skill (in `github-tooling`). It requests Copilot on both PRs, triages Copilot, human and CI feedback, marks the pre-prod PR ready for review once everything is clean, and cleans up. The `main` PR stays a draft until the ticket is released.
 
 ## Handling feedback
 
@@ -73,9 +68,9 @@ Once QA signs off, merge the `main` PR. That's what ships to production.
 
 After a release, `main` should be merged back into the pre-prod branch with a merge commit, never squashed, or the next feature branch's pre-prod PR shows the same unrelated files again. The `back-merge` skill has the whole procedure.
 
-## Parking the branch
+## Cleaning up
 
-Once both PRs are open and their feedback is resolved, merged or not, run the `park-branch` skill. It switches back to `main`, brings it up to date, and deletes the local feature and `conflicts/...` branches, which stay on the remote. This is the last step for every ticket.
+Once both PRs are open and their feedback is resolved, merged or not, the local branches and worktree have nothing left that isn't on the remote. `check-pr` runs the `branch-cleanup` skill at that point; run it yourself if the PRs got clean some other way. This is the last step for every ticket.
 
 ## Skipping the dual-PR process
 
