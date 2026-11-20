@@ -13,7 +13,7 @@ Everything a finished branch holds is on the remote: its commits, and its PRs wh
 
 A **worktree** is removed only when all of these hold:
 
-- It isn't the one the cleanup runs in, and isn't locked (`git worktree lock`).
+- It isn't the one the cleanup runs in, isn't locked (`git worktree lock`), and has no other worktree inside it.
 - **No process is working inside it.** A clean worktree can still be in use: a session waiting on a review, a running dev server. Git can't tell, so the script asks the OS with `lsof`. Without `lsof`, it keeps any worktree whose index changed in the last hour.
 - **No changes**: `git status` shows nothing, tracked or untracked.
 - **No ignored files that can't be rebuilt.** `git worktree remove` deletes ignored files without asking. Dependency and build folders, caches, symlinks and harness-local folders like `.claude/` are fine; a `.env`, a local database, or anything else ignored keeps the worktree, and the report names the file.
@@ -57,6 +57,6 @@ In the main checkout, other sessions may be working too: switch only if `git sta
 A skill that needs a second checkout (a back-merge, a `conflicts/...` branch) should first use the session's own checkout when `git status` is clean, and switch back afterwards. Only when that isn't possible:
 
 1. Use the harness's own worktree feature and location, if it has one.
-2. Otherwise use `<repo>/.worktrees/<name>`. Check that it's ignored (`git check-ignore -q .worktrees/x`), and if it isn't, add `.worktrees/` to `.git/info/exclude`, which needs no commit.
+2. Otherwise use `<repo>/.worktrees/<name>`. Check that it's ignored (`git check-ignore -q .worktrees/x`), and if it isn't, add `.worktrees/` to the repo's shared exclude file, which needs no commit: `echo .worktrees/ >> "$(git rev-parse --git-path info/exclude)"`. Don't write to `.git/info/exclude` directly: in a linked worktree `.git` is a file, not a folder.
 
 Never put a worktree in a scratch or temp directory: it lands outside the folders the harness has permission for, the folder may be wiped while git still lists it, and repo-pinned tool setup (`mise trust`, hooks) has to be repeated there. This cleanup removes extra worktrees wherever they are once they're pushed.

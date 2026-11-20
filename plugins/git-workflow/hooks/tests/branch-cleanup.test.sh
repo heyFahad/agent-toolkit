@@ -62,6 +62,10 @@ echo '{}' > "$W/rebuild/.claude/settings.local.json"
 pushed_wt inuse
 pushed_wt locked;     git worktree lock "$W/locked"
 pushed_wt here
+# A clean, pushed worktree with a dirty one nested in its ignored .claude/.
+pushed_wt outer
+git worktree add -q -b feat/inner "$W/outer/.claude/worktrees/inner" origin/main
+echo changed >> "$W/outer/.claude/worktrees/inner/app.txt"
 git worktree add -q -b feat/unpushed "$W/unpushed" origin/main
 git -C "$W/unpushed" commit -q --allow-empty -m "feat: only here"
 git worktree add -q --detach "$W/detached" origin/main
@@ -120,6 +124,13 @@ if git rev-parse -q --verify refs/heads/claude/stale >/dev/null; then ok; else n
 out=$(cd "$W/here" && bash "$CLEANUP" --dry-run 2>&1)
 wt_is "the worktree it runs in is kept" here kept "runs in"
 
+# --- A missing --default value never swallows the next option. ---
+run --default --dry-run
+if [ "$code" -eq 1 ]; then ok; else no "--default followed by an option exits 1 (got $code)"; fi
+exists "--default --dry-run removes nothing" "$W/clean"
+run --default
+if [ "$code" -eq 1 ]; then ok; else no "a lone --default exits 1 (got $code)"; fi
+
 # --- The real run. ---
 run
 if [ "$code" -eq 0 ]; then ok; else no "exits 0 (got $code)"; fi
@@ -137,6 +148,8 @@ wt_is "unpushed commit: kept" unpushed kept "aren't on any remote"
 wt_is "detached HEAD on a pushed commit: removed" detached removed
 wt_is "detached HEAD with a local-only commit: kept" detached-unpushed kept "detached HEAD"
 wt_is "folder already gone: pruned" gone removed "prunable"
+wt_is "a worktree with another inside it: kept" outer kept "inside it"
+exists "the nested dirty worktree survives" "$W/outer/.claude/worktrees/inner/app.txt"
 if git worktree list | grep -q "/gone "; then no "prunes the missing worktree"; else ok; fi
 
 br_is "a removed worktree's branch is deleted" feat/clean removed
@@ -168,6 +181,13 @@ wt_is "no lsof: recently used worktree kept" inuse kept "index changed"
 printf '#!/bin/bash\nexit 1\n' > "$TMP/bin/lsof-broken" && chmod +x "$TMP/bin/lsof-broken"
 BRANCH_CLEANUP_LSOF="$TMP/bin/lsof-broken" run
 wt_is "lsof that lists nothing: falls back, worktree kept" inuse kept "index changed"
+
+# --- The fast-forward never overwrites an ignored local file. ---
+(cd "$TMP/other" && git pull -q && echo TRACKED=1 > .env && git add -f .env && git commit -q -m "chore: track .env" && git push -q origin main)
+echo LOCAL=1 > "$TMP/repo/.env"
+STUB_LSOF_CWDS="$W/inuse/sub" run
+if [ "$(jq -r .defaultBranch.action <<<"$out")" = kept ]; then ok; else no "won't fast-forward over an ignored local file"; fi
+if grep -q LOCAL=1 "$TMP/repo/.env"; then ok; else no "the ignored local .env is untouched"; fi
 
 echo "branch-cleanup: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

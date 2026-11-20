@@ -52,7 +52,13 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run) DRY_RUN=1 ;;
     --no-fetch) FETCH=0 ;;
-    --default) DEFAULT="${2:-}"; shift ;;
+    --default)
+      # Never take the next option as the value: `--default --dry-run` would
+      # otherwise turn a requested preview into a real cleanup.
+      case "${2:-}" in
+        "" | -*) echo "branch-cleanup: --default needs a branch name" >&2; exit 1 ;;
+      esac
+      DEFAULT="$2"; shift ;;
     *) echo "usage: $0 [--dry-run] [--no-fetch] [--default BRANCH]" >&2; exit 1 ;;
   esac
   shift
@@ -171,7 +177,11 @@ local_only() { # ref
     echo "unresolvable"
     return
   fi
-  git rev-list "$1" --not --remotes 2>/dev/null | head -n 1
+  # A walk that fails (a remote-tracking ref pointing at a missing object,
+  # say) prints nothing, which would read as "pushed": print a marker.
+  local out
+  out=$(git rev-list --max-count=1 "$1" --not --remotes 2>/dev/null) || { echo "walk-failed"; return; }
+  printf '%s' "$out"
 }
 
 merged_pr_head_matches() { # branch tip
@@ -210,7 +220,27 @@ WORKTREES=$(git worktree list --porcelain | awk -v s="$SEP" '
   /^branch /{ b=substr($0,8); sub("^refs/heads/", "", b) }
   /^locked/{ l=1 }
   /^prunable/{ x=1 }
-  END{ if (p != "") print p s b s l s x }' | tail -n +2)
+  END{ if (p != "") print p s b s l s x }' | tail -n +2 | sort -r)
+# Sorted in reverse so a worktree nested inside another comes before it: the
+# nested one is checked, and maybe removed, first.
+
+# Canonical paths of every registered worktree right now, one per line.
+registered_paths() {
+  local p
+  git worktree list --porcelain | sed -n 's/^worktree //p' | while IFS= read -r p; do
+    (cd "$p" 2>/dev/null && pwd -P) || printf '%s\n' "$p"
+  done
+}
+
+# Registered worktrees strictly inside PATH. A function rather than inline in
+# $(...): bash 3.2 takes a case pattern's ")" there as the closing paren.
+nested_in() { # canonical path
+  local p
+  registered_paths | while IFS= read -r p; do
+    [ "$p" = "$1" ] && continue
+    case "$p/" in "$1"/*) printf '%s\n' "$p" ;; esac
+  done
+}
 
 while IFS="$SEP" read -r wt branch locked prunable; do
   [ -z "$wt" ] || [ "$prunable" = 1 ] && continue
@@ -248,6 +278,12 @@ while IFS="$SEP" read -r wt branch locked prunable; do
     if [ -z "$head" ] || ! pushed "$head"; then
       add_wt "$wt" "" kept "detached HEAD with commits that aren't on any remote"; continue
     fi
+  fi
+  # Removing a folder removes every worktree inside it (say, one in its
+  # ignored .claude/worktrees/), whatever that one holds.
+  nested=$(nested_in "$real")
+  if [ -n "$nested" ]; then
+    add_wt "$wt" "$branch" kept "another worktree is inside it" "$nested"; continue
   fi
   if [ "$DRY_RUN" -eq 1 ]; then
     add_wt "$wt" "$branch" would-remove "clean, and everything is pushed"
@@ -311,10 +347,10 @@ else
       { DEF_ACTION=updated; DEF_REASON="fast-forwarded to origin/$DEFAULT"; }
   elif [ -n "$(git -C "$where" status --porcelain --untracked-files=no)" ]; then
     DEF_REASON="checked out at $where with uncommitted changes: not touching it"
-  elif git -C "$where" merge --ff-only --quiet "refs/remotes/origin/$DEFAULT" >/dev/null 2>&1; then
+  elif git -C "$where" merge --ff-only --no-overwrite-ignore --quiet "refs/remotes/origin/$DEFAULT" >/dev/null 2>&1; then
     DEF_ACTION=updated; DEF_REASON="fast-forwarded to origin/$DEFAULT in $where"
   else
-    DEF_REASON="the fast-forward in $where failed"
+    DEF_REASON="the fast-forward in $where failed (it never overwrites ignored local files)"
   fi
 fi
 
