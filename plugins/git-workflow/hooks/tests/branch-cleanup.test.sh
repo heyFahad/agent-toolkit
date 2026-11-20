@@ -66,6 +66,10 @@ pushed_wt here
 pushed_wt outer
 git worktree add -q -b feat/inner "$W/outer/.claude/worktrees/inner" origin/main
 echo changed >> "$W/outer/.claude/worktrees/inner/app.txt"
+# A clean, pushed worktree nested in another clean, pushed one: both go.
+pushed_wt outer2
+git worktree add -q -b feat/inner2 "$W/outer2/.claude/worktrees/inner2" origin/main
+git -C "$W/outer2/.claude/worktrees/inner2" push -q -u origin feat/inner2 2>/dev/null
 git worktree add -q -b feat/unpushed "$W/unpushed" origin/main
 git -C "$W/unpushed" commit -q --allow-empty -m "feat: only here"
 git worktree add -q --detach "$W/detached" origin/main
@@ -118,6 +122,8 @@ wt_is "dry run: clean worktree would go" clean would-remove
 exists "dry run leaves the clean worktree" "$W/clean"
 br_is "dry run: a stale claude/ branch would go" claude/stale would-remove
 br_is "dry run: a removable worktree's branch would go too" feat/clean would-remove
+wt_is "dry run: a clean nested worktree would go" outer2/.claude/worktrees/inner2 would-remove
+wt_is "dry run: its clean parent would go too" outer2 would-remove
 if git rev-parse -q --verify refs/heads/claude/stale >/dev/null; then ok; else no "dry run leaves branches"; fi
 
 # --- From inside a worktree: that one is kept. ---
@@ -149,6 +155,8 @@ wt_is "detached HEAD on a pushed commit: removed" detached removed
 wt_is "detached HEAD with a local-only commit: kept" detached-unpushed kept "detached HEAD"
 wt_is "folder already gone: pruned" gone removed "prunable"
 wt_is "a worktree with another inside it: kept" outer kept "inside it"
+wt_is "a clean nested worktree: removed" outer2/.claude/worktrees/inner2 removed
+wt_is "its clean parent goes in the same run" outer2 removed
 exists "the nested dirty worktree survives" "$W/outer/.claude/worktrees/inner/app.txt"
 if git worktree list | grep -q "/gone "; then no "prunes the missing worktree"; else ok; fi
 

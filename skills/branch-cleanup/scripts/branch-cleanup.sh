@@ -234,10 +234,14 @@ registered_paths() {
 
 # Registered worktrees strictly inside PATH. A function rather than inline in
 # $(...): bash 3.2 takes a case pattern's ")" there as the closing paren.
+# In a dry run, the nested worktrees already marked would-remove count as
+# gone, so the preview matches what a real run removes.
+WOULD_GO_PATHS=""
 nested_in() { # canonical path
   local p
   registered_paths | while IFS= read -r p; do
     [ "$p" = "$1" ] && continue
+    printf '%s\n' "$WOULD_GO_PATHS" | grep -qxF -- "$p" && continue
     case "$p/" in "$1"/*) printf '%s\n' "$p" ;; esac
   done
 }
@@ -286,6 +290,8 @@ while IFS="$SEP" read -r wt branch locked prunable; do
     add_wt "$wt" "$branch" kept "another worktree is inside it" "$nested"; continue
   fi
   if [ "$DRY_RUN" -eq 1 ]; then
+    WOULD_GO_PATHS="$WOULD_GO_PATHS$real
+"
     add_wt "$wt" "$branch" would-remove "clean, and everything is pushed"
   elif err=$(git worktree remove "$wt" 2>&1); then
     add_wt "$wt" "$branch" removed "clean, and everything is pushed"
