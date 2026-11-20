@@ -26,7 +26,7 @@
     },
     {
       "name": "github-tooling",
-      "description": "GitHub CLI tooling conventions and safety checks",
+      "description": "GitHub PR review and CI triage",
       "category": "github",
       "source": "./plugins/github-tooling"
     },

@@ -31,7 +31,7 @@ Stashes belong to the whole repo, not to a worktree or branch, so they survive t
 From any checkout of the repo:
 
 ```bash
-GH_TOKEN=$(env -u GH_TOKEN -u GITHUB_TOKEN gh auth token) bash scripts/branch-cleanup.sh
+bash scripts/branch-cleanup.sh
 ```
 
 The script is in this skill's `scripts/` directory. It fetches `origin` (a plain fetch, no `--prune`, so a merged PR's `origin/<branch>` ref still proves it was pushed), cleans up, fast-forwards the local default branch, and prints JSON. Flags: `--dry-run` reports without changing anything, `--no-fetch` skips the fetch, `--default BRANCH` names the default branch when neither `gh` nor `origin/HEAD` can tell. The `gh-token-export` hook in `github-tooling` denies the call without the `GH_TOKEN` prefix.
