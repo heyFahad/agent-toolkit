@@ -160,12 +160,14 @@ A repo's checks may already fail on the pre-prod branch, so before blaming the m
 ```bash
 # One error per line, line numbers dropped: on the back-merge branch...
 npx tsc --noEmit | grep 'error TS' | sed -E 's/\([0-9]+,[0-9]+\)//' | sort > <scratch-dir>/branch.txt
-# ...and at the pre-prod tip, after its own install, in the same checkout.
-git switch --detach origin/<pre-prod>
-npx tsc --noEmit | grep 'error TS' | sed -E 's/\([0-9]+,[0-9]+\)//' | sort > <scratch-dir>/base.txt
-git switch conflicts/backmerge-<release>
+# ...and in a worktree at the pre-prod tip, after its own install.
+git worktree add --detach <repo>/.worktrees/base-<release> origin/<pre-prod>
+(cd <repo>/.worktrees/base-<release> && npx tsc --noEmit) | grep 'error TS' | sed -E 's/\([0-9]+,[0-9]+\)//' | sort > <scratch-dir>/base.txt
 comm -13 <scratch-dir>/base.txt <scratch-dir>/branch.txt   # new errors: each one needs a look
+git worktree remove <repo>/.worktrees/base-<release>
 ```
+
+The baseline gets its own worktree because step 4's reconciliation may not be committed yet, and switching the back-merge checkout to the pre-prod tip would carry those edits into the baseline or refuse. Put it where `branch-cleanup`'s "Making an extra worktree" says (the harness's own location, else `<repo>/.worktrees/`), never in a scratch directory; only the error lists go there.
 
 A new error is often the "`main` itself is broken" row from step 4's table.
 
