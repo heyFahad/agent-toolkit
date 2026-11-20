@@ -107,8 +107,16 @@ LSOF=${BRANCH_CLEANUP_LSOF-$(command -v lsof 2>/dev/null || true)}
 HAVE_LSOF=0
 PROC_CWDS=""
 if [ -n "$LSOF" ]; then
-  HAVE_LSOF=1
   PROC_CWDS=$("$LSOF" -a -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | sort -u)
+  # This script's own shell has a working directory, so a scan that lists
+  # none failed (lsof exits non-zero for unreadable processes even when the
+  # rest of its output is fine, so its exit status can't tell). Fall back to
+  # the index check rather than treat every worktree as unused.
+  if [ -n "$PROC_CWDS" ]; then
+    HAVE_LSOF=1
+  else
+    echo "branch-cleanup: lsof listed no working directories; using the recent-index check instead" >&2
+  fi
 fi
 
 in_use() { # path
@@ -156,8 +164,13 @@ precious_ignored() { # path
     done
 }
 
-# Commits reachable from REF that no remote ref has. Empty means pushed.
+# Commits reachable from REF that no remote ref has. Empty means pushed. A
+# ref that doesn't resolve prints a marker, so it never counts as pushed.
 local_only() { # ref
+  if ! git rev-parse -q --verify "$1^{commit}" >/dev/null; then
+    echo "unresolvable"
+    return
+  fi
   git rev-list "$1" --not --remotes 2>/dev/null | head -n 1
 }
 
@@ -188,14 +201,18 @@ fi
 
 # One record per linked worktree: path, branch (or empty), locked flag,
 # prunable flag. The first entry is the main checkout, which is never removed.
-WORKTREES=$(git worktree list --porcelain | awk '
-  /^worktree /{ if (p != "") print p "\t" b "\t" l "\t" x; p=substr($0,10); b=""; l=0; x=0 }
+# Fields are split on the ASCII unit separator, not a tab: `read` collapses
+# runs of whitespace separators, so a detached worktree's empty branch field
+# would vanish and the locked flag would be read as its branch.
+SEP=$'\037'
+WORKTREES=$(git worktree list --porcelain | awk -v s="$SEP" '
+  /^worktree /{ if (p != "") print p s b s l s x; p=substr($0,10); b=""; l=0; x=0 }
   /^branch /{ b=substr($0,8); sub("^refs/heads/", "", b) }
   /^locked/{ l=1 }
   /^prunable/{ x=1 }
-  END{ if (p != "") print p "\t" b "\t" l "\t" x }' | tail -n +2)
+  END{ if (p != "") print p s b s l s x }' | tail -n +2)
 
-while IFS=$'\t' read -r wt branch locked prunable; do
+while IFS="$SEP" read -r wt branch locked prunable; do
   [ -z "$wt" ] || [ "$prunable" = 1 ] && continue
   real=$(cd "$wt" 2>/dev/null && pwd -P) || real="$wt"
   case "$HERE_TOP/" in "$real"/*)

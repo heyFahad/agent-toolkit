@@ -65,6 +65,9 @@ pushed_wt here
 git worktree add -q -b feat/unpushed "$W/unpushed" origin/main
 git -C "$W/unpushed" commit -q --allow-empty -m "feat: only here"
 git worktree add -q --detach "$W/detached" origin/main
+# A detached HEAD with a commit made only here.
+git worktree add -q --detach "$W/detached-unpushed" origin/main
+git -C "$W/detached-unpushed" commit -q --allow-empty -m "wip: detached"
 git worktree add -q -b feat/gone "$W/gone" origin/main
 rm -rf "$W/gone"
 
@@ -100,7 +103,7 @@ br_is() { # desc branch action
 }
 exists() { if [ -e "$2" ]; then ok; else no "$1"; fi; }
 gone() { if [ -e "$2" ]; then no "$1"; else ok; fi; }
-run() { out=$(bash "$CLEANUP" "$@" 2>&1); code=$?; }
+run() { out=$(bash "$CLEANUP" "$@" 2>"$TMP/stderr"); code=$?; }
 
 export STUB_LSOF_CWDS="$W/inuse/sub"
 
@@ -132,6 +135,7 @@ wt_is "a process works inside it: kept" inuse kept "in use"
 wt_is "locked: kept" locked kept "locked"
 wt_is "unpushed commit: kept" unpushed kept "aren't on any remote"
 wt_is "detached HEAD on a pushed commit: removed" detached removed
+wt_is "detached HEAD with a local-only commit: kept" detached-unpushed kept "detached HEAD"
 wt_is "folder already gone: pruned" gone removed "prunable"
 if git worktree list | grep -q "/gone "; then no "prunes the missing worktree"; else ok; fi
 
@@ -158,6 +162,12 @@ br_is "a merged PR whose head differs doesn't count" merged-other kept
 # --- Without lsof, a recently changed index counts as in use. ---
 BRANCH_CLEANUP_LSOF="" run
 wt_is "no lsof: recently used worktree kept" inuse kept "index changed"
+
+# An lsof that lists nothing failed: fall back to the index check, never
+# treat every worktree as unused.
+printf '#!/bin/bash\nexit 1\n' > "$TMP/bin/lsof-broken" && chmod +x "$TMP/bin/lsof-broken"
+BRANCH_CLEANUP_LSOF="$TMP/bin/lsof-broken" run
+wt_is "lsof that lists nothing: falls back, worktree kept" inuse kept "index changed"
 
 echo "branch-cleanup: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
