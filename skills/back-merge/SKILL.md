@@ -102,7 +102,7 @@ Finish with `git merge --continue`. This merge commit is commit 1 of the PR, and
 ## 4. Audit the drift
 
 ```bash
-GH_TOKEN=$(env -u GH_TOKEN -u GITHUB_TOKEN gh auth token) bash <this skill>/scripts/backmerge-drift-audit.sh \
+bash <this skill>/scripts/backmerge-drift-audit.sh \
   --merged HEAD --since <date of the last audited back-merge>
 ```
 

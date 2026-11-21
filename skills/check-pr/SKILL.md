@@ -13,7 +13,7 @@ The first run on a ticket's new PRs waits for the user: `branching-pr-workflow` 
 
 ## Scripts
 
-All in this skill's `scripts/` directory, all print JSON. Run each one as `GH_TOKEN=$(env -u GH_TOKEN -u GITHUB_TOKEN gh auth token) bash scripts/<name>.sh ...` (the `gh-token-export` hook in this plugin denies the call otherwise). Keep the `env -u`: without it, `gh auth token` prints any `GH_TOKEN` or `GITHUB_TOKEN` already exported in the shell instead of the keyring login, and a token with fewer scopes makes writes such as `reply-thread.sh` fail. `-R OWNER/REPO` is optional; without it the repo is the current checkout's.
+All in this skill's `scripts/` directory, all print JSON. Run each one as `bash scripts/<name>.sh ...`. Each script uses your `gh` keyring login even when a `GITHUB_TOKEN` with fewer scopes is exported, so writes such as `reply-thread.sh` don't fail on it. `-R OWNER/REPO` is optional; without it the repo is the current checkout's.
 
 | Script | Gives you |
 | --- | --- |
