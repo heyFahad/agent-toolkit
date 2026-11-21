@@ -305,6 +305,26 @@ check "missed: tags quoted in a description" \
 # shellcheck disable=SC2016 # literal backticks
 check "missed: quoted tags kept in the body" '"Closing `</details>` in prose."' "$(q '.missedIssues[1].body')"
 
+# A collapsed block inside a description stays in the body, and the
+# description's entities stay as written (only titles are escaped).
+# shellcheck disable=SC2016 # literal backticks: code spans
+printf '%s\n' '<details>' '<summary><strong>1 previously missed issue</strong></summary>' '' '<details>' \
+  '<summary><img alt="Medium severity"> Don&#39;t drop it</summary>' '' '`c.sh:5`' '' 'Use `a &lt; b`.' \
+  '<details>' '<summary>Repro</summary>' '' 'steps' '</details>' 'After.' '</details>' '</details>' >"$FX/body.txt"
+copilot_fixture "$FX/body.txt"
+run copilot-review.sh -R o/r 12
+check "missed: nested block kept, entities only decoded in the title" \
+  "$(jq -nc '["Don'"'"'t drop it", "c.sh", 5, "Use `a &lt; b`.\n<details>\n<summary>Repro</summary>\n\nsteps\n</details>\nAfter.", false]')" \
+  "$(q '[(.missedIssues[0] | .title, .path, .line, .body), .missedIssuesUnparsed]')"
+
+# A summary wrapped across lines isn't parsed, so it must be flagged.
+# shellcheck disable=SC2016 # literal backticks: a code span
+printf '%s\n' '<details>' '<summary>' '<strong>2 previously missed issues</strong>' '</summary>' '' '<details>' \
+  '<summary>One</summary>' '' '`a.ts:1`' '' 'Text.' '</details>' '</details>' >"$FX/body.txt"
+copilot_fixture "$FX/body.txt"
+run copilot-review.sh -R o/r 12
+check "missed: wrapped section summary flagged" true "$(q .missedIssuesUnparsed)"
+
 # The section is there, but its findings are in a shape the parser does not
 # know: flag it rather than report nothing.
 printf '<!-- ccr-overview-v2 -->\n\n**No open issues**\n\n<details>\n<summary><strong>2 previously missed issues</strong></summary>\n\n- **a.ts:1** something\n- **b.ts:2** else\n</details>\n' >"$FX/body.txt"

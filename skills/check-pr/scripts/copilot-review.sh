@@ -103,13 +103,16 @@ RESULT=$(gh api graphql -f query="$QUERY" -f owner="$OWNER" -f name="$NAME" -F n
     # The findings under the "N previously missed issues" summary. depth
     # counts open <details> blocks from the section itself (1) down; each
     # finding is a block at depth 2. Only tags that start a line count, so a
-    # description that mentions `<details>` in prose leaves depth alone.
-    # Lines inside ``` fences are body text.
+    # description that mentions `<details>` in prose leaves depth alone. A
+    # block nested inside a description (depth 3 and up) stays in that
+    # body of that finding, tags and all. Lines inside ``` fences are body text.
+    # Only the title is HTML-decoded: Copilot escapes summaries, not
+    # descriptions, and decoding those would change their code spans.
     def missed_items:
       reduce (split("\n")[] | sub("\r$"; "")) as $l ({items: [], in: false, done: false, depth: 0, cur: false, fence: false};
         if .done then .
         elif (.in | not) then
-          if ($l | test("<summary>(?:(?!</summary>).)*previously missed issue"; "i")) then .in = true | .depth = 1 else . end
+          if ($l | test("<summary>(?:(?!</summary>).)*previously\\s+missed\\s+issue"; "i")) then .in = true | .depth = 1 else . end
         elif .fence then
           .items[-1].lines += [$l] | .fence = ($l | test("^\\s*```") | not)
         else
@@ -124,8 +127,8 @@ RESULT=$(gh api graphql -f query="$QUERY" -f owner="$OWNER" -f name="$NAME" -F n
                   title: ($l | capture("<summary>(?<t>.*?)(?:</summary>|$)").t
                     | gsub("<picture>.*?</picture>"; "") | gsub("<[^>]*>"; "") | decode_html | trim_ws),
                   path: null, line: null, lines: []}]
-            elif .cur and .depth == 2 and ($l | test("^\\s*</?details\\b") | not) then
-              if .items[-1].path == null and all(.items[-1].lines[]; test("^\\s*$"))
+            elif .cur and (.depth - $c) >= 2 then
+              if .depth == 2 and .items[-1].path == null and all(.items[-1].lines[]; test("^\\s*$"))
                 and ($l | test("^\\s*`[^`]+`\\s*$")) then
                 ($l | strip_zw | capture("`(?<loc>[^`]+)`").loc | trim_ws) as $loc
                 | (($loc | capture("^(?<p>.+?):(?<n>[0-9]+)(?:-[0-9]+)?$")) // {p: $loc, n: null}) as $m
@@ -141,12 +144,14 @@ RESULT=$(gh api graphql -f query="$QUERY" -f owner="$OWNER" -f name="$NAME" -F n
           | if .depth < 1 then .done = true else . end
         end)
       | [.items[] | {severity, path, line, title,
-          body: (.lines | join("\n") | strip_zw | decode_html | trim_ws)}];
+          body: (.lines | join("\n") | strip_zw | trim_ws)}];
 
     # The <summary> that opens the missed-issues section, or null. Prose
     # elsewhere in the body that mentions previously missed issues is not it.
+    # It may span lines, which missed_items does not parse: then nothing is
+    # parsed and missedIssuesUnparsed says to read the body.
     def missed_summary:
-      first(capture("<summary>(?<s>(?:(?!</summary>).)*previously missed issue(?:(?!</summary>).)*)</summary>"; "i").s) // null;
+      first(capture("(?s)<summary>(?<s>(?:(?!</summary>).)*previously\\s+missed\\s+issue(?:(?!</summary>).)*)</summary>"; "i").s) // null;
 
     .data.repository.pullRequest as $pr
     | ([$pr.reviews.nodes[] | select((.author.login // "") | test($copilot)) | select(.submittedAt != null)]
