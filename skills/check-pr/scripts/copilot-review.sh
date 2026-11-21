@@ -16,11 +16,13 @@
 #       - low-confidence comments (the older format): a <details> block whose
 #         summary mentions "low confidence", as "**path:line**" headings
 #         followed by "* comment" bullets.
-#   - whether the missed issues have been answered: a PR comment carrying
-#     missedIssuesMarker, which check-pr posts once it has assessed them.
-#     Only comments by the gh user running this, or by the repo's owner,
+#   - whether the missed issues have been answered: a PR comment whose last
+#     line is missedIssuesMarker, which check-pr posts once it has assessed
+#     them. A comment that only quotes the marker elsewhere doesn't count,
+#     and only comments by the gh user running this, or by the repo's owner,
 #     members and collaborators, count: on a public repo anyone else could
-#     post the marker.
+#     post the marker. All of the PR's comments are searched, and only when
+#     there is something to answer.
 #
 # Prints JSON:
 #   {headOid, requested,
@@ -30,8 +32,9 @@
 #    missedIssuesMarker, missedIssuesAnswered,
 #    lowConfidence: [{path, line, body}], lowConfidenceUnparsed}
 # severity is "High", "Medium" or "Low" as Copilot wrote it, or null.
-# missedIssuesUnparsed is true when the body has that section but fewer
-# findings could be parsed out of it than it announces, and
+# missedIssuesUnparsed is true when the body has that section (a <summary>
+# saying "previously missed issues", not the words anywhere in the body) but
+# fewer findings could be parsed out of it than its summary announces, and
 # lowConfidenceUnparsed when it has that section and nothing could be parsed
 # out of it. Either means GitHub changed the format: read the body by hand.
 # missedIssuesMarker is null without a review.
@@ -54,12 +57,23 @@ QUERY='query($owner: String!, $name: String!, $number: Int!) {
       reviews(last: 100) {
         nodes { id state submittedAt url body author { login } commit { oid } }
       }
-      comments(last: 100) { nodes { body viewerDidAuthor authorAssociation } }
     }
   }
 }'
 
-gh api graphql -f query="$QUERY" -f owner="$OWNER" -f name="$NAME" -F number="$PR" |
+# shellcheck disable=SC2016 # GraphQL variables, not shell ones
+COMMENTS_QUERY='query($owner: String!, $name: String!, $number: Int!, $endCursor: String) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      comments(first: 100, after: $endCursor) {
+        pageInfo { hasNextPage endCursor }
+        nodes { body viewerDidAuthor authorAssociation }
+      }
+    }
+  }
+}'
+
+RESULT=$(gh api graphql -f query="$QUERY" -f owner="$OWNER" -f name="$NAME" -F number="$PR" |
   jq --arg copilot "$COPILOT_LOGIN_RE" '
     def trim_ws: sub("^\\s+"; "") | sub("\\s+$"; "");
     # Copilot puts zero-width spaces in paths so GitHub does not autolink them.
@@ -129,10 +143,10 @@ gh api graphql -f query="$QUERY" -f owner="$OWNER" -f name="$NAME" -F number="$P
       | [.items[] | {severity, path, line, title,
           body: (.lines | join("\n") | strip_zw | decode_html | trim_ws)}];
 
-    # How many findings a section heading announces ("7 previously missed
-    # issues"), or 1 when it gives no number: there is at least one.
-    def announced($re):
-      ((capture("(?<n>[0-9]+)\\s*" + $re; "i").n | tonumber) // 1);
+    # The <summary> that opens the missed-issues section, or null. Prose
+    # elsewhere in the body that mentions previously missed issues is not it.
+    def missed_summary:
+      first(capture("<summary>(?<s>(?:(?!</summary>).)*previously missed issue(?:(?!</summary>).)*)</summary>"; "i").s) // null;
 
     .data.repository.pullRequest as $pr
     | ([$pr.reviews.nodes[] | select((.author.login // "") | test($copilot)) | select(.submittedAt != null)]
@@ -140,6 +154,7 @@ gh api graphql -f query="$QUERY" -f owner="$OWNER" -f name="$NAME" -F number="$P
     | ($r.body // "") as $body
     | ($body | lowconf_section | lowconf_items) as $items
     | ($body | missed_items) as $missed
+    | ($body | missed_summary) as $msum
     | (if $r == null then null else "<!-- check-pr: answered missed issues of review \($r.id) -->" end) as $marker
     | {
         headOid: $pr.headRefOid,
@@ -147,12 +162,24 @@ gh api graphql -f query="$QUERY" -f owner="$OWNER" -f name="$NAME" -F number="$P
         review: (if $r == null then null else {id: $r.id, state: $r.state, submittedAt: $r.submittedAt, commit: $r.commit.oid, url: $r.url, body: $body} end),
         stale: ($r != null and $r.commit.oid != $pr.headRefOid),
         missedIssues: $missed,
-        missedIssuesUnparsed: (($body | test("previously missed issue"; "i"))
-          and ($missed | length) < ($body | announced("previously missed issue"))),
+        # The count in the summary ("7 previously missed issues"), or 1 when
+        # it gives none: there is at least one.
+        missedIssuesUnparsed: ($msum != null
+          and ($missed | length) < (($msum | capture("(?<n>[0-9]+)").n | tonumber) // 1)),
         missedIssuesMarker: $marker,
-        missedIssuesAnswered: ($marker != null and any(($pr.comments.nodes // [])[]
-          | select(.viewerDidAuthor or (.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR")));
-          (.body // "") | contains($marker))),
+        missedIssuesAnswered: false,
         lowConfidence: $items,
         lowConfidenceUnparsed: (($items | length) == 0 and ($body | test("<summary>[^\n]*low confidence|suppressed due to low confidence"; "i")))
-      }'
+      }')
+
+# Only look for an answer when there is something to answer.
+if printf '%s' "$RESULT" | jq -e '.missedIssuesMarker != null and ((.missedIssues | length) > 0 or .missedIssuesUnparsed)' >/dev/null; then
+  RESULT=$(gh api graphql --paginate -f query="$COMMENTS_QUERY" -f owner="$OWNER" -f name="$NAME" -F number="$PR" |
+    jq -s --argjson result "$RESULT" '
+      ($result.missedIssuesMarker) as $marker
+      | [.[].data.repository.pullRequest.comments.nodes[]
+          | select(.viewerDidAuthor or (.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR")))
+          | (.body // "") | sub("\\s+$"; "") | split("\n") | last // "" | sub("^\\s+"; "")] as $lasts
+      | $result | .missedIssuesAnswered = any($lasts[]; . == $marker)')
+fi
+printf '%s\n' "$RESULT"

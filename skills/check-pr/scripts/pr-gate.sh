@@ -70,6 +70,7 @@ RESULT=$(jq -n --arg repo "$REPO" --argjson pr "$PR" \
               | map(. as $s | ($m | map(select(.severity == $s)) | length) as $n
                 | if $n > 0 then "\($n) \($s // "unknown severity")" else empty end)
               | join(", "))
+            + (if $copilot.missedIssuesUnparsed then "; the section announces more than could be parsed, so read the review body for the rest" else "" end)
           end)} else empty end),
       (if $copilot.requested then {reason: "copilot-pending", detail: "a Copilot review is requested and has not arrived yet"} else empty end),
       (if $p.mergeable == "CONFLICTING" then {reason: "merge-conflict", detail: "the PR has merge conflicts with its base branch"} else empty end)

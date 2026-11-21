@@ -42,6 +42,7 @@ case "$all" in
   *resolveReviewThread*) out "$FX/resolve.json" ;;
   *"node(id:"*) out "$FX/node.json" ;;
   *reviewThreads*) cat "$FX"/threads-*.json ;;
+  *viewerDidAuthor*) cat "$FX"/comments-*.json ;;
   *latestOpinionatedReviews*) out "$FX/prinfo.json" ;;
   *statusCheckRollup*) out "$FX/checks.json" ;;
   *reviewRequests*) out "$FX/copilot.json" ;;
@@ -215,15 +216,25 @@ check "copilot: no review, no missed issues" '[[],false,null,false]' \
 # 6007775440 says "No open issues" and has 7 of them, 6007724043 has 2 open
 # issues (with threads) and 6 missed ones.
 # copilot_fixture BODY_FILE [COMMENT_BODY [AUTHOR_ASSOCIATION]]: one Copilot
-# review with that body, and a PR comment from someone else (a collaborator
-# unless AUTHOR_ASSOCIATION says otherwise).
+# review with that body. The PR's comments come in two pages: an unrelated
+# one first, then COMMENT_BODY from someone else (a collaborator unless
+# AUTHOR_ASSOCIATION says otherwise), so an answer is only found by reading
+# every page.
 copilot_fixture() {
-  jq -n --rawfile body "$1" --arg comment "${2:-}" --arg assoc "${3:-COLLABORATOR}" '{data: {repository: {pullRequest: {headRefOid: "head1",
+  jq -n --rawfile body "$1" '{data: {repository: {pullRequest: {headRefOid: "head1",
     reviewRequests: {nodes: []},
     reviews: {nodes: [{id: "R9", state: "COMMENTED", submittedAt: "2026-01-04T00:00:00Z", url: "r9", body: $body,
-      author: {login: "copilot-pull-request-reviewer"}, commit: {oid: "head1"}}]},
-    comments: {nodes: (if $comment == "" then [] else [{body: "unrelated", viewerDidAuthor: true, authorAssociation: "OWNER"},
-      {body: $comment, viewerDidAuthor: false, authorAssociation: $assoc}] end)}}}}}' >"$FX/copilot.json"
+      author: {login: "copilot-pull-request-reviewer"}, commit: {oid: "head1"}}]}}}}}' >"$FX/copilot.json"
+  echo '{"data":{"repository":{"pullRequest":{"comments":{"pageInfo":{"hasNextPage":true,"endCursor":"c"},"nodes":[
+    {"body":"unrelated","viewerDidAuthor":true,"authorAssociation":"OWNER"}]}}}}}' >"$FX/comments-1.json"
+  comments_page2 "${2:-}" "${3:-COLLABORATOR}" false
+}
+# comments_page2 BODY ASSOCIATION VIEWER_DID_AUTHOR: the second page of PR
+# comments, empty when BODY is.
+comments_page2() {
+  jq -n --arg b "$1" --arg a "$2" --argjson v "$3" '{data: {repository: {pullRequest: {comments: {
+    pageInfo: {hasNextPage: false, endCursor: null},
+    nodes: (if $b == "" then [] else [{body: $b, viewerDidAuthor: $v, authorAssociation: $a}] end)}}}}}' >"$FX/comments-2.json"
 }
 
 copilot_fixture "$HERE/fixtures/copilot-review-missed-only.txt"
@@ -250,7 +261,19 @@ check "missed: open issues (threads) not counted" 6 "$(q '.missedIssues | length
 check "missed: all medium" '["Medium"]' "$(q '[.missedIssues[].severity] | unique')"
 check "missed: HTML entities decoded" '"Isolate each finding'"'"'s changes before creating fixup commits"' "$(q '.missedIssues[1].title')"
 check "missed: last finding" '["skills/give-pr-review/SKILL.md",24]' "$(q '.missedIssues[-1] | [.path, .line]')"
-check "missed: answered by a PR comment with the marker" true "$(q .missedIssuesAnswered)"
+check "missed: answered by a PR comment with the marker, on a later page" true "$(q .missedIssuesAnswered)"
+check "missed: comments read page by page" 1 "$(calls 'graphql --paginate')"
+
+# The marker counts only as the last line: quoting it in instructions is not
+# an answer.
+copilot_fixture "$HERE/fixtures/copilot-review-open-and-missed.txt" \
+  "$(printf 'Append <!-- check-pr: answered missed issues of review R9 --> once you have assessed these.\nThanks.')"
+run copilot-review.sh -R o/r 12
+check "missed: a quoted marker does not count" false "$(q .missedIssuesAnswered)"
+copilot_fixture "$HERE/fixtures/copilot-review-open-and-missed.txt" \
+  "$(printf 'Answered.\n  <!-- check-pr: answered missed issues of review R9 -->  \n\n')"
+run copilot-review.sh -R o/r 12
+check "missed: trailing whitespace around the marker is fine" true "$(q .missedIssuesAnswered)"
 
 # A marker for some other review does not answer this one.
 copilot_fixture "$HERE/fixtures/copilot-review-open-and-missed.txt" '<!-- check-pr: answered missed issues of review R1 -->'
@@ -288,6 +311,15 @@ printf '<!-- ccr-overview-v2 -->\n\n**No open issues**\n\n<details>\n<summary><s
 copilot_fixture "$FX/body.txt"
 run copilot-review.sh -R o/r 12
 check "missed: unknown format flagged" '[[],true]' "$(q '[.missedIssues, .missedIssuesUnparsed]')"
+
+# Prose that mentions previously missed issues is not the section (Copilot's
+# own "What changed" summary of PR 27 did), and nothing needs answering, so
+# the PR's comments aren't read.
+printf '<!-- ccr-overview-v2 -->\n\n<details>\n<summary><strong>What changed in this PR</strong></summary>\n\n- Parses 3 previously missed issues and tracks them.\n</details>\n' >"$FX/body.txt"
+copilot_fixture "$FX/body.txt"
+run copilot-review.sh -R o/r 12
+check "missed: prose mention is not a section" '[[],false,false]' "$(q '[.missedIssues, .missedIssuesUnparsed, .missedIssuesAnswered]')"
+check "missed: no comments read when nothing needs answering" 0 "$(calls viewerDidAuthor)"
 
 # Fewer parsed than announced also counts as unparsed.
 # shellcheck disable=SC2016 # literal backticks: a code span
@@ -430,8 +462,7 @@ check "gate: missed issues block" '["missed-issues"]' "$(q '[.blocking[].reason]
 check "gate: missed issues detail" '"the Copilot review body lists 7 previously missed issue(s) with no thread: 5 High, 2 Medium"' \
   "$(q '.blocking[0].detail')"
 
-jq '.data.repository.pullRequest.comments.nodes = [{"body": "Done.\n<!-- check-pr: answered missed issues of review R9 -->", "viewerDidAuthor": true, "authorAssociation": "NONE"}]' \
-  "$FX/copilot.json" >"$FX/c2.json" && mv "$FX/c2.json" "$FX/copilot.json"
+comments_page2 "$(printf 'Done.\n<!-- check-pr: answered missed issues of review R9 -->')" NONE true
 run pr-gate.sh -R o/r 12
 check "gate: answered missed issues no longer block" '[true,[]]' "$(q '[.clean, .blocking]')"
 
@@ -441,6 +472,16 @@ jq '.data.repository.pullRequest.headRefOid = "head2" | .data.repository.pullReq
   "$FX/copilot.json" >"$FX/c2.json" && mv "$FX/c2.json" "$FX/copilot.json"
 run pr-gate.sh -R o/r 12
 check "gate: unparsed missed issues block" '["missed-issues"]' "$(q '[.blocking[].reason]')"
+
+# A partial parse says there is more to read.
+# shellcheck disable=SC2016 # literal backticks: a code span
+printf '<details>\n<summary><strong>2 previously missed issues</strong></summary>\n\n<details>\n<summary><img alt="High severity"> Only one</summary>\n\n`a.ts:3`\n\nText.\n</details>\n</details>\n' >"$FX/body.txt"
+copilot_fixture "$FX/body.txt"
+jq '.data.repository.pullRequest.headRefOid = "head2" | .data.repository.pullRequest.reviews.nodes[0].commit.oid = "head2"' \
+  "$FX/copilot.json" >"$FX/c2.json" && mv "$FX/c2.json" "$FX/copilot.json"
+run pr-gate.sh -R o/r 12
+check "gate: partial parse detail" '"the Copilot review body lists 1 previously missed issue(s) with no thread: 1 High; the section announces more than could be parsed, so read the review body for the rest"' \
+  "$(q '.blocking[0].detail')"
 
 echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]
