@@ -6,15 +6,19 @@
 # skill when it denies a back-merge PR from the default branch.
 #
 #   1. Merge conflicts (git merge-tree).
-#   2. A noisy diff. The default branch is squash-merged, and back-merges
-#      from it into pre-prod don't always happen. A feature branch cut from
-#      the default branch then carries the squash commits that pre-prod has
-#      only in their original form, so a PR from it lists those files too,
-#      even though pre-prod already has that content. A PR from a
-#      conflicts/... branch cut from pre-prod shows only the feature's files.
+#   2. A noisy diff. Each ticket reaches the default branch through a
+#      commit pre-prod doesn't have (a squash commit, or the default
+#      branch's own merge commit), and back-merges from it into pre-prod
+#      don't always happen. The two branches then share no recent commit
+#      that holds all the tickets both already have; there are often
+#      several merge bases, and GitHub diffs against one of them. A PR from
+#      a feature branch cut from the default branch then lists other
+#      tickets' files too, even though pre-prod already has that content.
+#      A PR from a conflicts/... branch cut from pre-prod shows only the
+#      feature's files.
 #
 #      A back-merge PR whose head is the default branch itself hits the same
-#      thing, worse: it lists every squash commit since the last back-merge,
+#      thing, worse: it lists many of the tickets merged since the last back-merge,
 #      though pre-prod has nearly all of that content already. For that head
 #      the check compares the files the PR would list with the files the
 #      merge would actually change, and denies when the first has more. The
@@ -162,7 +166,7 @@ if [ "$BACK_MERGE" = true ]; then
   EXTRA_COUNT=$(printf '%s\n' "$EXTRA_FILES" | wc -l | tr -d ' ')
   REAL_COUNT=$(printf '%s\n' "$REAL_FILES" | sed '/^$/d' | wc -l | tr -d ' ')
   EXTRA_SAMPLE=$(printf '%s\n' "$EXTRA_FILES" | sed -n '1,20p')
-  deny "$(printf 'Preprod-pr-check: a back-merge PR straight from "%s" into %s would list %s file(s) that the merge would not change (it really changes %s file(s) in %s). %s already has their content from the original ticket commits; %s has it as squash commits that are not in %s'"'"'s history, so GitHub diffs %s against an old merge base and lists them anyway.\n\nDo not open this PR from %s. Follow the back-merge skill: open the back-merge from a conflicts branch, whose files tab shows only what the merge really changes:\n\n  git switch -c conflicts/backmerge-<release> origin/%s\n  git merge --no-ff origin/%s\n  git push -u origin conflicts/backmerge-<release>\n\nthen open the PR against %s from that branch. Merge it with a merge commit (gh pr merge --merge), never squashed: the merge commit is what puts %s'"'"'s commits into %s'"'"'s history. Close any back-merge PR already open straight from %s.\n\n--- files the PR from %s would list but the merge would not change ---\n%s' \
+  deny "$(printf 'Preprod-pr-check: a back-merge PR straight from "%s" into %s would list %s file(s) that the merge would not change (it really changes %s file(s) in %s). %s already has their content from the original ticket commits; %s got it through its own merge or squash commits, which are not in %s'"'"'s history, so GitHub diffs %s against an old or partial merge base and lists them anyway.\n\nDo not open this PR from %s. Follow the back-merge skill: open the back-merge from a conflicts branch, whose files tab shows only what the merge really changes:\n\n  git switch -c conflicts/backmerge-<release> origin/%s\n  git merge --no-ff origin/%s\n  git push -u origin conflicts/backmerge-<release>\n\nthen open the PR against %s from that branch. Merge it with a merge commit (gh pr merge --merge), never squashed: the merge commit is what puts %s'"'"'s commits into %s'"'"'s history. Close any back-merge PR already open straight from %s.\n\n--- files the PR from %s would list but the merge would not change ---\n%s' \
     "$HEAD_BRANCH" "$BASE_BRANCH" "$EXTRA_COUNT" "$REAL_COUNT" "$BASE_BRANCH" "$BASE_BRANCH" "$HEAD_BRANCH" "$BASE_BRANCH" "$HEAD_BRANCH" \
     "$HEAD_BRANCH" \
     "$BASE_BRANCH" "$DEFAULT_BRANCH" \
@@ -177,7 +181,7 @@ if [ -n "$EXTRA_FILES" ]; then
   EXTRA_COUNT=$(printf '%s\n' "$EXTRA_FILES" | wc -l | tr -d ' ')
   OWN_COUNT=$(printf '%s\n' "$OWN_FILES" | sed '/^$/d' | wc -l | tr -d ' ')
   EXTRA_SAMPLE=$(printf '%s\n' "$EXTRA_FILES" | sed -n '1,20p')
-  deny "$(printf 'Preprod-pr-check: a PR from "%s" into %s would list %s file(s) that are not part of this branch'"'"'s own change (it changes %s file(s) against origin/%s). They come from %s commits that origin/%s does not have yet, usually squash merges that were never back-merged, so the PR would show them even where %s already has the same content.\n\nDo not open this PR from this branch, and do not cherry-pick. Follow the clean-preprod-pr skill: branch conflicts/<ticket>-<slug> off origin/%s, merge %s into it (git merge, not a rebase or cherry-pick), push it, and open the PR against %s from that branch. Its files tab then shows only this branch'"'"'s changes.\n\nAlso check for an open back-merge PR into %s (head %s or conflicts/backmerge-*): gh pr list --base %s --state open --json number,headRefName. If there is none, offer the user to open one, following the back-merge skill (normally from conflicts/backmerge-<release>, not straight from %s). It must be merged with a merge commit (gh pr merge --merge), never squashed, or the noise stays.\n\n--- files only the %s PR would show ---\n%s' \
+  deny "$(printf 'Preprod-pr-check: a PR from "%s" into %s would list %s file(s) that are not part of this branch'"'"'s own change (it changes %s file(s) against origin/%s). They come from %s commits that origin/%s does not have yet, usually tickets the default branch merged (with a merge or a squash commit) that were never back-merged, so the PR would show them even where %s already has the same content.\n\nDo not open this PR from this branch, and do not cherry-pick. Follow the clean-preprod-pr skill: branch conflicts/<ticket>-<slug> off origin/%s, merge %s into it (git merge, not a rebase or cherry-pick), push it, and open the PR against %s from that branch. Its files tab then shows only this branch'"'"'s changes.\n\nAlso check for an open back-merge PR into %s (head %s or conflicts/backmerge-*): gh pr list --base %s --state open --json number,headRefName. If there is none, offer the user to open one, following the back-merge skill (normally from conflicts/backmerge-<release>, not straight from %s). It must be merged with a merge commit (gh pr merge --merge), never squashed, or the noise stays.\n\n--- files only the %s PR would show ---\n%s' \
     "$HEAD_BRANCH" "$BASE_BRANCH" "$EXTRA_COUNT" "$OWN_COUNT" "$DEFAULT_BRANCH" "$DEFAULT_BRANCH" "$BASE_BRANCH" "$BASE_BRANCH" \
     "$BASE_BRANCH" "$HEAD_BRANCH" "$BASE_BRANCH" \
     "$BASE_BRANCH" "$DEFAULT_BRANCH" "$BASE_BRANCH" "$DEFAULT_BRANCH" \

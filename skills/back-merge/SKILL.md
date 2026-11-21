@@ -32,7 +32,7 @@ If there's none, offer the user to open one. Ask first, like any PR.
 
 ## 2. Pre-check: straight from `main`, or from a branch?
 
-A back-merge PR straight from `main` is usually noisy: it lists every squash commit since the last back-merge, even though the pre-prod branch already has almost all of that content from the original ticket commits. (Real case: a back-merge PR from `main` listed 14 files and the merge changed none of them.) There's no "own change" to compare against, so compare what the PR would list with what the merge would really change:
+A back-merge PR straight from `main` is usually noisy: it lists many of the tickets merged into `main` since the last back-merge, even though the pre-prod branch already has almost all of that content from the original ticket commits. (Real case: a back-merge PR from `main` listed 14 files and the merge changed none of them.) There's no "own change" to compare against, so compare what the PR would list with what the merge would really change:
 
 ```bash
 # 1. Conflicts: any CONFLICT line means yes.
@@ -47,7 +47,7 @@ git diff --name-only origin/<pre-prod> $(git merge-tree --write-tree origin/<pre
 
 - If the pre-prod branch already contains `main` (`git merge-base --is-ancestor origin/main origin/<pre-prod>`), there's no merge to do, but still run the drift audit (step 4) with `--merged origin/<pre-prod>`. A past merge that dropped a fix leaves exactly this state: git says everything is merged while the fix is missing. If the audit finds anything, cut `conflicts/backmerge-<release>` from the pre-prod branch and commit the reconciliation on it as in step 6, without a merge commit.
 - Open it straight from `main` only when there's no conflict and both lists match. That happens when `main` got something the pre-prod branch never saw, such as a hotfix, and nothing else since the last back-merge. Still run the drift audit (step 4) on the merged result.
-- Otherwise, and with squash-merged releases that's nearly always, it goes out from a `conflicts/backmerge-<release>` branch cut from the pre-prod branch. Its files tab shows only what the merge really changes.
+- Otherwise, and that's nearly always, it goes out from a `conflicts/backmerge-<release>` branch cut from the pre-prod branch. Its files tab shows only what the merge really changes.
 
 The `preprod-pr-check` hook runs this check on `gh pr create --base <pre-prod> --head main` and denies the PR when the lists differ.
 
