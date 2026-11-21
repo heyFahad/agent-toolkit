@@ -19,6 +19,8 @@ Create a parent/trunk branch for the epic off `main`, named `feature/<EPIC-TICKE
 
 Regardless of how large or behavior-changing a given subtask is (not even the docs-only carve-out from `branching-pr-workflow` applies here), it does not get its own `main` PR or its own pre-prod PR. Every subtask PR targets only the branch immediately below it in the `gh-stack` chain (an earlier subtask branch, or the trunk for the first one in a stack), never `main` or the pre-prod branch directly. The trunk's PR against `main` is the *only* PR in the whole epic that ever points at `main`.
 
+Subtask PRs are the epic's real review surface, so each one gets the self-review from `branching-pr-workflow` before it is opened. The range is the subtask's own work, measured against the local branch below it in the stack, since that branch may not be pushed yet: `git diff <branch-below>...HEAD`. The trunk's PRs, to `main` and to the pre-prod branch, carry only subtask work that was already reviewed, so they don't get a review of their own. The one exception is a trunk pre-prod PR from a `conflicts/...` branch whose merge needed conflicts resolved by hand: that resolution is new code, and gets the resolution review from `branching-pr-workflow`.
+
 ## Managing the stack
 
 Use the `gh-stack` CLI extension, rooted at the parent branch as the stack's trunk: `gh stack init --base <parent> <first-subtask-branch>`.

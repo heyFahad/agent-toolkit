@@ -1,6 +1,6 @@
 ---
 name: branching-pr-workflow
-description: Standard branching and dual-PR workflow (one PR against the default branch, one against the pre-prod branch) for a standalone ticket or fix. Use when starting a new branch, opening a PR, handling a round of QA or review feedback, finding out which branch is a repo's pre-prod branch, or deciding whether a change needs the dual-PR treatment at all.
+description: Standard branching and dual-PR workflow (one PR against the default branch, one against the pre-prod branch) for a standalone ticket or fix. Use when starting a new branch, reviewing your own diff before opening its PRs, opening a PR, handling a round of QA or review feedback, finding out which branch is a repo's pre-prod branch, or deciding whether a change needs the dual-PR treatment at all.
 metadata:
   category: git-workflow
 ---
@@ -33,9 +33,34 @@ Without the script (a tool that only installed this skill's text), do the same b
 
 - Every new branch (feature, fix, or hotfix) is created off **`main`**. `main` is the source of truth, not the pre-prod branch.
 
+## Review your own diff before opening PRs
+
+Once the change is complete, the repo's checks pass and the work is committed, have a reviewer that hasn't seen this session read the whole branch diff before the branch's PRs are opened. Pushing the branch earlier, to keep the work safe on the remote, is fine: nobody reviews a branch that has no PR. Copilot reviews each changed line on its own. A reviewer reading the whole diff catches what Copilot doesn't: docs that say one thing while the code does another, an edge case the tests never reach, a script that still relies on something another file just changed. Every such finding caught here is one Copilot round fewer later.
+
+The range is everything the branch adds on top of the default branch, as of a fresh fetch:
+
+```bash
+git fetch origin
+git diff origin/<default-branch>...HEAD
+```
+
+1. **Use a fresh context, never the one that wrote the code.** Its reasoning is already in that context, so it reads what it meant to write rather than what it wrote. Dispatch a subagent and give it that range, what the change is meant to do (the ticket, or the user's request) and the instruction to find bugs, not to summarise or praise. Any review tool you use instead must get the same range explicitly:
+   - Claude Code's `code-review` skill, at `medium` or `high` (`max` and `ultra` only when the user asks), with the branch as its target. With no target it reviews the uncommitted changes, which after committing is nothing.
+   - Superpowers' `requesting-code-review` skill, with `BASE_SHA=$(git merge-base origin/<default-branch> HEAD)`. Its own default, `HEAD~1`, covers only the last commit. Its reviewer also returns strengths and "minor" issues for later; ignore the first and give the second a verdict like every other finding.
+2. **Assess every finding before acting on it.** A finding is a lead, not a verdict: read the code it points at and check the claim. Each one is a fix, not applicable, or out of scope, as in `check-pr` step 4, except that nothing has been posted yet, so there's no thread to reply to. Tell the user about out-of-scope findings and offer a follow-up ticket; drop not-applicable ones.
+3. **Fix on the feature branch,** run the checks again and commit. Review at most once more, and only if the fixes changed behaviour beyond the lines the findings named. Small, targeted fixes don't need a second round.
+
+The review happens once per PR, before the first push. Later pushes (a `check-pr` fix round, a QA finding under "Handling feedback") don't repeat it: Copilot's re-review covers those. The exception is a fix big enough to be a change in its own right, a rewrite rather than a patch.
+
+If the pre-prod PR then goes out from a `conflicts/...` branch (see `clean-preprod-pr`) whose merge needed conflicts resolved by hand, review the resolution the same way before pushing it. `git show --remerge-diff <merge-commit>` shows only what the resolution changed.
+
+Skip this only when there's no behaviour to get wrong: a typo, a version bump, a comment. The skill text and prompts in a repo like this toolkit count as behaviour, so they get reviewed.
+
+The same review applies to a single-PR change that skips the dual-PR process, and to each subtask PR in a `stacked-epics` stack, against the branch below it (see that skill).
+
 ## Opening PRs
 
-Once local changes are complete and verified (lint, tests, build all passing), push the branch and open **two PRs**, both as **drafts** unless told otherwise:
+Once local changes are complete, verified (lint, tests, build all passing) and self-reviewed (above), push the branch and open **two PRs**, both as **drafts** unless told otherwise:
 
 1. One against **`main`**: this is the PR that will eventually ship the change to production. It stays open for the lifetime of the ticket.
 2. One against **the pre-prod branch**: this deploys the change to the pre-prod environment for QA.
