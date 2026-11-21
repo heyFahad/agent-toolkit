@@ -35,6 +35,7 @@
 # missedIssuesUnparsed is true when the body has that section (a <summary>
 # saying "previously missed issues", not the words anywhere in the body) but
 # fewer findings could be parsed out of it than its summary announces, and
+# when a parsed finding has no title or path, and
 # lowConfidenceUnparsed when it has that section and nothing could be parsed
 # out of it. Either means GitHub changed the format: read the body by hand.
 # missedIssuesMarker is null without a review.
@@ -105,7 +106,9 @@ RESULT=$(gh api graphql -f query="$QUERY" -f owner="$OWNER" -f name="$NAME" -F n
     # finding is a block at depth 2. Only tags that start a line count, so a
     # description that mentions `<details>` in prose leaves depth alone. A
     # block nested inside a description (depth 3 and up) stays in that
-    # body of that finding, tags and all. Lines inside ``` fences are body text.
+    # body of that finding, tags and all. Lines inside a code fence (``` or
+    # ~~~, any length) are body text; only a bare fence of the same character
+    # and at least the same length closes it, as in CommonMark.
     # Only the title is HTML-decoded: Copilot escapes summaries, not
     # descriptions, and decoding those would change their code spans.
     def missed_items:
@@ -114,7 +117,9 @@ RESULT=$(gh api graphql -f query="$QUERY" -f owner="$OWNER" -f name="$NAME" -F n
         elif (.in | not) then
           if ($l | test("<summary>(?:(?!</summary>).)*previously\\s+missed\\s+issue"; "i")) then .in = true | .depth = 1 else . end
         elif .fence then
-          .items[-1].lines += [$l] | .fence = ($l | test("^\\s*```") | not)
+          .items[-1].lines += [$l]
+          | .fence as $f
+          | .fence = (if $l | test("^\\s*" + $f[0:1] + "{" + ($f | length | tostring) + ",}\\s*$") then false else $f end)
         else
           (if $l | test("^\\s*<details\\b") then 1 else 0 end) as $o
           | ([$l | match("</details>\\s*"; "g")] | length) as $c0
@@ -136,7 +141,7 @@ RESULT=$(gh api graphql -f query="$QUERY" -f owner="$OWNER" -f name="$NAME" -F n
                 | .items[-1].line = ($m.n | if . == null then null else tonumber end)
                 | .items[-1].lines = []
               else
-                .items[-1].lines += [$l] | .fence = ($l | test("^\\s*```"))
+                .items[-1].lines += [$l] | .fence = (($l | capture("^\\s*(?<f>`{3,}|~{3,})").f) // false)
               end
             else . end
           | .depth -= $c
@@ -169,8 +174,11 @@ RESULT=$(gh api graphql -f query="$QUERY" -f owner="$OWNER" -f name="$NAME" -F n
         missedIssues: $missed,
         # The count in the summary ("7 previously missed issues"), or 1 when
         # it gives none: there is at least one.
+        # A finding without a title or path (a summary that spans lines, say)
+        # counts as unparsed too.
         missedIssuesUnparsed: ($msum != null
-          and ($missed | length) < (($msum | capture("(?<n>[0-9]+)").n | tonumber) // 1)),
+          and ((($missed | length) < (($msum | capture("(?<n>[0-9]+)").n | tonumber) // 1))
+            or any($missed[]; .title == "" or .path == null))),
         missedIssuesMarker: $marker,
         missedIssuesAnswered: false,
         lowConfidence: $items,

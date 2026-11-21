@@ -317,6 +317,28 @@ check "missed: nested block kept, entities only decoded in the title" \
   "$(jq -nc '["Don'"'"'t drop it", "c.sh", 5, "Use `a &lt; b`.\n<details>\n<summary>Repro</summary>\n\nsteps\n</details>\nAfter.", false]')" \
   "$(q '[(.missedIssues[0] | .title, .path, .line, .body), .missedIssuesUnparsed]')"
 
+# A longer or tilde fence only closes on a bare fence of the same kind, so
+# a shorter fence or a </details> inside it stays in the body.
+# shellcheck disable=SC2016 # literal backticks: code fences
+printf '%s\n' '<details>' '<summary><strong>2 previously missed issues</strong></summary>' '' \
+  '<details>' '<summary>Four</summary>' '' '`a.md:1`' '' '````md' '```sh' '</details>' '```' '````' 'After four.' '</details>' \
+  '<details>' '<summary>Tilde</summary>' '' '`b.md:2`' '' '~~~' '</details>' '~~~~' 'After tilde.' '</details>' \
+  '</details>' >"$FX/body.txt"
+copilot_fixture "$FX/body.txt"
+run copilot-review.sh -R o/r 12
+check "missed: long and tilde fences" \
+  "$(jq -nc '[["Four","````md\n```sh\n</details>\n```\n````\nAfter four."],["Tilde","~~~\n</details>\n~~~~\nAfter tilde."],false]')" \
+  "$(q '[(.missedIssues[] | [.title, .body]), .missedIssuesUnparsed]')"
+
+# shellcheck disable=SC2016 # literal backticks: a code span
+# A finding summary wrapped across lines leaves its title and path empty:
+# counted, but flagged.
+printf '%s\n' '<details>' '<summary><strong>1 previously missed issue</strong></summary>' '' \
+  '<details>' '<summary>' 'Wrapped title' '</summary>' '' '`a.md:1`' '' 'Text.' '</details>' '</details>' >"$FX/body.txt"
+copilot_fixture "$FX/body.txt"
+run copilot-review.sh -R o/r 12
+check "missed: finding without a title flagged" '[1,true]' "$(q '[(.missedIssues | length), .missedIssuesUnparsed]')"
+
 # A summary wrapped across lines isn't parsed, so it must be flagged.
 # shellcheck disable=SC2016 # literal backticks: a code span
 printf '%s\n' '<details>' '<summary>' '<strong>2 previously missed issues</strong>' '</summary>' '' '<details>' \
