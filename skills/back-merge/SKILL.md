@@ -51,15 +51,24 @@ git diff --name-only origin/<pre-prod> $(git merge-tree --write-tree origin/<pre
 
 The `preprod-pr-check` hook runs this check on `gh pr create --base <pre-prod> --head main` and denies the PR when the lists differ.
 
-## 3. Merge in a separate worktree
+## 3. Merge on its own branch
 
-Do the work in a separate worktree, so the user's checkout and its uncommitted changes stay untouched:
+Never touch the user's uncommitted changes, and never switch branches in the repo's main checkout, which other sessions share. If the session runs in its own linked worktree (`git rev-parse --git-dir` differs from `git rev-parse --git-common-dir`) and `git status --porcelain` prints nothing, do the work there and switch back to the session's branch when it's pushed:
 
 ```bash
-git worktree add -b conflicts/backmerge-<release> <scratch-dir>/backmerge origin/<pre-prod>
-cd <scratch-dir>/backmerge
+git switch -c conflicts/backmerge-<release> origin/<pre-prod>
 git merge --no-ff origin/main
 ```
+
+Otherwise (the main checkout, or uncommitted changes), make a separate worktree where `branch-cleanup`'s "Making an extra worktree" says (the harness's own worktree location, else `<repo>/.worktrees/`), never in a scratch or temp directory:
+
+```bash
+git worktree add -b conflicts/backmerge-<release> <repo>/.worktrees/backmerge-<release> origin/<pre-prod>
+cd <repo>/.worktrees/backmerge-<release>
+git merge --no-ff origin/main
+```
+
+`branch-cleanup` removes it once the branch is pushed.
 
 `--no-ff` makes sure there's a merge commit even when the pre-prod branch could fast-forward. The merge commit is what makes `main`'s commits part of the pre-prod branch's history.
 
@@ -142,20 +151,25 @@ Otherwise run the repo's own CI steps, read from its CI config (e.g. `.github/wo
 
 - The runtime version CI pins (e.g. `node-version-file: .nvmrc`, run through `nvm use`).
 - CI's timezone and locale. GitHub's runners use UTC, so set `TZ=UTC` unless the workflow sets something else.
-- A frozen-lockfile install in the worktree, with the package manager whose lockfile is committed (see `package-manager-safety`).
+- A frozen-lockfile install in the checkout you merged in, with the package manager whose lockfile is committed (see `package-manager-safety`).
 
 (Real case: a newer Node major than the pinned one failed eight tests on a back-merge, and the local timezone one more. CI passed all nine.)
 
 A repo's checks may already fail on the pre-prod branch, so before blaming the merge for a failure, run the same check on the pre-prod tip's exact tree. If it fails there too, it isn't the merge's fault: say so in the PR, and propose fixing it separately. One example, for a TypeScript repo's type check; the same before-and-after comparison works for any linter or checker whose output lists one problem per line:
 
 ```bash
-# One error per line, line numbers dropped: in the back-merge worktree...
+# One error per line, line numbers dropped: on the back-merge branch...
 npx tsc --noEmit | grep 'error TS' | sed -E 's/\([0-9]+,[0-9]+\)//' | sort > <scratch-dir>/branch.txt
 # ...and in a worktree at the pre-prod tip, after its own install.
-git worktree add <scratch-dir>/base origin/<pre-prod>
-(cd <scratch-dir>/base && npx tsc --noEmit) | grep 'error TS' | sed -E 's/\([0-9]+,[0-9]+\)//' | sort > <scratch-dir>/base.txt
+git worktree add --detach <repo>/.worktrees/base-<release> origin/<pre-prod>
+(cd <repo>/.worktrees/base-<release> && npx tsc --noEmit) | grep 'error TS' | sed -E 's/\([0-9]+,[0-9]+\)//' | sort > <scratch-dir>/base.txt
 comm -13 <scratch-dir>/base.txt <scratch-dir>/branch.txt   # new errors: each one needs a look
+git worktree remove <repo>/.worktrees/base-<release>
 ```
+
+If `git worktree remove` refuses, the checks left untracked files behind (an incremental build's `*.tsbuildinfo`, say). Look at them with `git -C <repo>/.worktrees/base-<release> status --porcelain`; delete them if they're the checks' own output, then remove the worktree again. Otherwise tell the user it's still there. `branch-cleanup` keeps a worktree with untracked files, so a leftover baseline never goes away on its own.
+
+The baseline gets its own worktree because step 4's reconciliation may not be committed yet, and switching the back-merge checkout to the pre-prod tip would carry those edits into the baseline or refuse. Put it where `branch-cleanup`'s "Making an extra worktree" says (the harness's own location, else `<repo>/.worktrees/`), never in a scratch directory; only the error lists go there.
 
 A new error is often the "`main` itself is broken" row from step 4's table.
 
@@ -186,7 +200,7 @@ It must be merged with a merge commit (`gh pr merge <n> --merge`), never squashe
 
 ### Updating an open back-merge PR
 
-- If `main` got more commits since, merge `origin/main` into the same branch again in the worktree, resolve as in step 3, rerun steps 4 and 5, and push. Ask first, like any push.
+- If `main` got more commits since, merge `origin/main` into the same branch again, resolve as in step 3, rerun steps 4 and 5, and push. Ask first, like any push.
 - If an earlier resolution was wrong, or the branch now conflicts with the pre-prod branch, redo the merge on a fresh branch from `origin/<pre-prod>`, rerun steps 4 and 5, then ask the user before force-pushing it over the PR's branch.
 
 ## Into a long-running feature branch
@@ -195,14 +209,14 @@ A branch that lives through several releases (an epic trunk from `stacked-epics`
 
 What carries over unchanged:
 
-- Step 3: merge `--no-ff` in a separate worktree, and resolve with the same table. "Unreleased work" is the branch's own commits, `origin/main..origin/<branch>`, with the same ticket-key test, since parts of the branch may already have shipped to `main` as squash commits.
+- Step 3: merge `--no-ff` on its own branch, and resolve with the same table. "Unreleased work" is the branch's own commits, `origin/main..origin/<branch>`, with the same ticket-key test, since parts of the branch may already have shipped to `main` as squash commits.
 - Step 4: the audit, with `--merged` on the merged feature branch.
 - Steps 5 and 6: verification against the branch's tip, and the commit layout.
 
 What differs:
 
 - Skip steps 1 and 2. There's no pre-prod branch to resolve and no noise check: that check is about a PR's files tab on the pre-prod branch.
-- Where the merge lands follows the repo's rules for that branch. If it's protected or shared, open a PR into it from a `backmerge/<release>-into-<branch>` branch cut from it. Otherwise merge in the worktree and push to it, after asking the user, like any push.
+- Where the merge lands follows the repo's rules for that branch. If it's protected or shared, open a PR into it from a `backmerge/<release>-into-<branch>` branch cut from it. Otherwise merge on a local copy of it and push, after asking the user, like any push.
 - Do it after every release, not only before the branch ships. Each release you skip adds its conflicts and its chances of drift to the next merge.
 - Never rebase a shared feature branch onto `main` instead: that rewrites history everyone else has.
 

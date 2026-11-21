@@ -39,7 +39,7 @@ Run the same pre-check as a standalone ticket first, with the trunk as the featu
 
 Merge the trunk's `main` PR only once every subtask that belongs in this release has merged into the trunk and the trunk has been validated on the pre-prod environment. That merge is what ships the whole epic to production. Treat it as the real deploy gate, not a rubber-stamp just because the individual subtask PRs were already reviewed.
 
-Once that's done, the `park-branch` skill cleans up the local trunk and `conflicts/...` branches.
+Once that's done, the `branch-cleanup` skill removes the local trunk, subtask and `conflicts/...` branches, and their worktrees.
 
 ## Known limits
 
