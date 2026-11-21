@@ -214,13 +214,16 @@ check "copilot: no review, no missed issues" '[[],false,null,false]' \
 # thread. The fixtures are real review bodies from heyFahad/agent-toolkit#26:
 # 6007775440 says "No open issues" and has 7 of them, 6007724043 has 2 open
 # issues (with threads) and 6 missed ones.
-# copilot_fixture BODY_FILE [COMMENT_BODY]: one Copilot review with that body.
+# copilot_fixture BODY_FILE [COMMENT_BODY [AUTHOR_ASSOCIATION]]: one Copilot
+# review with that body, and a PR comment from someone else (a collaborator
+# unless AUTHOR_ASSOCIATION says otherwise).
 copilot_fixture() {
-  jq -n --rawfile body "$1" --arg comment "${2:-}" '{data: {repository: {pullRequest: {headRefOid: "head1",
+  jq -n --rawfile body "$1" --arg comment "${2:-}" --arg assoc "${3:-COLLABORATOR}" '{data: {repository: {pullRequest: {headRefOid: "head1",
     reviewRequests: {nodes: []},
     reviews: {nodes: [{id: "R9", state: "COMMENTED", submittedAt: "2026-01-04T00:00:00Z", url: "r9", body: $body,
       author: {login: "copilot-pull-request-reviewer"}, commit: {oid: "head1"}}]},
-    comments: {nodes: (if $comment == "" then [] else [{body: "unrelated"}, {body: $comment}] end)}}}}}' >"$FX/copilot.json"
+    comments: {nodes: (if $comment == "" then [] else [{body: "unrelated", viewerDidAuthor: true, authorAssociation: "OWNER"},
+      {body: $comment, viewerDidAuthor: false, authorAssociation: $assoc}] end)}}}}}' >"$FX/copilot.json"
 }
 
 copilot_fixture "$HERE/fixtures/copilot-review-missed-only.txt"
@@ -253,6 +256,31 @@ check "missed: answered by a PR comment with the marker" true "$(q .missedIssues
 copilot_fixture "$HERE/fixtures/copilot-review-open-and-missed.txt" '<!-- check-pr: answered missed issues of review R1 -->'
 run copilot-review.sh -R o/r 12
 check "missed: another review's marker does not count" false "$(q .missedIssuesAnswered)"
+
+# On a public repo anyone can comment; only the viewer or a collaborator's
+# marker counts.
+copilot_fixture "$HERE/fixtures/copilot-review-open-and-missed.txt" '<!-- check-pr: answered missed issues of review R9 -->' NONE
+run copilot-review.sh -R o/r 12
+check "missed: an outsider's marker does not count" false "$(q .missedIssuesAnswered)"
+
+# A description that mentions the tags in prose must not throw the nesting
+# off: the second finding still parses, and the resolved section after the
+# missed one is still left out.
+# shellcheck disable=SC2016 # literal backticks: code spans
+printf '%s\n' '<!-- ccr-overview-v2 -->' '' '**No open issues**' '' '<details>' \
+  '<summary><strong>2 previously missed issues</strong></summary>' '' '<details>' \
+  '<summary><img alt="High severity"> Count only structural tags</summary>' '' '`a.sh:10`' '' \
+  'The parser treats every `<details>` tag as a block opener, and <details> too.' '</details>' \
+  '<details>' '<summary><img alt="Low severity"> Second</summary>' '' '`b.sh:20`' '' 'Closing `</details>` in prose.' \
+  '</details>' '</details>' '' '<details>' '<summary><strong>1 resolved since last review</strong></summary>' '' \
+  '- [x](https://example.test)' '</details>' >"$FX/body.txt"
+copilot_fixture "$FX/body.txt"
+run copilot-review.sh -R o/r 12
+check "missed: tags quoted in a description" \
+  '[[["High","a.sh",10,"Count only structural tags"],["Low","b.sh",20,"Second"]],false]' \
+  "$(q '[[.missedIssues[] | [.severity, .path, .line, .title]], .missedIssuesUnparsed]')"
+# shellcheck disable=SC2016 # literal backticks
+check "missed: quoted tags kept in the body" '"Closing `</details>` in prose."' "$(q '.missedIssues[1].body')"
 
 # The section is there, but its findings are in a shape the parser does not
 # know: flag it rather than report nothing.
@@ -402,7 +430,7 @@ check "gate: missed issues block" '["missed-issues"]' "$(q '[.blocking[].reason]
 check "gate: missed issues detail" '"the Copilot review body lists 7 previously missed issue(s) with no thread: 5 High, 2 Medium"' \
   "$(q '.blocking[0].detail')"
 
-jq '.data.repository.pullRequest.comments.nodes = [{"body": "Done.\n<!-- check-pr: answered missed issues of review R9 -->"}]' \
+jq '.data.repository.pullRequest.comments.nodes = [{"body": "Done.\n<!-- check-pr: answered missed issues of review R9 -->", "viewerDidAuthor": true, "authorAssociation": "NONE"}]' \
   "$FX/copilot.json" >"$FX/c2.json" && mv "$FX/c2.json" "$FX/copilot.json"
 run pr-gate.sh -R o/r 12
 check "gate: answered missed issues no longer block" '[true,[]]' "$(q '[.clean, .blocking]')"

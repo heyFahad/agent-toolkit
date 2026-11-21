@@ -39,7 +39,7 @@ If `preprod` has more than one entry, don't guess. If git-workflow's `resolve-pr
 Copilot reviews the `main` PR and the pre-prod PR separately, and the two can bring different findings, so check each PR on its own. Request a review on a PR only when all three hold:
 
 - **Nothing is pending**: `copilot-review.sh` shows `requested: false`.
-- **Its last review is dealt with**: `review-threads.sh` lists no unresolved thread with `isCopilot: true`, every `missedIssues` finding of its latest review is assessed and answered (`missedIssuesAnswered: true`), and so is every `lowConfidence` comment. A new review on top of open findings only repeats them.
+- **Its last review is dealt with**: `review-threads.sh` lists no unresolved thread with `isCopilot: true`, every `missedIssues` finding of its latest review is assessed and answered (when `missedIssues` is non-empty or `missedIssuesUnparsed` is true, that means `missedIssuesAnswered: true`; with neither, there is nothing to answer), and so is every `lowConfidence` comment. A new review on top of open findings only repeats them.
 - **There's something new to review**: the latest review is `stale` (made on an older commit), or there's no review yet.
 
 If any one fails, don't request on that PR. Deal with what's already there first; step 7 asks again once the fixes are pushed. Request on every PR that passes in a single command:

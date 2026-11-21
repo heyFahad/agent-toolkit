@@ -18,6 +18,9 @@
 #         followed by "* comment" bullets.
 #   - whether the missed issues have been answered: a PR comment carrying
 #     missedIssuesMarker, which check-pr posts once it has assessed them.
+#     Only comments by the gh user running this, or by the repo's owner,
+#     members and collaborators, count: on a public repo anyone else could
+#     post the marker.
 #
 # Prints JSON:
 #   {headOid, requested,
@@ -27,9 +30,10 @@
 #    missedIssuesMarker, missedIssuesAnswered,
 #    lowConfidence: [{path, line, body}], lowConfidenceUnparsed}
 # severity is "High", "Medium" or "Low" as Copilot wrote it, or null.
-# The *Unparsed flags are true when the body has that section but fewer
-# findings could be parsed out of it than it announces (GitHub changed the
-# format): read the body by hand then.
+# missedIssuesUnparsed is true when the body has that section but fewer
+# findings could be parsed out of it than it announces, and
+# lowConfidenceUnparsed when it has that section and nothing could be parsed
+# out of it. Either means GitHub changed the format: read the body by hand.
 # missedIssuesMarker is null without a review.
 # shellcheck source-path=SCRIPTDIR source=lib.sh
 . "$(dirname "$0")/lib.sh"
@@ -50,7 +54,7 @@ QUERY='query($owner: String!, $name: String!, $number: Int!) {
       reviews(last: 100) {
         nodes { id state submittedAt url body author { login } commit { oid } }
       }
-      comments(last: 100) { nodes { body } }
+      comments(last: 100) { nodes { body viewerDidAuthor authorAssociation } }
     }
   }
 }'
@@ -84,7 +88,9 @@ gh api graphql -f query="$QUERY" -f owner="$OWNER" -f name="$NAME" -F number="$P
 
     # The findings under the "N previously missed issues" summary. depth
     # counts open <details> blocks from the section itself (1) down; each
-    # finding is a block at depth 2. Lines inside ``` fences are body text.
+    # finding is a block at depth 2. Only tags that start a line count, so a
+    # description that mentions `<details>` in prose leaves depth alone.
+    # Lines inside ``` fences are body text.
     def missed_items:
       reduce (split("\n")[] | sub("\r$"; "")) as $l ({items: [], in: false, done: false, depth: 0, cur: false, fence: false};
         if .done then .
@@ -93,8 +99,9 @@ gh api graphql -f query="$QUERY" -f owner="$OWNER" -f name="$NAME" -F number="$P
         elif .fence then
           .items[-1].lines += [$l] | .fence = ($l | test("^\\s*```") | not)
         else
-          ([$l | match("<details\\b"; "g")] | length) as $o
-          | ([$l | match("</details>"; "g")] | length) as $c
+          (if $l | test("^\\s*<details\\b") then 1 else 0 end) as $o
+          | ([$l | match("</details>\\s*"; "g")] | length) as $c0
+          | (if $l | test("^\\s*(</details>\\s*)+$") then $c0 elif $l | test("</details>\\s*$") and $o == 1 then 1 else 0 end) as $c
           | .depth += $o
           | if .depth == 2 and (.cur | not) and ($l | test("<summary>")) then
               .cur = true
@@ -143,7 +150,9 @@ gh api graphql -f query="$QUERY" -f owner="$OWNER" -f name="$NAME" -F number="$P
         missedIssuesUnparsed: (($body | test("previously missed issue"; "i"))
           and ($missed | length) < ($body | announced("previously missed issue"))),
         missedIssuesMarker: $marker,
-        missedIssuesAnswered: ($marker != null and any(($pr.comments.nodes // [])[]; (.body // "") | contains($marker))),
+        missedIssuesAnswered: ($marker != null and any(($pr.comments.nodes // [])[]
+          | select(.viewerDidAuthor or (.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR")));
+          (.body // "") | contains($marker))),
         lowConfidence: $items,
         lowConfidenceUnparsed: (($items | length) == 0 and ($body | test("<summary>[^\n]*low confidence|suppressed due to low confidence"; "i")))
       }'
