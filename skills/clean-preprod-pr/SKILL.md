@@ -1,6 +1,6 @@
 ---
 name: clean-preprod-pr
-description: Opening a PR against the repo's pre-prod branch (dev, develop, staging, ...) when a PR straight from the feature branch would conflict or would list unrelated files left over from squash merges. Use before opening or re-opening any pre-prod PR for a ticket or an epic, and whenever the preprod-pr-check hook denies one. A back-merge of the default branch into the pre-prod branch has its own skill, back-merge.
+description: Opening a PR against the repo's pre-prod branch (dev, develop, staging, ...) when a PR straight from the feature branch would conflict or would list unrelated files from tickets the pre-prod branch already has. Use before opening or re-opening any pre-prod PR for a ticket or an epic, and whenever the preprod-pr-check hook denies one. A back-merge of the default branch into the pre-prod branch has its own skill, back-merge.
 metadata:
   category: git-workflow
 ---
@@ -12,7 +12,7 @@ Find the pre-prod branch first with the `branching-pr-workflow` skill's `scripts
 A PR from the feature branch into the pre-prod branch can go wrong in two ways that the `main` PR never shows:
 
 - **Conflicts.** The pre-prod branch accumulates every ticket's merged work, while `main` only gets a ticket once it ships. A ticket that reached the pre-prod branch first and touched the same code can conflict with yours.
-- **Unrelated files.** `main` is squash-merged. Each ticket reaches the pre-prod branch as its original commits and reaches `main` as one new squash commit. Unless someone back-merges `main` into the pre-prod branch, those squash commits never reach it. Your feature branch, cut from `main`, carries them, so its pre-prod PR lists their files too, even though the pre-prod branch already has that content. (Real case: one ticket's PR into `main` changed 2 files, and its PR into `staging` showed 14.)
+- **Unrelated files.** Each ticket reaches the pre-prod branch and `main` through different commits: its own merge commit on each branch, or on `main` a squash commit. Unless someone back-merges `main` into the pre-prod branch, `main`'s commits never reach it, so the two branches share no recent commit that holds all the tickets both already have. There are often several merge bases, and GitHub diffs your PR against one of them. Your feature branch, cut from `main`, then lists other tickets' files too, even though the pre-prod branch already has that content. A hotfix that went only to `main` shows up as well, but that's a real difference, not noise: the pre-prod branch doesn't have it, so it still shows from the `conflicts/...` branch below and stops showing once the back-merge lands. (Real case: one ticket's PR into `main` changed 2 files, and its PR into `staging` showed 14.)
 
 The fix for both is the same deliberate `conflicts/...` branch.
 
@@ -47,7 +47,7 @@ If there's no conflict and no extra file, open the pre-prod PR directly from the
   ```
 
   Use `git merge --continue` to finish a conflicted merge, not a plain `git commit -m ...`: it's the right command for the job and fills in the default merge message.
-- Open the pre-prod PR from this branch instead of the feature branch, and close any earlier pre-prod PR for the same round that it replaces. Its files tab shows only your feature's changes. Its commits tab still lists the squash commits; that's expected and harmless.
+- Open the pre-prod PR from this branch instead of the feature branch, and close any earlier pre-prod PR for the same round that it replaces. Its files tab shows only your feature's changes, plus any hotfix from `main` the pre-prod branch hasn't had yet. Its commits tab still lists `main`'s commits that the pre-prod branch lacks; that's expected and harmless.
 - The feature branch stays untouched, so the `main` PR keeps tracking it directly.
 
 ## Later rounds of feedback
@@ -58,7 +58,7 @@ If the pre-prod PR has already merged and another round is needed, re-run the pr
 
 ## Fixing the cause: a back-merge
 
-The unrelated files keep coming back for every ticket until `main` is merged back into the pre-prod branch with a merge commit. That merge makes `main`'s squash commits part of the pre-prod branch's history, so GitHub stops diffing against an old merge base. When the check reports extra files, look for an open back-merge PR, and if there's none, offer the user one. The `back-merge` skill has the whole procedure, including the back-merge PR's own pre-check (straight from `main` it's usually noisy too) and resolving its conflicts without dropping released fixes.
+The unrelated files keep coming back for every ticket until `main` is merged back into the pre-prod branch with a merge commit. That merge makes `main`'s own commits part of the pre-prod branch's history, so the two branches get one recent merge base and GitHub stops diffing against an old one. When the check reports extra files, look for an open back-merge PR, and if there's none, offer the user one. The `back-merge` skill has the whole procedure, including the back-merge PR's own pre-check (straight from `main` it's usually noisy too) and resolving its conflicts without dropping released fixes.
 
 A back-merge fixes future tickets. It doesn't change the decision for the current one: if the check fails now, use the `conflicts/...` branch now.
 

@@ -2,7 +2,8 @@
 # Tests for preprod-pr-check.sh. Builds a temp repo with a bare
 # origin that reproduces the squash-merge case: a ticket reached dev through
 # a merge commit, then main got the same change as one squash commit, and
-# nobody back-merged main into dev. `gh` is a stub on PATH.
+# nobody back-merged main into dev. preprod-pr-check-merge-commits.test.sh
+# covers repos that merge with merge commits everywhere. `gh` is a stub on PATH.
 # Needs bash, git >= 2.38 (merge-tree --write-tree) and jq.
 # Run: bash plugins/git-workflow/hooks/tests/preprod-pr-check.test.sh
 set -uo pipefail

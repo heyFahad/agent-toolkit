@@ -33,7 +33,7 @@ Use the `gh-stack` CLI extension, rooted at the parent branch as the stack's tru
 
 Deploying the epic's current state for QA happens at the trunk level only, never per subtask. Whenever the work merged into the trunk so far needs QA, open a PR from the trunk branch against the pre-prod branch. This carries everything merged into the trunk up to that point.
 
-Run the same pre-check as a standalone ticket first, with the trunk as the feature branch: conflicts and unrelated squash-merge files, as described in the `clean-preprod-pr` skill (the `preprod-pr-check` hook enforces it). Fall through to that skill's `conflicts/...` branch recipe only if the check fails. Repeat as needed across the epic's lifetime: each pre-prod round is its own PR from the trunk, or from a `conflicts/...` branch the trunk is merged into.
+Run the same pre-check as a standalone ticket first, with the trunk as the feature branch: conflicts and unrelated files from tickets the pre-prod branch already has, as described in the `clean-preprod-pr` skill (the `preprod-pr-check` hook enforces it). Fall through to that skill's `conflicts/...` branch recipe only if the check fails. Repeat as needed across the epic's lifetime: each pre-prod round is its own PR from the trunk, or from a `conflicts/...` branch the trunk is merged into.
 
 ## Merging the epic
 
