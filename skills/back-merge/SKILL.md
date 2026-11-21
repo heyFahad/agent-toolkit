@@ -185,6 +185,8 @@ Commit order on `conflicts/backmerge-<release>`:
 
 Separate commits mean any one of them can be reverted without touching the others. Never revert the merge commit itself: git would go on treating `main` as merged while its content was gone, which is the problem this skill exists to fix.
 
+If any conflict was resolved by hand, review the resolution before pushing, as `branching-pr-workflow` describes for a hand-resolved merge: give `diff-review` the range `<merge-commit>^1..HEAD`, and as `{FOCUS}` the hunks `git show --remerge-diff <merge-commit>` prints plus the restore and leftover commits. Fix its findings with new commits on this branch, never by rebasing it, then run step 5's checks again on the final tree.
+
 Push, then open the PR against `<pre-prod>` (title per `pr-title-conventions`, e.g. `🔀 Back-merge the <release> release into <pre-prod> and reconcile drift`). The description covers:
 
 - the release and the commits, one line each

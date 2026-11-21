@@ -2,10 +2,10 @@
 
 A personal git/PR workflow, Jira lifecycle, coding style, and writing-convention toolkit for coding agents (Claude Code, Codex, or any tool that reads `AGENTS.md` and the open [Agent Skills](https://agentskills.io) format). Distributed as independent plugins, each covering one concern (see the list below for the current set).
 
-- [`git-workflow`](plugins/git-workflow): branching, dual-PR (production + pre-prod) with pre-prod branch detection, stacked epics, clean pre-prod PRs (conflicts, and noise when the default branch hasn't been back-merged), back-merges with a drift audit, cleaning up finished branches and worktrees
+- [`git-workflow`](plugins/git-workflow): branching, dual-PR (production + pre-prod) with pre-prod branch detection, stacked epics, clean pre-prod PRs (conflicts, and noise when the default branch hasn't been back-merged), back-merges with a drift audit, a fresh-context review of your own diff before its PRs are opened, cleaning up finished branches and worktrees
 - [`package-manager-safety`](plugins/package-manager-safety): lockfile verification before install/add commands
 - [`github-tooling`](plugins/github-tooling): `check-pr` (Copilot, human review and CI triage across a ticket's main and pre-prod PRs, with helper scripts)
-- [`pr-conventions`](plugins/pr-conventions): PR title format, commit message format, no AI attribution footers, giving a review on someone else's PR (inline comments in a pending review, with a guard hook)
+- [`pr-conventions`](plugins/pr-conventions): PR title format, commit message format, no AI attribution footers, a fresh-context reviewer for your own diffs and other people's PRs, giving a review on someone else's PR (inline comments in a pending review, with a guard hook)
 - [`atlassian-workflow`](plugins/atlassian-workflow): `twg` CLI over the Atlassian MCP (with a gate hook), reading a Jira ticket in full before starting, Jira ticket lifecycle
 - [`writing-conventions`](plugins/writing-conventions): per-surface hyperlink/formatting rules, an anti-AI-slop humanizing pass
 - [`coding-style`](plugins/coding-style): a shareable ESLint config plus an auto-fix hook

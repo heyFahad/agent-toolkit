@@ -1,6 +1,6 @@
 ---
 name: branching-pr-workflow
-description: Standard branching and dual-PR workflow (one PR against the default branch, one against the pre-prod branch) for a standalone ticket or fix. Use when starting a new branch, opening a PR, handling a round of QA or review feedback, finding out which branch is a repo's pre-prod branch, or deciding whether a change needs the dual-PR treatment at all.
+description: Standard branching and dual-PR workflow (one PR against the default branch, one against the pre-prod branch) for a standalone ticket or fix. Use when starting a new branch, reviewing your own diff before opening its PRs, opening a PR, handling a round of QA or review feedback, finding out which branch is a repo's pre-prod branch, or deciding whether a change needs the dual-PR treatment at all.
 metadata:
   category: git-workflow
 ---
@@ -33,9 +33,49 @@ Without the script (a tool that only installed this skill's text), do the same b
 
 - Every new branch (feature, fix, or hotfix) is created off **`main`**. `main` is the source of truth, not the pre-prod branch.
 
+## Review your own diff before opening PRs
+
+Once the change is complete, the repo's checks pass and the work is committed, have a reviewer that hasn't seen this session read the whole branch diff before the branch's PRs are opened. Pushing the branch earlier, to keep the work safe on the remote, is fine: nobody reviews a branch that has no PR. Copilot reviews each changed line on its own. A reviewer reading the whole diff catches what Copilot doesn't: docs that say one thing while the code does another, an edge case the tests never reach, a script that still relies on something another file just changed. Every such finding caught here is one Copilot round fewer later.
+
+1. **Run the `diff-review` skill** (`pr-conventions` plugin) on the branch, from the merge base with a freshly fetched default branch to `HEAD`. It dispatches a fresh-context reviewer, checks every finding and hands back the confirmed and unverified ones. Without that plugin, dispatch a fresh subagent yourself with the range, the ticket, the repo's instruction files and the instruction to find bugs, not to summarise or praise, giving each one a severity: High (must not reach the pre-prod branch or production), Medium (fix it, but not a blocker) or Low (minor). Then check each finding against the code yourself: confirmed, not applicable (with the evidence), out of scope, or unverified (with what would settle it).
+2. **Act on its verdicts.** Fix every confirmed High and Medium finding, and the Low ones when the fix is quick. Show the user each unverified finding with what would settle it, since it may still be serious. Tell the user about out-of-scope findings and offer a follow-up ticket. Nothing has been posted yet, so there are no threads to reply to.
+3. **Fold each fix into the commit that caused it**, unless one of these holds, in which case commit the fixes on top instead:
+   - The range holds a merge commit (`git log --merges <base>..HEAD` prints one), such as a back-merge of `main`: the rebase would drop it.
+   - Another local branch is built on this one: `git branch --contains <oldest-commit-of-this-branch>` lists more than this branch. Rewriting would leave that branch on the old commits.
+   - The branch is already pushed and folding is no longer safe (the paragraph after this list), or the user says no when asked.
+
+   Every commit on the branch ends up in the default branch's history whenever PRs are merged with a merge commit. A bug in one commit with its fix in a later one leaves `git bisect` a commit that is known to be broken, and `git revert` a half-fixed state. Make and commit one fix at a time, as a fixup of the commit that introduced the bug, then fold them all in one rebase. One at a time matters: `--fixup -- <paths>` commits the whole file, so two fixes in one file would land in the same fixup. Before each commit, check `git diff --cached --name-only` for a checkpoint the user staged in those files, and ask first if there is one. It needs no editor on git 2.44 or later; on older git, prefix the rebase with `GIT_SEQUENCE_EDITOR=:` and add `-i`.
+
+   ```bash
+   git commit --fixup=<sha-that-introduced-the-bug> -- <paths>
+   git rev-parse HEAD   # note this SHA: it is <before> below
+   git rebase --autosquash "$(git merge-base origin/<default-branch> HEAD)"
+   git diff --quiet <before> HEAD && echo "tree unchanged"
+   ```
+
+   Write `<before>` out as the literal SHA, not a shell variable: a rebase that stops on a conflict carries on over several commands, and a variable set in one shell is gone in the next.
+
+   - The rebase needs a clean working tree. If the user has a checkpoint staged, ask before rebasing.
+   - For a subtask in a `stacked-epics` stack, rebase onto `$(git merge-base <branch-below> HEAD)` instead, so the rebase never rewrites the commits of the branch below. Rebasing onto that branch's tip would also pull in anything it gained since, and the tree check would fail every time.
+   - If a later commit touched the same lines, the rebase stops on a conflict. Resolve it, `git add` the files and `git rebase --continue`. If the conflict spreads over many commits, `git rebase --abort` and keep that fix as a commit of its own.
+   - The tree check must print "tree unchanged". A fixup rebase only moves changes between commits, so the final tree is identical to the one before it. If it isn't, a conflict was resolved wrongly: `git reset --hard <before>` (safe here, since the tree was clean) and try again.
+   - The tree check proves only the final state. A fix that uses something a later commit adds (a helper, a config key) breaks its target commit once folded: fold it into that later commit instead, or keep it on top. When the repo has a quick check, `git rebase --exec '<check>' <base>` runs it on every rewritten commit.
+
+   Then run the checks again. Review at most once more, and only if the fixes changed behaviour beyond the lines the findings named.
+
+The review happens once per PR, before the PRs are opened. Folding rewrites commits, so a branch that's already pushed needs a force-push afterwards. That's safe while nothing is built on the old commits: nobody else has the branch and no stacked branch sits on top of it. If the PRs are already open (the review came late), one more condition applies: no review has been requested or posted on any of them, by Copilot or a human. Check each PR (`gh pr view <N> --json reviews,reviewRequests`, and `check-pr`'s `copilot-review.sh <N>` for Copilot, whose request doesn't always show there). Not having run `check-pr` proves nothing, since repo automation can request Copilot too. Ask the user before force-pushing (`AGENTS.md`), and push only this branch: `git push --force-with-lease --force-if-includes origin <branch>`. Without `--force-if-includes`, the lease checks against whatever the last `git fetch` saw, so it protects nothing right after one. Then rebuild any `conflicts/...` branch from the pre-prod branch, because it merged the old commits. Once any of those no longer holds, fixes go in new commits on top.
+
+Later pushes (a `check-pr` fix round, a QA finding under "Handling feedback") don't repeat the review: Copilot's re-review covers those. The exception is a fix big enough to be a change in its own right, a rewrite rather than a patch.
+
+If the pre-prod PR goes out from a `conflicts/...` branch (see `clean-preprod-pr`) whose merge needed conflicts resolved by hand, review the resolution the same way before opening that PR. Give `diff-review` the range `<merge-commit>^1..<merge-commit>`, and as `{FOCUS}` the hunks `git show --remerge-diff <merge-commit>` prints: those are exactly what the resolution changed. Fix its findings with a new commit on that `conflicts/...` branch, never with step 3: rebasing a merge drops it. If the resolution is wrong throughout, redo the merge on a fresh branch from the pre-prod branch.
+
+Skip the review only when there's no behaviour to get wrong: a typo, a version bump, a comment. Skill text and prompts in a repo like this toolkit count as behaviour, so they get reviewed.
+
+The same review applies to a single-PR change that skips the dual-PR process, and to each subtask PR in a `stacked-epics` stack, against the branch below it (see that skill).
+
 ## Opening PRs
 
-Once local changes are complete and verified (lint, tests, build all passing), push the branch and open **two PRs**, both as **drafts** unless told otherwise:
+Once local changes are complete, verified (lint, tests, build all passing) and self-reviewed (above), push the branch and open **two PRs**, both as **drafts** unless told otherwise:
 
 1. One against **`main`**: this is the PR that will eventually ship the change to production. It stays open for the lifetime of the ticket.
 2. One against **the pre-prod branch**: this deploys the change to the pre-prod environment for QA.
