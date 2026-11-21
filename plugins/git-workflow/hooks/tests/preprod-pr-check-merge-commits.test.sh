@@ -74,23 +74,30 @@ check() { # name, condition result (0 = pass)
 }
 
 run_hook() { jq -n --arg c "$1" --arg d "$REPO" '{tool_input:{command:$c}, cwd:$d}' | bash "$HOOK"; }
-reason() { run_hook "$1" | jq -r '.hookSpecificOutput.permissionDecisionReason // ""'; }
+# hook <command>: runs the hook, keeping its raw JSON in $out and its exit
+# status in $rc (pipefail is on, so a crash in the hook shows up there).
+hook() { out=$(run_hook "$1" 2>"$TMP/stderr"); rc=$?; }
+field() { printf '%s' "$out" | jq -r ".hookSpecificOutput.$1 // \"\"" 2>/dev/null; }
+allowed() { [ "$rc" -eq 0 ] && [ -z "$out" ] && [ ! -s "$TMP/stderr" ]; }
 
 bases=$(git merge-base --all origin/dev feature/c | wc -l | tr -d ' ')
 check "the setup really has two merge bases (got $bases)" "$([ "$bases" -eq 2 ]; echo $?)"
 
-out=$(reason 'gh pr create --base dev --title x --body y')
-noise=$(printf '%s\n' "$out" | sed -n '/--- files only/,$p' | sed 1d)
-check "a ticket-C PR into dev is denied" "$([ -n "$out" ]; echo $?)"
+hook 'gh pr create --base dev --title x --body y'
+reason=$(field permissionDecisionReason)
+noise=$(printf '%s\n' "$reason" | sed -n '/--- files only/,$p' | sed 1d)
+check "a ticket-C PR into dev is denied (rc $rc, decision $(field permissionDecision))" \
+  "$([ "$rc" -eq 0 ] && [ "$(field permissionDecision)" = deny ]; echo $?)"
 check "the noise is the other ticket's file, not C's own (got: $noise)" \
   "$({ [ "$noise" = a.txt ] || [ "$noise" = b.txt ]; }; echo $?)"
-check "the deny doesn't blame squash merges" "$(printf '%s' "$out" | grep -qi 'squash merges that' && echo 1 || echo 0)"
+check "the deny doesn't blame squash merges" "$(printf '%s' "$reason" | grep -qi 'squash merges that' && echo 1 || echo 0)"
 
 # From a conflicts branch cut from dev, the PR shows only C's file.
 git switch -q -c conflicts/TAL-3-c origin/dev
 git merge -q --no-edit feature/c
 git push -q -u origin conflicts/TAL-3-c
-check "the conflicts branch is allowed" "$([ -z "$(run_hook 'gh pr create --base dev --title x --body y')" ]; echo $?)"
+hook 'gh pr create --base dev --title x --body y'
+check "the conflicts branch is allowed (rc $rc)" "$(allowed; echo $?)"
 check "the conflicts branch PR lists only c.txt" "$([ "$(git diff --name-only origin/dev...conflicts/TAL-3-c)" = c.txt ]; echo $?)"
 
 # Once main is back-merged into dev, the feature branch itself is clean.
@@ -98,7 +105,8 @@ git switch -q dev
 git merge -q --no-edit origin/main
 git push -q origin dev
 git switch -q feature/c
-check "after a back-merge the feature branch is allowed" "$([ -z "$(run_hook 'gh pr create --base dev --title x --body y')" ]; echo $?)"
+hook 'gh pr create --base dev --title x --body y'
+check "after a back-merge the feature branch is allowed (rc $rc)" "$(allowed; echo $?)"
 
 echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]
