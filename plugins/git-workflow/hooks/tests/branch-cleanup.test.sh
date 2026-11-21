@@ -79,6 +79,27 @@ git -C "$W/detached-unpushed" commit -q --allow-empty -m "wip: detached"
 git worktree add -q -b feat/gone "$W/gone" origin/main
 rm -rf "$W/gone"
 
+# An ignored file inside a tracked folder that happens to be called build/.
+pushed_wt trackedbuild
+mkdir -p "$W/trackedbuild/build" && echo make > "$W/trackedbuild/build/build.sh"
+git -C "$W/trackedbuild" add build && git -C "$W/trackedbuild" commit -q -m "build script" && git -C "$W/trackedbuild" push -q 2>/dev/null
+echo '*.local' >> "$(git rev-parse --git-path info/exclude)"
+echo "my notes" > "$W/trackedbuild/build/notes.local"
+# A rebase paused at its first stop, on a pushed commit, with a clean tree.
+pushed_wt rebasing
+git -C "$W/rebasing" commit -q --allow-empty -m two && git -C "$W/rebasing" push -q 2>/dev/null
+GIT_SEQUENCE_EDITOR="sed -i.bak s/^pick/edit/" git -C "$W/rebasing" rebase -q -i HEAD~1 >/dev/null 2>&1
+# A merge started with --no-commit of an empty side commit: a clean tree.
+pushed_wt merging
+git -C "$W/merging" switch -q -c side origin/main
+git -C "$W/merging" commit -q --allow-empty -m side
+git -C "$W/merging" switch -q feat/merging
+git -C "$W/merging" merge -q --no-ff --no-commit side >/dev/null 2>&1
+# A corrupt index: git status fails there.
+pushed_wt corrupt
+echo junk > "$(git -C "$W/corrupt" rev-parse --absolute-git-dir)/index"
+echo work > "$W/corrupt/new.txt"
+
 git branch claude/stale "$OLD_MAIN"
 git branch --no-track local-only origin/main && git commit -q --allow-empty -m x && git branch -f local-only HEAD && git reset -q --hard origin/main
 # A conflicts/ branch pushed without -u, so it has no upstream.
@@ -157,6 +178,13 @@ wt_is "folder already gone: pruned" gone removed "prunable"
 wt_is "a worktree with another inside it: kept" outer kept "inside it"
 wt_is "a clean nested worktree: removed" outer2/.claude/worktrees/inner2 removed
 wt_is "its clean parent goes in the same run" outer2 removed
+wt_is "an ignored file inside a tracked build/ folder: kept" trackedbuild kept "can't be rebuilt"
+exists "that file survives" "$W/trackedbuild/build/notes.local"
+wt_is "a paused rebase: kept" rebasing kept "rebase"
+br_is "the branch under a paused rebase stays" feat/rebasing kept
+wt_is "a merge in progress: kept" merging kept "merge is in progress"
+wt_is "git status fails: kept" corrupt kept "git status failed"
+exists "the corrupt worktree's untracked file survives" "$W/corrupt/new.txt"
 exists "the nested dirty worktree survives" "$W/outer/.claude/worktrees/inner/app.txt"
 if git worktree list | grep -q "/gone "; then no "prunes the missing worktree"; else ok; fi
 
@@ -196,6 +224,31 @@ echo LOCAL=1 > "$TMP/repo/.env"
 STUB_LSOF_CWDS="$W/inuse/sub" run
 if [ "$(jq -r .defaultBranch.action <<<"$out")" = kept ]; then ok; else no "won't fast-forward over an ignored local file"; fi
 if grep -q LOCAL=1 "$TMP/repo/.env"; then ok; else no "the ignored local .env is untouched"; fi
+
+# --- The fast-forward skips a main checkout another process is working in. ---
+(cd "$TMP/other" && git pull -q && git commit -q --allow-empty -m "feat: four" && git push -q origin main)
+rm -f "$TMP/repo/.env"
+STUB_LSOF_CWDS="$W/inuse/sub $TMP/repo/src" run
+if jq -r .defaultBranch.reason <<<"$out" | grep -q "another process"; then ok; else no "won't fast-forward under another process in the main checkout"; fi
+STUB_LSOF_CWDS="$W/inuse/sub" run
+if [ "$(jq -r .defaultBranch.action <<<"$out")" = updated ]; then ok; else no "a process in a nested worktree doesn't block the fast-forward"; fi
+
+# --- A missing worktree on what looks like an unmounted volume: no prune. ---
+VOL=/Volumes; [ -d "$VOL" ] || VOL=/mnt
+if [ -d "$VOL" ]; then
+  OFF="$VOL/agent-toolkit-test-missing-$$/offline"
+  git worktree add -q -b feat/offline "$W/offline" origin/main
+  git worktree add -q -b feat/gone2 "$W/gone2" origin/main
+  admin=$(git -C "$W/offline" rev-parse --absolute-git-dir)
+  echo "$OFF/.git" > "$admin/gitdir"
+  rm -rf "$W/offline" "$W/gone2"
+  run
+  got=$(jq -r --arg p "$OFF" '.worktrees[] | select(.path == $p) | "\(.action)|\(.reason)"' <<<"$out")
+  if [[ "$got" == kept\|*unmounted\ volume* ]]; then ok; else no "a worktree on an unmounted volume: kept (got '$got')"; fi
+  if git worktree list --porcelain | grep -q "/gone2$"; then ok; else no "nothing is pruned while one looks offline"; fi
+else
+  echo "skipped the unmounted-volume case: no /Volumes or /mnt"
+fi
 
 echo "branch-cleanup: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

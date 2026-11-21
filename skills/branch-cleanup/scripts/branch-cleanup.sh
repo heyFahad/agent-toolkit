@@ -7,16 +7,21 @@
 #   branch-cleanup.sh [--dry-run] [--no-fetch] [--default BRANCH]
 #
 # A linked worktree is removed only when every check passes:
-#   - it isn't the worktree this script runs in, and isn't locked
+#   - it isn't the worktree this script runs in, isn't locked, and has no
+#     other worktree inside it
+#   - no rebase, merge, cherry-pick, revert, bisect or `git am` is in progress
 #   - no process has its working directory inside it (lsof), so no running
 #     session or dev server loses its folder mid-task. Without lsof, a
 #     worktree whose index changed in the last hour is kept instead.
-#   - `git status` shows no changes, tracked or untracked
+#   - `git status` succeeds and shows no changes, tracked or untracked
 #   - it has no ignored files other than ones that can be rebuilt or are
-#     disposable (see REBUILDABLE below) and symlinks: `git worktree remove`
+#     disposable (see REBUILDABLE_* below) and symlinks: `git worktree remove`
 #     deletes ignored files without asking, and a .env or a local database
 #     can't be rebuilt
 #   - every commit on its branch (or its detached HEAD) is on a remote
+# A worktree whose folder is gone is pruned, unless its folder looks like it
+# is on an unmounted volume (then nothing is pruned: plug it back in, or
+# `git worktree lock` it).
 # A local branch other than the default branch is deleted only when it's
 # checked out in no remaining worktree and every commit on it is on a
 # remote. A branch whose remote copy was deleted after its PR merged counts
@@ -33,17 +38,25 @@
 # Keep this bash 3.2 compatible: it runs under macOS's /bin/bash.
 set -uo pipefail
 
-# Ignored paths a worktree may hold and still be removed: matched against
-# every path component, so `apps/web/node_modules` and `ios/Pods` match.
-# Dependency and build output, caches, generated lockfiles in repos that
-# ignore them, and harness-local folders (`.claude/` holds the session's
-# local permission grants, which a resumed session asks for again).
-REBUILDABLE="node_modules bower_components vendor dist build out target coverage .nyc_output
+# Ignored entries a worktree may hold and still be removed. `git ls-files
+# --directory` reports a wholly ignored folder once, as `path/name/`:
+#   - REBUILDABLE_DIRS: such a folder, matched on its own name only, so
+#     `apps/web/node_modules/` matches but a file inside a tracked `build/`
+#     folder doesn't. Dependency and build output, and caches.
+#   - REBUILDABLE_FILES: a file matched on its name: generated lockfiles in
+#     repos that ignore them, and Finder litter.
+#   - REBUILDABLE_PATHS: exact paths, for generated folders with generic names.
+#   - HARNESS_DIRS: top-level harness folders, matched with everything below
+#     them (`.claude/settings.local.json` holds the session's local
+#     permission grants, which a resumed session asks for again).
+REBUILDABLE_DIRS=" node_modules bower_components vendor dist build out target coverage .nyc_output
 .next .nuxt .svelte-kit .turbo .cache .parcel-cache .vite .expo .gradle Pods DerivedData
-__pycache__ .pytest_cache .mypy_cache .ruff_cache .venv venv .tox
-package-lock.json yarn.lock pnpm-lock.yaml .DS_Store .claude .codex .husky"
+__pycache__ .pytest_cache .mypy_cache .ruff_cache .venv venv .tox "
+REBUILDABLE_FILES=" package-lock.json yarn.lock pnpm-lock.yaml .DS_Store "
+REBUILDABLE_PATHS=" .husky/_ "
+HARNESS_DIRS=" .claude .codex "
 # shellcheck disable=SC2086 # split on whitespace on purpose: one line of names
-REBUILDABLE_FLAT=" $(printf '%s ' $REBUILDABLE)"
+REBUILDABLE_DIRS=" $(printf '%s ' $REBUILDABLE_DIRS)"
 
 DRY_RUN=0
 FETCH=1
@@ -112,8 +125,11 @@ add_br() { # name action reason
 LSOF=${BRANCH_CLEANUP_LSOF-$(command -v lsof 2>/dev/null || true)}
 HAVE_LSOF=0
 PROC_CWDS=""
+PROC_PID_CWDS=""
 if [ -n "$LSOF" ]; then
-  PROC_CWDS=$("$LSOF" -a -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | sort -u)
+  # "pid<TAB>cwd" per process, from lsof's p<pid> and n<path> field lines.
+  PROC_PID_CWDS=$("$LSOF" -a -d cwd -Fpn 2>/dev/null | awk '/^p/{pid=substr($0,2)} /^n/{print pid "\t" substr($0,2)}')
+  PROC_CWDS=$(printf '%s\n' "$PROC_PID_CWDS" | cut -f2- | sed '/^$/d' | sort -u)
   # This script's own shell has a working directory, so a scan that lists
   # none failed (lsof exits non-zero for unreadable processes even when the
   # rest of its output is fine, so its exit status can't tell). Fall back to
@@ -149,25 +165,43 @@ in_use() { # path
   [ $((now - mtime)) -lt 3600 ]
 }
 
-rebuildable() { # relative path, possibly ending in /
-  local p="${1%/}" part
-  local IFS=/
-  for part in $p; do
-    case "$REBUILDABLE_FLAT" in *" $part "*) return 0 ;; esac
-  done
+rebuildable() { # relative path as ls-files --directory prints it
+  local entry="$1" p="${1%/}" name first
+  name=${p##*/}
+  first=${p%%/*}
+  case "$HARNESS_DIRS" in *" $first "*) return 0 ;; esac
+  case "$REBUILDABLE_PATHS" in *" $p "*) return 0 ;; esac
+  case "$entry" in
+    */) case "$REBUILDABLE_DIRS" in *" $name "*) return 0 ;; esac ;;
+    *) case "$REBUILDABLE_FILES" in *" $name "*) return 0 ;; esac ;;
+  esac
   return 1
 }
 
-# Ignored paths in a worktree that removing it would lose.
+# Ignored paths in a worktree that removing it would lose. Returns 1 when
+# git can't list them, so a failure never reads as "nothing to lose".
 precious_ignored() { # path
-  local wt="$1" f
-  git -C "$wt" ls-files --others --ignored --exclude-standard --directory 2>/dev/null |
-    while IFS= read -r f; do
-      [ -z "$f" ] && continue
-      [ -L "$wt/${f%/}" ] && continue
-      rebuildable "$f" && continue
-      printf '%s\n' "$f"
-    done
+  local wt="$1" f listing
+  listing=$(git -C "$wt" ls-files --others --ignored --exclude-standard --directory 2>/dev/null) || return 1
+  while IFS= read -r f; do
+    [ -z "$f" ] && continue
+    [ -L "$wt/${f%/}" ] && continue
+    rebuildable "$f" && continue
+    printf '%s\n' "$f"
+  done <<<"$listing"
+}
+
+# The git operation in progress in a worktree, or nothing.
+operation_in_progress() { # path
+  local gd
+  gd=$(git -C "$1" rev-parse --absolute-git-dir 2>/dev/null) || { echo "unknown (its git dir can't be read)"; return; }
+  if [ -d "$gd/rebase-merge" ] || [ -d "$gd/rebase-apply" ]; then echo "a rebase or git am"
+  elif [ -f "$gd/MERGE_HEAD" ]; then echo "a merge"
+  elif [ -f "$gd/CHERRY_PICK_HEAD" ]; then echo "a cherry-pick"
+  elif [ -f "$gd/REVERT_HEAD" ]; then echo "a revert"
+  elif [ -f "$gd/BISECT_LOG" ]; then echo "a bisect"
+  elif [ -d "$gd/sequencer" ]; then echo "a cherry-pick or revert sequence"
+  fi
 }
 
 # Commits reachable from REF that no remote ref has. Empty means pushed. A
@@ -198,14 +232,38 @@ pushed() { # ref [branch-name]
 
 # --- Worktrees -------------------------------------------------------------
 
-if [ "$DRY_RUN" -eq 1 ]; then
-  while IFS= read -r p; do
-    [ -n "$p" ] && add_wt "$p" "" would-remove "prunable: its folder is already gone"
-  done < <(git worktree list --porcelain | awk '/^worktree /{p=substr($0,10)} /^prunable/{print p}')
-else
-  while IFS= read -r p; do
-    [ -n "$p" ] && add_wt "$p" "" removed "prunable: its folder was already gone"
-  done < <(git worktree list --porcelain | awk '/^worktree /{p=substr($0,10)} /^prunable/{print p}')
+# A missing folder whose nearest existing parent is a volume mount point
+# (/Volumes, /mnt, /media, /run/media/<user>) is probably on a drive that
+# isn't plugged in, not deleted. Pruning would drop its index and HEAD record
+# for good, and `git worktree repair` couldn't reattach it later.
+on_unmounted_volume() { # path
+  local d="$1"
+  while [ -n "$d" ] && [ "$d" != / ] && [ ! -e "$d" ]; do d=${d%/*}; done
+  case "$d" in /Volumes | /mnt | /media | /media/* | /run/media | /run/media/*) return 0 ;; esac
+  return 1
+}
+
+PRUNABLE=$(git worktree list --porcelain | awk '/^worktree /{p=substr($0,10)} /^prunable/{print p}')
+OFFLINE=""
+while IFS= read -r p; do
+  [ -n "$p" ] && on_unmounted_volume "$p" && OFFLINE="$OFFLINE$p
+"
+done <<<"$PRUNABLE"
+while IFS= read -r p; do
+  [ -z "$p" ] && continue
+  if [ -n "$OFFLINE" ]; then
+    if printf '%s' "$OFFLINE" | grep -qxF -- "$p"; then
+      add_wt "$p" "" kept "folder missing, probably on an unmounted volume: plug it back in, or lock it with git worktree lock"
+    else
+      add_wt "$p" "" kept "folder already gone, but not pruned: git worktree prune is all-or-nothing, and another missing worktree looks like it's on an unmounted volume"
+    fi
+  elif [ "$DRY_RUN" -eq 1 ]; then
+    add_wt "$p" "" would-remove "prunable: its folder is already gone"
+  else
+    add_wt "$p" "" removed "prunable: its folder was already gone"
+  fi
+done <<<"$PRUNABLE"
+if [ "$DRY_RUN" -eq 0 ] && [ -n "$PRUNABLE" ] && [ -z "$OFFLINE" ]; then
   git worktree prune
 fi
 
@@ -263,12 +321,20 @@ while IFS="$SEP" read -r wt branch locked prunable; do
     fi
     continue
   fi
-  dirty=$(git -C "$wt" status --porcelain 2>/dev/null)
+  op=$(operation_in_progress "$wt")
+  if [ -n "$op" ]; then
+    add_wt "$wt" "$branch" kept "$op is in progress"; continue
+  fi
+  if ! dirty=$(git -C "$wt" status --porcelain 2>/dev/null); then
+    add_wt "$wt" "$branch" kept "git status failed in it, so its state can't be checked"; continue
+  fi
   if [ -n "$dirty" ]; then
     add_wt "$wt" "$branch" kept "uncommitted changes" "$(printf '%s\n' "$dirty" | cut -c4- | head -n 20)"
     continue
   fi
-  precious=$(precious_ignored "$wt")
+  if ! precious=$(precious_ignored "$wt"); then
+    add_wt "$wt" "$branch" kept "git couldn't list its ignored files"; continue
+  fi
   if [ -n "$precious" ]; then
     add_wt "$wt" "$branch" kept "ignored files that can't be rebuilt" "$(printf '%s\n' "$precious" | head -n 20)"
     continue
@@ -334,6 +400,42 @@ done < <(git for-each-ref --format='%(refname:short)' refs/heads)
 
 # --- The default branch ----------------------------------------------------
 
+# This script and the processes that started it (the agent's shell, the
+# agent itself), up to but not including init.
+ANCESTORS=" "
+pid=$$
+while [ -n "$pid" ] && [ "$pid" -gt 1 ] 2>/dev/null; do
+  ANCESTORS="$ANCESTORS$pid "
+  pid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
+done
+
+# Whether a process other than this script and its ancestors works in the
+# checkout at PATH itself, not in a worktree nested inside it (session
+# worktrees often live in the main checkout's .claude/worktrees/). Without
+# lsof this can't be told, so it says no.
+others_in() { # canonical path
+  local pid cwd inner
+  [ "$HAVE_LSOF" -eq 1 ] || return 1
+  inner=$(nested_in "$1")
+  while IFS="$(printf '\t')" read -r pid cwd; do
+    [ -z "$cwd" ] && continue
+    case "$ANCESTORS" in *" $pid "*) continue ;; esac
+    case "$cwd/" in "$1"/*) ;; *) continue ;; esac
+    inside_any "$cwd" "$inner" && continue
+    return 0
+  done <<<"$PROC_PID_CWDS"
+  return 1
+}
+
+inside_any() { # path, newline-separated list of folders
+  local d
+  while IFS= read -r d; do
+    [ -z "$d" ] && continue
+    case "$1/" in "$d"/*) return 0 ;; esac
+  done <<<"$2"
+  return 1
+}
+
 DEF_ACTION=kept
 DEF_REASON=""
 if ! git rev-parse -q --verify "refs/remotes/origin/$DEFAULT" >/dev/null; then
@@ -349,8 +451,12 @@ else
   if [ "$DRY_RUN" -eq 1 ]; then
     DEF_ACTION=would-update; DEF_REASON="fast-forward to origin/$DEFAULT"
   elif [ -z "$where" ]; then
-    git update-ref "refs/heads/$DEFAULT" "refs/remotes/origin/$DEFAULT" &&
-      { DEF_ACTION=updated; DEF_REASON="fast-forwarded to origin/$DEFAULT"; }
+    # With the old value, so an update made meanwhile isn't overwritten.
+    git update-ref "refs/heads/$DEFAULT" "refs/remotes/origin/$DEFAULT" "$(git rev-parse "refs/heads/$DEFAULT")" 2>/dev/null &&
+      { DEF_ACTION=updated; DEF_REASON="fast-forwarded to origin/$DEFAULT"; } ||
+      DEF_REASON="$DEFAULT changed while the cleanup ran: not updating it"
+  elif others_in "$(cd "$where" && pwd -P)"; then
+    DEF_REASON="checked out at $where, where another process is working: not updating it under them"
   elif [ -n "$(git -C "$where" status --porcelain --untracked-files=no)" ]; then
     DEF_REASON="checked out at $where with uncommitted changes: not touching it"
   elif git -C "$where" merge --ff-only --no-overwrite-ignore --quiet "refs/remotes/origin/$DEFAULT" >/dev/null 2>&1; then
