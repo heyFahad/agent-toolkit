@@ -14,10 +14,13 @@ Everything a finished branch holds is on the remote: its commits, and its PRs wh
 A **worktree** is removed only when all of these hold:
 
 - It isn't the one the cleanup runs in, isn't locked (`git worktree lock`), and has no other worktree inside it.
+- **No git operation is in progress**: no rebase, merge, cherry-pick, revert, bisect or `git am`. A paused rebase can have a clean tree, and removing the worktree would lose its progress.
 - **No process is working inside it.** A clean worktree can still be in use: a session waiting on a review, a running dev server. Git can't tell, so the script asks the OS with `lsof`. Without `lsof`, it keeps any worktree whose index changed in the last hour.
-- **No changes**: `git status` shows nothing, tracked or untracked.
-- **No ignored files that can't be rebuilt.** `git worktree remove` deletes ignored files without asking. Dependency and build folders, caches, symlinks and harness-local folders like `.claude/` are fine; a `.env`, a local database, or anything else ignored keeps the worktree, and the report names the file.
+- **No changes**: `git status` succeeds and shows nothing, tracked or untracked. If it fails (a corrupt index, an ownership error), the worktree is kept, since its state can't be checked.
+- **No ignored files that can't be rebuilt.** `git worktree remove` deletes ignored files without asking. A wholly ignored dependency or build folder (`node_modules/`, `dist/`, ...), generated lockfiles, symlinks and the top-level harness folders `.claude/` and `.codex/` are fine. A folder's name only counts when the whole folder is ignored, so an ignored file inside a tracked `build/` folder still keeps the worktree; a `.env`, a local database, or anything else ignored keeps the worktree, and the report names the file.
 - **Every commit is on a remote**, for its branch or its detached HEAD.
+
+A worktree whose folder is already gone is pruned, unless its folder looks like it was on a drive that isn't mounted (under `/Volumes`, `/mnt` or `/media`). Then nothing is pruned, since `git worktree prune` is all-or-nothing: plug the drive back in, or lock that worktree.
 
 A **branch** other than the default branch is deleted only when it's checked out in no remaining worktree and every commit on it is on a remote. That includes the `claude/<name>` branches desktop sessions start on and then leave behind, and `conflicts/...` branches pushed without an upstream. A merged PR's branch whose remote copy was deleted counts as pushed when `gh` shows that PR's head is the branch's tip.
 
@@ -50,11 +53,11 @@ git status -sb        # where am I?
 git switch <branch>   # recreated from origin/<branch> if it was deleted
 ```
 
-In the main checkout, other sessions may be working too: switch only if `git status` is clean, and otherwise ask the user.
+If that puts you in the repo's main checkout, don't switch branches there: other sessions share it, and a clean `git status` doesn't mean nobody else is working in it. Their next edit or commit would land on your branch. Make a worktree for the branch instead, as below, and work there.
 
 ## Making an extra worktree
 
-A skill that needs a second checkout (a back-merge, a `conflicts/...` branch) should first use the session's own checkout when `git status` is clean, and switch back afterwards. Only when that isn't possible:
+A skill that needs another branch checked out (a back-merge, a `conflicts/...` branch) may switch branches in the session's own checkout only when that checkout is a linked worktree the session runs in (`git rev-parse --git-dir` differs from `git rev-parse --git-common-dir`) and `git status` is clean; switch back afterwards. Never switch branches in the repo's main checkout: other sessions share it, and a clean tree doesn't mean nobody else is working there. Otherwise make a worktree:
 
 1. Use the harness's own worktree feature and location, if it has one.
 2. Otherwise use `<repo>/.worktrees/<name>`. Check that it's ignored (`git check-ignore -q .worktrees/x`), and if it isn't, add `.worktrees/` to the repo's shared exclude file, which needs no commit: `echo .worktrees/ >> "$(git rev-parse --git-path info/exclude)"`. Don't write to `.git/info/exclude` directly: in a linked worktree `.git` is a file, not a folder.

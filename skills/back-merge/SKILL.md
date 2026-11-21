@@ -53,14 +53,14 @@ The `preprod-pr-check` hook runs this check on `gh pr create --base <pre-prod> -
 
 ## 3. Merge on its own branch
 
-Never touch the user's uncommitted changes. If the session's own checkout is clean (`git status --porcelain` prints nothing), do the work there and switch back to the session's branch when it's pushed:
+Never touch the user's uncommitted changes, and never switch branches in the repo's main checkout, which other sessions share. If the session runs in its own linked worktree (`git rev-parse --git-dir` differs from `git rev-parse --git-common-dir`) and `git status --porcelain` prints nothing, do the work there and switch back to the session's branch when it's pushed:
 
 ```bash
 git switch -c conflicts/backmerge-<release> origin/<pre-prod>
 git merge --no-ff origin/main
 ```
 
-If it isn't clean, make a separate worktree where `branch-cleanup`'s "Making an extra worktree" says (the harness's own worktree location, else `<repo>/.worktrees/`), never in a scratch or temp directory:
+Otherwise (the main checkout, or uncommitted changes), make a separate worktree where `branch-cleanup`'s "Making an extra worktree" says (the harness's own worktree location, else `<repo>/.worktrees/`), never in a scratch or temp directory:
 
 ```bash
 git worktree add -b conflicts/backmerge-<release> <repo>/.worktrees/backmerge-<release> origin/<pre-prod>
@@ -166,6 +166,8 @@ git worktree add --detach <repo>/.worktrees/base-<release> origin/<pre-prod>
 comm -13 <scratch-dir>/base.txt <scratch-dir>/branch.txt   # new errors: each one needs a look
 git worktree remove <repo>/.worktrees/base-<release>
 ```
+
+If `git worktree remove` refuses, the checks left untracked files behind (an incremental build's `*.tsbuildinfo`, say). Look at them with `git -C <repo>/.worktrees/base-<release> status --porcelain`; delete them if they're the checks' own output, then remove the worktree again. Otherwise tell the user it's still there. `branch-cleanup` keeps a worktree with untracked files, so a leftover baseline never goes away on its own.
 
 The baseline gets its own worktree because step 4's reconciliation may not be committed yet, and switching the back-merge checkout to the pre-prod tip would carry those edits into the baseline or refuse. Put it where `branch-cleanup`'s "Making an extra worktree" says (the harness's own location, else `<repo>/.worktrees/`), never in a scratch directory; only the error lists go there.
 
