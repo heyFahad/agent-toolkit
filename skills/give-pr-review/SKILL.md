@@ -1,6 +1,6 @@
 ---
 name: give-pr-review
-description: Use at any point in a conversation when a pull request authored by someone else is to be reviewed, approved, commented on, or have changes requested, including a bare PR number or URL to review, before dispatching subagents to review PRs, and when existing findings are to be posted on PRs. Applies alongside generic code-review skills, which find issues; this one governs how they are anchored and posted. Not for reviewing your own diff or triaging bot comments on your own PR.
+description: Use at any point in a conversation when a pull request authored by someone else is to be reviewed, approved, commented on, or have changes requested, including a bare PR number or URL to review, before dispatching subagents to review PRs, and when existing findings are to be posted on PRs. The diff-review skill finds the issues; this one governs how they are anchored and posted. Not for reviewing your own diff or triaging bot comments on your own PR.
 metadata:
   category: pr-conventions
 ---
@@ -21,6 +21,8 @@ A diff does not say what the change is for, what was already decided, or what th
 
 ## Review all of it
 
+Find the issues with the `diff-review` skill (same plugin), handing it what you gathered above: the ticket, the docs, the PR description as the author's claim, and the range from step 4. It brings the reviewer prompt, the bar for what counts as a finding and the severity scale rule 3 uses, so the review holds someone else's code to the same bar as your own. This skill takes over from its confirmed and unverified findings. An unverified one says so in its comment (rule 3), and one that might be `High` makes the verdict `COMMENT` (rule 7).
+
 Review the whole change, not a sample. A change that is meant to preserve behaviour (auth, routing, a refactor) is checked by running before and after, not by reading both versions and hoping. If you cannot finish, say what is left and why. A partial review must not quietly soften the verdict: `COMMENT` is for a question that really is open, not for effort you skipped.
 
 ## Rules
@@ -29,7 +31,7 @@ Review the whole change, not a sample. A change that is meant to preserve behavi
 2. **Anchor before writing.** Per PR: `gh pr view N --repo O/R --json headRefOid,author,state`, then `gh api repos/O/R/pulls/N/files --paginate` for the patch hunks. For each finding read the actual line at that SHA and confirm it is inside a hunk. Added or unchanged lines in a hunk: `side: RIGHT`. Removed lines: `side: LEFT`. Line numbers are repo line numbers in the head commit, never positions in a saved diff file.
    - A line outside the diff gets a 422. Do not nudge it to a nearby line silently. Anchor to the closest changed line and say what it refers to, or tell the user.
    - A finding without a verified repo line is not postable. Say so in the preview.
-3. **Severity label** at the start of the comment: an emoji, the bold level, then a colon.
+3. **Severity label** at the start of the comment: an emoji, the bold level, then a colon. The levels are the ones `diff-review` assigns.
    - `🔴 **High:**` must not reach staging or production. Security flaw, breaking change, data loss or corruption, any blocker.
    - `🟠 **Medium:**` fix it, but not a blocker. Edge-case bug, missing error handling, missing test for risky logic, maintainability that will cost later.
    - `🟡 **Low:**` cosmetic. Naming, unused imports, comments, style.
@@ -60,7 +62,7 @@ One test decides everything here: **could someone who reads only this comment un
 
 ## Flow
 
-1. Get the context, anchor (rule 2) and write the comments. When delegating to subagents, the prompt must require, per finding: file, repo line number at the head SHA, side, severity, and the line's text. Give them the head SHA and the commands above. Re-anchor anything that comes back without them. Merge their findings and sort them by severity (rule 4) before building the payload.
+1. Get the context, anchor (rule 2) and write the comments. `diff-review`'s finding format already carries what anchoring needs: file, repo line number at the head SHA, side, severity, and the line's text. If you delegate any other way, the prompt must require those same fields. Give them the head SHA and the commands above. Re-anchor anything that comes back without them. Merge their findings and sort them by severity (rule 4) before building the payload.
 2. Create the review **pending**: no `event` field.
 
    ```bash
