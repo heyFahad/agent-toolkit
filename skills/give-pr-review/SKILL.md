@@ -16,7 +16,15 @@ A diff does not say what the change is for, what was already decided, or what th
 1. **Read the ticket, all of it.** Find the key in the PR title, branch name or description, then read the whole ticket including its comments, not just the description. With `twg` installed: `twg jira workitem get KEY --full` (see `prefer-twg-cli`). Look for decisions, sign-offs, scope changes and links to design docs.
 2. **Treat the PR description as the author's account, not as fact.** It goes stale: sign-offs and decisions land on the ticket after the description was written. When the two disagree, the newer one wins. If you cannot tell which is current, say so instead of picking one.
 3. **Read the docs the PR ships or links.** A design doc or ADR tells you what the code is supposed to do, which is what you are checking it against.
-4. **Diff against the right base.** `git fetch origin <base>` and use `git merge-base origin/<base> <head>`, or `gh pr diff`. A stale local base branch makes the PR look like it adds things it does not.
+4. **Diff against the right base.** Fetch both ends from the PR's own repository (`origin` in a clone of it, usually `upstream` in a fork, or its URL) and work from SHAs, not remote-tracking refs, which can be stale or missing:
+
+   ```bash
+   git fetch <remote> pull/<N>/head && git rev-parse FETCH_HEAD   # must equal headRefOid
+   git fetch <remote> <base> && git rev-parse FETCH_HEAD          # the base tip
+   git merge-base <base-tip-sha> <headRefOid>                     # the range's base
+   ```
+
+   A stale base makes the PR look like it adds things it does not. `gh pr diff` shows the same diff for a quick read.
 5. **Check claims that matter.** If the PR says "same behaviour as before" or "all tests pass", and your verdict leans on it, verify it.
 
 ## Review all of it
