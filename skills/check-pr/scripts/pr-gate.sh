@@ -8,6 +8,9 @@
 #   unresolved-threads a review thread (bot or human) is still unresolved
 #   changes-requested  a human's latest review requests changes
 #   copilot-pending    a Copilot review is requested and hasn't arrived
+#   missed-issues      Copilot's latest review body lists previously missed
+#                      issues (or has that section and it couldn't be
+#                      parsed), and no PR comment answers them yet
 #   merge-conflict     GitHub reports the PR can't merge cleanly
 # These are reported as "warnings" and never block on their own:
 #   copilot-stale      Copilot's latest review predates the head commit
@@ -59,6 +62,15 @@ RESULT=$(jq -n --arg repo "$REPO" --argjson pr "$PR" \
       (if $tall > 0 then {reason: "unresolved-threads",
         detail: "\($tall) unresolved: \($tc) from Copilot, \($th) from humans, \($tall - $tc - $th) from other bots"} else empty end),
       (if ($requesters | length) > 0 then {reason: "changes-requested", detail: ($requesters | join(", "))} else empty end),
+      (if (($copilot.missedIssues | length) > 0 or $copilot.missedIssuesUnparsed) and ($copilot.missedIssuesAnswered | not) then
+        {reason: "missed-issues", detail: (
+          if ($copilot.missedIssues | length) == 0 then "the Copilot review body has previously missed issues that could not be parsed; read it by hand"
+          else "the Copilot review body lists \($copilot.missedIssues | length) previously missed issue(s) with no thread: "
+            + ($copilot.missedIssues as $m | ["High", "Medium", "Low", null]
+              | map(. as $s | ($m | map(select(.severity == $s)) | length) as $n
+                | if $n > 0 then "\($n) \($s // "unknown severity")" else empty end)
+              | join(", "))
+          end)} else empty end),
       (if $copilot.requested then {reason: "copilot-pending", detail: "a Copilot review is requested and has not arrived yet"} else empty end),
       (if $p.mergeable == "CONFLICTING" then {reason: "merge-conflict", detail: "the PR has merge conflicts with its base branch"} else empty end)
     ] as $blocking

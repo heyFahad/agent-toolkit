@@ -19,7 +19,7 @@ All in this skill's `scripts/` directory, all print JSON. Run each one as `bash 
 | --- | --- |
 | `find-pr-pair.sh [BRANCH]` | The ticket's PRs from its feature branch: `main` and `preprod[]` |
 | `review-threads.sh PR [--all]` | Unresolved threads with ids, from Copilot, other bots and humans |
-| `copilot-review.sh PR` | Copilot's latest review: `requested`, `stale`, `lowConfidence[]` |
+| `copilot-review.sh PR` | Copilot's latest review: `requested`, `stale`, and the findings only in its body, `missedIssues[]` and `lowConfidence[]` |
 | `ci-status.sh PR` | Checks on the head commit: `failing[]`, `pending[]`, with `jobId` for Actions jobs |
 | `job-log.sh JOB_ID [LINES]` | The tail of a GitHub Actions job's log |
 | `reply-thread.sh THREAD_ID --body TEXT [--resolve]` | Posts a reply, and resolves a bot's thread. Refuses to resolve a human's (exit 3) |
@@ -39,7 +39,7 @@ If `preprod` has more than one entry, don't guess. If git-workflow's `resolve-pr
 Copilot reviews the `main` PR and the pre-prod PR separately, and the two can bring different findings, so check each PR on its own. Request a review on a PR only when all three hold:
 
 - **Nothing is pending**: `copilot-review.sh` shows `requested: false`.
-- **Its last review is dealt with**: `review-threads.sh` lists no unresolved thread with `isCopilot: true`, and every `lowConfidence` comment of its latest review has been assessed and answered. A new review on top of open findings only repeats them.
+- **Its last review is dealt with**: `review-threads.sh` lists no unresolved thread with `isCopilot: true`, every `missedIssues` finding of its latest review is assessed and answered (`missedIssuesAnswered: true`), and so is every `lowConfidence` comment. A new review on top of open findings only repeats them.
 - **There's something new to review**: the latest review is `stale` (made on an older commit), or there's no review yet.
 
 If any one fails, don't request on that PR. Deal with what's already there first; step 7 asks again once the fixes are pushed. Request on every PR that passes in a single command:
@@ -55,7 +55,8 @@ Drafts are fine. Copilot usually answers within about five minutes, so read CI w
 For each PR run `pr-gate.sh` for the overview, then `review-threads.sh`, `copilot-review.sh` and `ci-status.sh`.
 
 - **CI failures.** For a failing check with a `jobId`, run `job-log.sh` and find the first real error, not the last line. A check without one (Socket Security, any other app) has no log here: open its `url`, or read that app's PR comment.
-- **Copilot's low-confidence comments** live only in its review body, so they have no thread. Assess them like the rest. If `lowConfidenceUnparsed` is true, GitHub changed the format: read `review.body` yourself.
+- **Copilot's previously missed issues** live only in its review body, under "N previously missed issues", so they have no thread and `review-threads.sh` never lists them. Each has a `severity` (`High`, `Medium`, `Low`), `path`, `line`, `title` and `body`; assess them exactly like threads, High ones first. A review that says "No open issues" is not clean while these remain: `pr-gate.sh` blocks with `missed-issues` until step 6 answers them. If `missedIssuesUnparsed` is true, GitHub changed the format: read `review.body` yourself.
+- **Copilot's low-confidence comments** (an older body format) also live only in its review body. Assess them like the rest. If `lowConfidenceUnparsed` is true, read `review.body` yourself.
 - **A stale Copilot review** (`stale: true`) covers an older commit. That is a warning, not a blocker.
 - **Human reviews.** A human's `CHANGES_REQUESTED` blocks the PR until they change it. Their threads are in `review-threads.sh` with `authorType: "User"`.
 
@@ -87,11 +88,22 @@ Once the fixes are pushed, answer every thread you assessed with `reply-thread.s
 - Not applicable or out of scope: give the reason. Add `--resolve` for a bot's thread.
 - A human's thread: never pass `--resolve`. Post a "fixed" reply straight away; post a not-applicable or out-of-scope reply only once the user has agreed to it.
 
+Missed issues have no thread to reply to. Answer all of a PR's missed issues in one PR comment: one line per finding with its `path:line`, title and verdict (and the commit SHA for a fix), and `missedIssuesMarker` from `copilot-review.sh` as the last line, copied exactly. The marker names the review, and it is how `pr-gate.sh` knows they've been answered:
+
+```bash
+gh pr comment 101 --body-file - <<'EOF'
+Copilot's previously missed issues:
+- `skills/a/SKILL.md:41` Commit fixes individually: fixed in abc1234.
+- `skills/b/SKILL.md:24` Use verified SHAs: not applicable, step 4 already fetches both from the PR's repository.
+<!-- check-pr: answered missed issues of review PRR_... -->
+EOF
+```
+
 Write replies by the `github-native-writing` and `humanize` skills: bare URLs and SHAs, short, no filler.
 
 ## 7. Re-review, at most once
 
-Once step 6's replies are posted, check step 2's three conditions on each PR again, whether or not the round produced fixes: a PR can come into this run with commits Copilot never saw and an older review's findings still open, and answering those as not applicable fixes nothing but unblocks the request. Request on every PR that now passes, once per run of this skill. When the new review arrives, do one more pass. Stop as soon as a round brings only false alarms or nitpicks: answer those and finish, without requesting again.
+Once step 6's replies are posted, check step 2's three conditions on each PR again, whether or not the round produced fixes: a PR can come into this run with commits Copilot never saw and an older review's findings still open, and answering those as not applicable fixes nothing but unblocks the request. Request on every PR that now passes, once per run of this skill. When the new review arrives, do one more pass. A new review that says "No open issues" but lists previously missed issues is not clean: those are this round's findings, so assess and answer them like any other. Stop as soon as a round brings only false alarms or nitpicks: answer those and finish, without requesting again.
 
 ## 8. Report
 
@@ -117,7 +129,7 @@ Under `/loop`, clean up on the first pass that comes back clean and end the loop
 
 Built from a survey of recent PRs in the org this was written for:
 
-- **Review feedback:** Copilot's review threads and low-confidence comments, and every human's threads and reviews.
+- **Review feedback:** Copilot's review threads, the previously missed issues and low-confidence comments in its review body, and every human's threads and reviews.
 - **CI:** GitHub Actions check runs (lint, tests, typecheck, coverage, the Gitleaks, Semgrep and Trivy security jobs) with their logs; Socket Security's check runs, without logs; plain commit statuses.
 
 Out of scope, because none showed up: Sentry, CodeRabbit, SonarCloud, Codecov and other review bots. The `github-actions[bot]` summary comments (coverage report, security scan summary) repeat what their checks already say, so read the checks instead.
