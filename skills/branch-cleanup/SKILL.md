@@ -34,7 +34,7 @@ From any checkout of the repo:
 bash scripts/branch-cleanup.sh
 ```
 
-The script is in this skill's `scripts/` directory. It fetches `origin` (a plain fetch, no `--prune`, so a merged PR's `origin/<branch>` ref still proves it was pushed), cleans up, fast-forwards the local default branch, and prints JSON. Flags: `--dry-run` reports without changing anything, `--no-fetch` skips the fetch, `--default BRANCH` names the default branch when neither `gh` nor `origin/HEAD` can tell. The `gh-token-export` hook in `github-tooling` denies the call without the `GH_TOKEN` prefix.
+The script is in this skill's `scripts/` directory. It fetches `origin` (a plain fetch, no `--prune`, so a merged PR's `origin/<branch>` ref still proves it was pushed), cleans up, fast-forwards the local default branch, and prints JSON. Flags: `--dry-run` reports without changing anything, `--no-fetch` skips the fetch, `--default BRANCH` names the default branch when neither `gh` nor `origin/HEAD` can tell.
 
 Run it without asking: everything it removes passed the rule above, so no work can be lost. Use `--dry-run` first only when the user asks what it would do.
 
