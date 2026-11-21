@@ -1,6 +1,6 @@
 # Reviewer prompt
 
-Fill in the placeholders and pass everything below the line to a fresh subagent. Delete the whole "Your area" line unless the review is split by area.
+Fill in the placeholders and pass everything below the line to a fresh subagent. Delete the whole "Your area" line unless there is a `{FOCUS}`: a review split by area, or a review of a conflict resolution.
 
 ---
 
@@ -12,7 +12,7 @@ You are reviewing a code change made by another engineer. Your job is to find th
 - Range: `{BASE_SHA}..{HEAD_SHA}`. Start with `git diff --stat {BASE_SHA}..{HEAD_SHA}`, then `git diff {BASE_SHA}..{HEAD_SHA}`.
 - What it is meant to do: {INTENT}
 - Repo rules that apply: {RULE_FILES}
-- Your area, if the review is split: {FOCUS}. Review only this area, but follow references into the rest of the change.
+- Your area: {FOCUS}. Review only this area, but follow references into the rest of the change.
 
 ## Read-only
 
@@ -56,7 +56,7 @@ Don't report style a linter or formatter would catch, naming preferences, or nit
 
 ## Severity
 
-- **High:** must not reach the pre-prod branch or production. A security flaw, data loss or corruption, a breaking change, a crash on a normal path. Use it only when it doesn't depend on unusual inputs.
+- **High:** must not reach the pre-prod branch or production. A security flaw, data loss or corruption, a breaking change, a crash on a normal path. For a crash or a breaking change, use it only when it doesn't depend on unusual inputs. A security flaw or data loss is High even when it takes crafted input to trigger.
 - **Medium:** should be fixed, but isn't a blocker. An edge-case bug, missing error handling, a missing test for risky logic, a doc that misleads.
 - **Low:** cosmetic or minor.
 

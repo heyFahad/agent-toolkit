@@ -19,7 +19,7 @@ The reviewer starts with no context, so it gets everything it needs up front:
 - **The range.** A base and a head SHA, always from a fresh fetch.
   - Your own branch: `git fetch origin`, then `BASE=$(git merge-base origin/<default-branch> HEAD)` and `HEAD=$(git rev-parse HEAD)`. Commit first: the reviewer reads commits, not the working tree.
   - A subtask in a `stacked-epics` stack: the base is the merge base with the local branch below it.
-  - Someone else's PR: the head is the PR's `headRefOid`. Fetch it with `git fetch origin pull/<N>/head` so the reviewer can read it locally. The base is its merge base with the freshly fetched base branch (`give-pr-review` step 4).
+  - Someone else's PR: the head is the PR's `headRefOid`. Fetch it so the reviewer can read it locally, from the PR's own repository: `origin` in a clone of it, usually `upstream` in a fork. `git fetch <remote> pull/<N>/head <base-branch>`, then check that `git rev-parse FETCH_HEAD` equals `headRefOid`. The base is its merge base with that freshly fetched base branch (`give-pr-review` step 4).
 - **The intent.** What the change is meant to do: the whole ticket, comments included (`jira-ticket-lifecycle`), the user's request, and any design doc the change ships or links. A PR description is the author's account of the change; pass it as a claim to check, not as fact.
 - **The rules.** Paths to every instruction file that applies to the changed files: the root and nested `AGENTS.md`, `CLAUDE.md` and their overrides, plus any checklist those files point to. The reviewer prompt stays language- and framework-neutral, so a repo's own pitfalls (its ORM's query traps, its framework's rules) belong in those files, where every review picks them up.
 
