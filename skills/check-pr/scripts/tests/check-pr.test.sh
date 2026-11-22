@@ -42,6 +42,7 @@ case "$all" in
   *resolveReviewThread*) out "$FX/resolve.json" ;;
   *"node(id:"*) out "$FX/node.json" ;;
   *reviewThreads*) cat "$FX"/threads-*.json ;;
+  *viewerDidAuthor*) cat "$FX"/comments-*.json ;;
   *latestOpinionatedReviews*) out "$FX/prinfo.json" ;;
   *statusCheckRollup*) out "$FX/checks.json" ;;
   *reviewRequests*) out "$FX/copilot.json" ;;
@@ -206,6 +207,172 @@ check "copilot: unknown low-confidence format flagged" '[[],true]' "$(q '[.lowCo
 echo '{"data":{"repository":{"pullRequest":{"headRefOid":"h","reviewRequests":{"nodes":[]},"reviews":{"nodes":[]}}}}}' >"$FX/copilot.json"
 run copilot-review.sh -R o/r 12
 check "copilot: no review yet" '[null,false,[]]' "$(q '[.review, .stale, .lowConfidence]')"
+check "copilot: no review, no missed issues" '[[],false,null,false]' \
+  "$(q '[.missedIssues, .missedIssuesUnparsed, .missedIssuesMarker, .missedIssuesAnswered]')"
+
+# Copilot's newer body format ("<!-- ccr-overview-v2 -->") reports some
+# findings only in the body, under "N previously missed issues", with no
+# thread. The fixtures are real review bodies from heyFahad/agent-toolkit#26:
+# 6007775440 says "No open issues" and has 7 of them, 6007724043 has 2 open
+# issues (with threads) and 6 missed ones.
+# copilot_fixture BODY_FILE [COMMENT_BODY [AUTHOR_ASSOCIATION]]: one Copilot
+# review with that body. The PR's comments come in two pages: an unrelated
+# one first, then COMMENT_BODY from someone else (a collaborator unless
+# AUTHOR_ASSOCIATION says otherwise), so an answer is only found by reading
+# every page.
+copilot_fixture() {
+  jq -n --rawfile body "$1" '{data: {repository: {pullRequest: {headRefOid: "head1",
+    reviewRequests: {nodes: []},
+    reviews: {nodes: [{id: "R9", state: "COMMENTED", submittedAt: "2026-01-04T00:00:00Z", url: "https://github.com/o/r/pull/12#pullrequestreview-9", body: $body,
+      author: {login: "copilot-pull-request-reviewer"}, commit: {oid: "head1"}}]}}}}}' >"$FX/copilot.json"
+  echo '{"data":{"repository":{"pullRequest":{"comments":{"pageInfo":{"hasNextPage":true,"endCursor":"c"},"nodes":[
+    {"body":"unrelated","viewerDidAuthor":true,"authorAssociation":"OWNER"}]}}}}}' >"$FX/comments-1.json"
+  comments_page2 "${2:-}" "${3:-COLLABORATOR}" false
+}
+# comments_page2 BODY ASSOCIATION VIEWER_DID_AUTHOR: the second page of PR
+# comments, empty when BODY is.
+comments_page2() {
+  jq -n --arg b "$1" --arg a "$2" --argjson v "$3" '{data: {repository: {pullRequest: {comments: {
+    pageInfo: {hasNextPage: false, endCursor: null},
+    nodes: (if $b == "" then [] else [{body: $b, viewerDidAuthor: $v, authorAssociation: $a}] end)}}}}}' >"$FX/comments-2.json"
+}
+
+copilot_fixture "$HERE/fixtures/copilot-review-missed-only.txt"
+run copilot-review.sh -R o/r 12
+check "missed: all seven parsed" 7 "$(q '.missedIssues | length')"
+check "missed: severities" '["High","High","High","High","High","Medium","Medium"]' "$(q '[.missedIssues[].severity]')"
+check "missed: zero-width spaces stripped from paths" \
+  '[["skills/branching-pr-workflow/SKILL.md",41],["skills/give-pr-review/SKILL.md",24]]' \
+  "$(q '[.missedIssues[0,4] | [.path, .line]]')"
+check "missed: no zero-width space left anywhere" false "$(q '[.missedIssues[] | .path, .body, .title] | any(test("​"))')"
+check "missed: title without the severity image" '"Commit fixes individually and protect staged changes"' "$(q '.missedIssues[0].title')"
+check "missed: permalink pinned to the reviewed commit" '"https://github.com/o/r/blob/head1/skills/branching-pr-workflow/SKILL.md#L41"' \
+  "$(q '.missedIssues[0].url')"
+check "missed: body is the description only" true \
+  "$(q '.missedIssues[0].body | startswith("A path-based commit includes") and endswith("user-staged changes.")')"
+check "missed: resolved section not counted" false "$(q '[.missedIssues[].title] | any(test("Check rewrite safety"))')"
+check "missed: parsed, so not unparsed" false "$(q .missedIssuesUnparsed)"
+check "missed: not answered yet" '["<!-- check-pr: answered missed issues of review R9 -->",false]' \
+  "$(q '[.missedIssuesMarker, .missedIssuesAnswered]')"
+check "missed: no low-confidence section in this format" '[[],false]' "$(q '[.lowConfidence, .lowConfidenceUnparsed]')"
+
+copilot_fixture "$HERE/fixtures/copilot-review-open-and-missed.txt" \
+  "$(printf 'Answered.\n<!-- check-pr: answered missed issues of review R9 -->')"
+run copilot-review.sh -R o/r 12
+check "missed: open issues (threads) not counted" 6 "$(q '.missedIssues | length')"
+check "missed: all medium" '["Medium"]' "$(q '[.missedIssues[].severity] | unique')"
+check "missed: HTML entities decoded" '"Isolate each finding'"'"'s changes before creating fixup commits"' "$(q '.missedIssues[1].title')"
+check "missed: last finding" '["skills/give-pr-review/SKILL.md",24]' "$(q '.missedIssues[-1] | [.path, .line]')"
+check "missed: answered by a PR comment with the marker, on a later page" true "$(q .missedIssuesAnswered)"
+check "missed: comments read page by page" 1 "$(calls 'graphql --paginate')"
+
+# The marker counts only as the last line: quoting it in instructions is not
+# an answer.
+copilot_fixture "$HERE/fixtures/copilot-review-open-and-missed.txt" \
+  "$(printf 'Append <!-- check-pr: answered missed issues of review R9 --> once you have assessed these.\nThanks.')"
+run copilot-review.sh -R o/r 12
+check "missed: a quoted marker does not count" false "$(q .missedIssuesAnswered)"
+copilot_fixture "$HERE/fixtures/copilot-review-open-and-missed.txt" \
+  "$(printf 'Answered.\n  <!-- check-pr: answered missed issues of review R9 -->  \n\n')"
+run copilot-review.sh -R o/r 12
+check "missed: trailing whitespace around the marker is fine" true "$(q .missedIssuesAnswered)"
+
+# A marker for some other review does not answer this one.
+copilot_fixture "$HERE/fixtures/copilot-review-open-and-missed.txt" '<!-- check-pr: answered missed issues of review R1 -->'
+run copilot-review.sh -R o/r 12
+check "missed: another review's marker does not count" false "$(q .missedIssuesAnswered)"
+
+# On a public repo anyone can comment; only the viewer or a collaborator's
+# marker counts.
+copilot_fixture "$HERE/fixtures/copilot-review-open-and-missed.txt" '<!-- check-pr: answered missed issues of review R9 -->' NONE
+run copilot-review.sh -R o/r 12
+check "missed: an outsider's marker does not count" false "$(q .missedIssuesAnswered)"
+
+# A description that mentions the tags in prose must not throw the nesting
+# off: the second finding still parses, and the resolved section after the
+# missed one is still left out.
+# shellcheck disable=SC2016 # literal backticks: code spans
+printf '%s\n' '<!-- ccr-overview-v2 -->' '' '**No open issues**' '' '<details>' \
+  '<summary><strong>2 previously missed issues</strong></summary>' '' '<details>' \
+  '<summary><img alt="High severity"> Count only structural tags</summary>' '' '`a.sh:10`' '' \
+  'The parser treats every `<details>` tag as a block opener, and <details> too.' '</details>' \
+  '<details>' '<summary><img alt="Low severity"> Second</summary>' '' '`b.sh:20`' '' 'Closing `</details>` in prose.' \
+  '</details>' '</details>' '' '<details>' '<summary><strong>1 resolved since last review</strong></summary>' '' \
+  '- [x](https://example.test)' '</details>' >"$FX/body.txt"
+copilot_fixture "$FX/body.txt"
+run copilot-review.sh -R o/r 12
+check "missed: tags quoted in a description" \
+  '[[["High","a.sh",10,"Count only structural tags"],["Low","b.sh",20,"Second"]],false]' \
+  "$(q '[[.missedIssues[] | [.severity, .path, .line, .title]], .missedIssuesUnparsed]')"
+# shellcheck disable=SC2016 # literal backticks
+check "missed: quoted tags kept in the body" '"Closing `</details>` in prose."' "$(q '.missedIssues[1].body')"
+
+# A collapsed block inside a description stays in the body, and the
+# description's entities stay as written (only titles are escaped).
+# shellcheck disable=SC2016 # literal backticks: code spans
+printf '%s\n' '<details>' '<summary><strong>1 previously missed issue</strong></summary>' '' '<details>' \
+  '<summary><img alt="Medium severity"> Don&#39;t drop it</summary>' '' '`c.sh:5`' '' 'Use `a &lt; b`.' \
+  '<details>' '<summary>Repro</summary>' '' 'steps' '</details>' 'After.' '</details>' '</details>' >"$FX/body.txt"
+copilot_fixture "$FX/body.txt"
+run copilot-review.sh -R o/r 12
+check "missed: nested block kept, entities only decoded in the title" \
+  "$(jq -nc '["Don'"'"'t drop it", "c.sh", 5, "Use `a &lt; b`.\n<details>\n<summary>Repro</summary>\n\nsteps\n</details>\nAfter.", false]')" \
+  "$(q '[(.missedIssues[0] | .title, .path, .line, .body), .missedIssuesUnparsed]')"
+
+# A longer or tilde fence only closes on a bare fence of the same kind, so
+# a shorter fence or a </details> inside it stays in the body.
+# shellcheck disable=SC2016 # literal backticks: code fences
+printf '%s\n' '<details>' '<summary><strong>2 previously missed issues</strong></summary>' '' \
+  '<details>' '<summary>Four</summary>' '' '`a.md:1`' '' '````md' '```sh' '</details>' '```' '````' 'After four.' '</details>' \
+  '<details>' '<summary>Tilde</summary>' '' '`b.md:2`' '' '~~~' '</details>' '~~~~' 'After tilde.' '</details>' \
+  '</details>' >"$FX/body.txt"
+copilot_fixture "$FX/body.txt"
+run copilot-review.sh -R o/r 12
+check "missed: long and tilde fences" \
+  "$(jq -nc '[["Four","````md\n```sh\n</details>\n```\n````\nAfter four."],["Tilde","~~~\n</details>\n~~~~\nAfter tilde."],false]')" \
+  "$(q '[(.missedIssues[] | [.title, .body]), .missedIssuesUnparsed]')"
+
+# shellcheck disable=SC2016 # literal backticks: a code span
+# A finding summary wrapped across lines leaves its title and path empty:
+# counted, but flagged.
+printf '%s\n' '<details>' '<summary><strong>1 previously missed issue</strong></summary>' '' \
+  '<details>' '<summary>' 'Wrapped title' '</summary>' '' '`a.md:1`' '' 'Text.' '</details>' '</details>' >"$FX/body.txt"
+copilot_fixture "$FX/body.txt"
+run copilot-review.sh -R o/r 12
+check "missed: finding without a title flagged" '[1,true]' "$(q '[(.missedIssues | length), .missedIssuesUnparsed]')"
+check "missed: no path, no permalink" null "$(q '.missedIssues[0].url')"
+
+# A summary wrapped across lines isn't parsed, so it must be flagged.
+# shellcheck disable=SC2016 # literal backticks: a code span
+printf '%s\n' '<details>' '<summary>' '<strong>2 previously missed issues</strong>' '</summary>' '' '<details>' \
+  '<summary>One</summary>' '' '`a.ts:1`' '' 'Text.' '</details>' '</details>' >"$FX/body.txt"
+copilot_fixture "$FX/body.txt"
+run copilot-review.sh -R o/r 12
+check "missed: wrapped section summary flagged" true "$(q .missedIssuesUnparsed)"
+
+# The section is there, but its findings are in a shape the parser does not
+# know: flag it rather than report nothing.
+printf '<!-- ccr-overview-v2 -->\n\n**No open issues**\n\n<details>\n<summary><strong>2 previously missed issues</strong></summary>\n\n- **a.ts:1** something\n- **b.ts:2** else\n</details>\n' >"$FX/body.txt"
+copilot_fixture "$FX/body.txt"
+run copilot-review.sh -R o/r 12
+check "missed: unknown format flagged" '[[],true]' "$(q '[.missedIssues, .missedIssuesUnparsed]')"
+
+# Prose that mentions previously missed issues is not the section (Copilot's
+# own "What changed" summary of PR 27 did), and nothing needs answering, so
+# the PR's comments aren't read.
+printf '<!-- ccr-overview-v2 -->\n\n<details>\n<summary><strong>What changed in this PR</strong></summary>\n\n- Parses 3 previously missed issues and tracks them.\n</details>\n' >"$FX/body.txt"
+copilot_fixture "$FX/body.txt"
+run copilot-review.sh -R o/r 12
+check "missed: prose mention is not a section" '[[],false,false]' "$(q '[.missedIssues, .missedIssuesUnparsed, .missedIssuesAnswered]')"
+check "missed: no comments read when nothing needs answering" 0 "$(calls viewerDidAuthor)"
+
+# Fewer parsed than announced also counts as unparsed.
+# shellcheck disable=SC2016 # literal backticks: a code span
+printf '<details>\n<summary><strong>2 previously missed issues</strong></summary>\n\n<details>\n<summary>Only one</summary>\n\n`a.ts:3`\n\nText.\n</details>\n</details>\n' >"$FX/body.txt"
+copilot_fixture "$FX/body.txt"
+run copilot-review.sh -R o/r 12
+check "missed: partial parse flagged" '[[null,"a.ts",3,"Only one","Text."],true]' \
+  "$(q '[(.missedIssues[0] | [.severity, .path, .line, .title, .body]), .missedIssuesUnparsed]')"
 
 # ----------------------------------------------------------------- reply-thread
 echo '{"data":{"addPullRequestReviewThreadReply":{"comment":{"url":"https://example.test/reply"}}}}' >"$FX/reply.json"
@@ -328,6 +495,38 @@ jq '.data.repository.pullRequest.reviewRequests.nodes = [{"requestedReviewer":{"
 jq '.data.repository.pullRequest.mergeable = "CONFLICTING"' "$FX/prinfo.json" >"$FX/p2.json" && mv "$FX/p2.json" "$FX/prinfo.json"
 run pr-gate.sh -R o/r 12
 check "gate: copilot pending and conflicts block" '["copilot-pending","merge-conflict"]' "$(q '[.blocking[].reason]')"
+
+# A review that says "No open issues" is still not clean while previously
+# missed issues in its body are unanswered.
+jq '.data.repository.pullRequest.mergeable = "MERGEABLE"' "$FX/prinfo.json" >"$FX/p2.json" && mv "$FX/p2.json" "$FX/prinfo.json"
+copilot_fixture "$HERE/fixtures/copilot-review-missed-only.txt"
+jq '.data.repository.pullRequest.headRefOid = "head2" | .data.repository.pullRequest.reviews.nodes[0].commit.oid = "head2"' \
+  "$FX/copilot.json" >"$FX/c2.json" && mv "$FX/c2.json" "$FX/copilot.json"
+run pr-gate.sh -R o/r 12
+check "gate: missed issues block" '["missed-issues"]' "$(q '[.blocking[].reason]')"
+check "gate: missed issues detail" '"the Copilot review body lists 7 previously missed issue(s) with no thread: 5 High, 2 Medium"' \
+  "$(q '.blocking[0].detail')"
+
+comments_page2 "$(printf 'Done.\n<!-- check-pr: answered missed issues of review R9 -->')" NONE true
+run pr-gate.sh -R o/r 12
+check "gate: answered missed issues no longer block" '[true,[]]' "$(q '[.clean, .blocking]')"
+
+copilot_fixture "$FX/body.txt"
+jq '.data.repository.pullRequest.headRefOid = "head2" | .data.repository.pullRequest.reviews.nodes[0].commit.oid = "head2"
+  | .data.repository.pullRequest.reviews.nodes[0].body = "<details>\n<summary><strong>3 previously missed issues</strong></summary>\nnew shape\n</details>"' \
+  "$FX/copilot.json" >"$FX/c2.json" && mv "$FX/c2.json" "$FX/copilot.json"
+run pr-gate.sh -R o/r 12
+check "gate: unparsed missed issues block" '["missed-issues"]' "$(q '[.blocking[].reason]')"
+
+# A partial parse says there is more to read.
+# shellcheck disable=SC2016 # literal backticks: a code span
+printf '<details>\n<summary><strong>2 previously missed issues</strong></summary>\n\n<details>\n<summary><img alt="High severity"> Only one</summary>\n\n`a.ts:3`\n\nText.\n</details>\n</details>\n' >"$FX/body.txt"
+copilot_fixture "$FX/body.txt"
+jq '.data.repository.pullRequest.headRefOid = "head2" | .data.repository.pullRequest.reviews.nodes[0].commit.oid = "head2"' \
+  "$FX/copilot.json" >"$FX/c2.json" && mv "$FX/c2.json" "$FX/copilot.json"
+run pr-gate.sh -R o/r 12
+check "gate: partial parse detail" '"the Copilot review body lists 1 previously missed issue(s) with no thread: 1 High; the section announces more than could be parsed, so read the review body for the rest"' \
+  "$(q '.blocking[0].detail')"
 
 echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]

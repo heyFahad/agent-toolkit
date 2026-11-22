@@ -1,0 +1,72 @@
+<!-- ccr-overview-v2 -->
+
+### 🔵 Needs a closer look
+
+Critical unresolved issues can produce incorrect review ranges, erase merge-resolution history, disrupt stacked or reviewed branches, and mix unrelated changes into fixups.
+
+**No open issues** 🎉
+
+<details>
+<summary><strong>7 previously missed issues</strong></summary>
+
+In code that hasn't changed since last review
+
+<details>
+<summary><picture><source media="(prefers-color-scheme: dark)" srcset="https://github.githubassets.com/static/images/icons/copilot-code-review/high-v2-dark.svg"><source media="(prefers-color-scheme: light)" srcset="https://github.githubassets.com/static/images/icons/copilot-code-review/high-v2-light.svg"><img src="https://github.githubassets.com/static/images/icons/copilot-code-review/high-v2-light.png" alt="High severity" width="62" height="18" align="texttop"></picture> Commit fixes individually and protect staged changes</summary>
+
+`skills/​branching-pr-workflow/​SKILL.md:41`
+
+A path-based commit includes every change in each named file, so after step 2 it can fold two findings into the first fixup or include a user's staged checkpoint. Apply and commit one fix at a time, and ask before committing any target file that contains user-staged changes.
+</details>
+<details>
+<summary><picture><source media="(prefers-color-scheme: dark)" srcset="https://github.githubassets.com/static/images/icons/copilot-code-review/high-v2-dark.svg"><source media="(prefers-color-scheme: light)" srcset="https://github.githubassets.com/static/images/icons/copilot-code-review/high-v2-light.svg"><img src="https://github.githubassets.com/static/images/icons/copilot-code-review/high-v2-light.png" alt="High severity" width="62" height="18" align="texttop"></picture> Check for stacked branches before rewriting commits</summary>
+
+`skills/​branching-pr-workflow/​SKILL.md:42`
+
+The safety check only runs when the branch is already pushed, but an unpushed subtask can also have another local subtask stacked on it. Rebasing it leaves the child based on the old commits, so its PR can include already-reviewed parent work. Check for stacked branches before any rewrite, and use fix commits on top when one exists, regardless of push status.
+</details>
+<details>
+<summary><picture><source media="(prefers-color-scheme: dark)" srcset="https://github.githubassets.com/static/images/icons/copilot-code-review/high-v2-dark.svg"><source media="(prefers-color-scheme: light)" srcset="https://github.githubassets.com/static/images/icons/copilot-code-review/high-v2-light.svg"><img src="https://github.githubassets.com/static/images/icons/copilot-code-review/high-v2-light.png" alt="High severity" width="62" height="18" align="texttop"></picture> Preserve merges when rebasing ordinary feature branches</summary>
+
+`skills/​branching-pr-workflow/​SKILL.md:43`
+
+An ordinary feature branch can contain a `main` back-merge under `back-merge`, but this rebase drops that merge just as it does on a `conflicts/...` branch. The final tree check can pass even though `backmerge-drift-audit.sh` can no longer inspect that merge's resolution. Before creating fixups, detect merges in the rewrite range and keep fixes as ordinary commits when any are present.
+</details>
+<details>
+<summary><picture><source media="(prefers-color-scheme: dark)" srcset="https://github.githubassets.com/static/images/icons/copilot-code-review/high-v2-dark.svg"><source media="(prefers-color-scheme: light)" srcset="https://github.githubassets.com/static/images/icons/copilot-code-review/high-v2-light.svg"><img src="https://github.githubassets.com/static/images/icons/copilot-code-review/high-v2-light.png" alt="High severity" width="62" height="18" align="texttop"></picture> Check PR review status before rewriting commits</summary>
+
+`skills/​branching-pr-workflow/​SKILL.md:61`
+
+Not running `check-pr` does not show that Copilot has not reviewed: a review can be requested independently or automatically. A late self-review could therefore rewrite commits while a review is pending or already posted. Check each open PR's actual review status, and keep fixes on top if reviewing has started or cannot be ruled out.
+</details>
+<details>
+<summary><picture><source media="(prefers-color-scheme: dark)" srcset="https://github.githubassets.com/static/images/icons/copilot-code-review/high-v2-dark.svg"><source media="(prefers-color-scheme: light)" srcset="https://github.githubassets.com/static/images/icons/copilot-code-review/high-v2-light.svg"><img src="https://github.githubassets.com/static/images/icons/copilot-code-review/high-v2-light.png" alt="High severity" width="62" height="18" align="texttop"></picture> Use verified PR repository head and base SHAs</summary>
+
+`skills/​give-pr-review/​SKILL.md:24`
+
+Step 4 still computes the handed-off range against `origin/<base>`, which can be a stale or missing fork branch rather than the PR repository's base. This can fail before dispatch or include upstream commits that are not part of the PR. Fetch the head and base from the PR's repository and pass their verified SHAs to `diff-review`.
+</details>
+<details>
+<summary><picture><source media="(prefers-color-scheme: dark)" srcset="https://github.githubassets.com/static/images/icons/copilot-code-review/medium-v2-dark.svg"><source media="(prefers-color-scheme: light)" srcset="https://github.githubassets.com/static/images/icons/copilot-code-review/medium-v2-light.svg"><img src="https://github.githubassets.com/static/images/icons/copilot-code-review/medium-v2-light.png" alt="Medium severity" width="62" height="18" align="texttop"></picture> Require fallback review to verify and classify findings</summary>
+
+`skills/​branching-pr-workflow/​SKILL.md:40`
+
+The standalone fallback asks the subagent only to find bugs, but the next step requires confirmed/unverified verdicts and High/Medium severity. A `git-workflow`-only installation therefore has no instruction to validate or classify the returned leads before deciding what must be fixed. Please require the fallback to gather the applicable rules and classify and verify findings, including what would settle unverified ones.
+</details>
+<details>
+<summary><picture><source media="(prefers-color-scheme: dark)" srcset="https://github.githubassets.com/static/images/icons/copilot-code-review/medium-v2-dark.svg"><source media="(prefers-color-scheme: light)" srcset="https://github.githubassets.com/static/images/icons/copilot-code-review/medium-v2-light.svg"><img src="https://github.githubassets.com/static/images/icons/copilot-code-review/medium-v2-light.png" alt="Medium severity" width="62" height="18" align="texttop"></picture> Review back-merge resolutions before opening the PR</summary>
+
+`skills/​branching-pr-workflow/​SKILL.md:65`
+
+The standalone pre-prod back-merge workflow also creates and hand-resolves a `conflicts/backmerge-...` merge, but `skills/back-merge/SKILL.md:180-199` pushes and opens that PR without invoking this review. As a result those resolutions miss the promised review even though a bad resolution can permanently drop released fixes. Wire this resolution review into the back-merge workflow before its PR is opened as well.
+</details>
+</details>
+
+<details>
+<summary><strong>2 resolved since last review</strong></summary>
+
+- <picture><source media="(prefers-color-scheme: dark)" srcset="https://github.githubassets.com/static/images/icons/copilot-code-review/high-v2-dark.svg"><source media="(prefers-color-scheme: light)" srcset="https://github.githubassets.com/static/images/icons/copilot-code-review/high-v2-light.svg"><img src="https://github.githubassets.com/static/images/icons/copilot-code-review/high-v2-light.png" alt="High severity" width="62" height="18" align="texttop"></picture> [Check rewrite safety and approval before creating fixups](https://github.com/heyFahad/agent-toolkit/pull/26#discussion_r4654623299)
+- <picture><source media="(prefers-color-scheme: dark)" srcset="https://github.githubassets.com/static/images/icons/copilot-code-review/medium-v2-dark.svg"><source media="(prefers-color-scheme: light)" srcset="https://github.githubassets.com/static/images/icons/copilot-code-review/medium-v2-light.svg"><img src="https://github.githubassets.com/static/images/icons/copilot-code-review/medium-v2-light.png" alt="Medium severity" width="62" height="18" align="texttop"></picture> [Keep trunk back-merge fixes on the merge branch without rebasing](https://github.com/heyFahad/agent-toolkit/pull/26#discussion_r4654623343)
+</details>
+
+<sub>Review effort: Balanced</sub>

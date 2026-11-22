@@ -1,0 +1,77 @@
+<!-- ccr-overview-v2 -->
+
+### 🟡 Changes recommended
+
+The workflow can rewrite commits before checking branch safety or obtaining required approval, while other unresolved issues risk capturing staged changes or reviewing the wrong commits.
+
+<details open>
+<summary><strong>2 open issues</strong></summary>
+
+- <picture><source media="(prefers-color-scheme: dark)" srcset="https://github.githubassets.com/static/images/icons/copilot-code-review/high-v2-dark.svg"><source media="(prefers-color-scheme: light)" srcset="https://github.githubassets.com/static/images/icons/copilot-code-review/high-v2-light.svg"><img src="https://github.githubassets.com/static/images/icons/copilot-code-review/high-v2-light.png" alt="High severity" width="62" height="18" align="texttop"></picture> [Check rewrite safety and approval before creating fixups](https://github.com/heyFahad/agent-toolkit/pull/26#discussion_r4654623299) · New
+- <picture><source media="(prefers-color-scheme: dark)" srcset="https://github.githubassets.com/static/images/icons/copilot-code-review/medium-v2-dark.svg"><source media="(prefers-color-scheme: light)" srcset="https://github.githubassets.com/static/images/icons/copilot-code-review/medium-v2-light.svg"><img src="https://github.githubassets.com/static/images/icons/copilot-code-review/medium-v2-light.png" alt="Medium severity" width="62" height="18" align="texttop"></picture> [Keep trunk back-merge fixes on the merge branch without rebasing](https://github.com/heyFahad/agent-toolkit/pull/26#discussion_r4654623343) · New
+</details>
+
+<details>
+<summary><strong>6 previously missed issues</strong></summary>
+
+In code that hasn't changed since last review
+
+<details>
+<summary><picture><source media="(prefers-color-scheme: dark)" srcset="https://github.githubassets.com/static/images/icons/copilot-code-review/medium-v2-dark.svg"><source media="(prefers-color-scheme: light)" srcset="https://github.githubassets.com/static/images/icons/copilot-code-review/medium-v2-light.svg"><img src="https://github.githubassets.com/static/images/icons/copilot-code-review/medium-v2-light.png" alt="Medium severity" width="62" height="18" align="texttop"></picture> Define finding severity and verification criteria in the fallback</summary>
+
+`skills/​branching-pr-workflow/​SKILL.md:40`
+
+The standalone fallback requests bugs but does not define the severities or verification verdicts that step 2 uses to decide which fixes are mandatory. When only `git-workflow` is installed, provide that scale and check each finding before classifying it as confirmed or unverified.
+</details>
+<details>
+<summary><picture><source media="(prefers-color-scheme: dark)" srcset="https://github.githubassets.com/static/images/icons/copilot-code-review/medium-v2-dark.svg"><source media="(prefers-color-scheme: light)" srcset="https://github.githubassets.com/static/images/icons/copilot-code-review/medium-v2-light.svg"><img src="https://github.githubassets.com/static/images/icons/copilot-code-review/medium-v2-light.png" alt="Medium severity" width="62" height="18" align="texttop"></picture> Isolate each finding&#39;s changes before creating fixup commits</summary>
+
+`skills/​branching-pr-workflow/​SKILL.md:41`
+
+This asks the agent to apply all findings before making any fixup commits, but the command in step 3 commits whole files. If two findings in the same file belong to different commits, the first fixup therefore captures both fixes and the second cannot be folded into its intended commit. Apply and commit each fix separately, or otherwise isolate its hunks before creating the fixups.
+</details>
+<details>
+<summary><picture><source media="(prefers-color-scheme: dark)" srcset="https://github.githubassets.com/static/images/icons/copilot-code-review/medium-v2-dark.svg"><source media="(prefers-color-scheme: light)" srcset="https://github.githubassets.com/static/images/icons/copilot-code-review/medium-v2-light.svg"><img src="https://github.githubassets.com/static/images/icons/copilot-code-review/medium-v2-light.png" alt="Medium severity" width="62" height="18" align="texttop"></picture> Check for staged user changes before committing affected files</summary>
+
+`skills/​branching-pr-workflow/​SKILL.md:45`
+
+A path-limited commit records the entire current contents of each named file, including the user's staged checkpoint in that file. The checkpoint check below happens only before the rebase, after this command has already absorbed it; `AGENTS.md:23` requires asking before committing such a file. Check for the user's staged changes in the affected paths and ask before making the fixup commit.
+</details>
+<details>
+<summary><picture><source media="(prefers-color-scheme: dark)" srcset="https://github.githubassets.com/static/images/icons/copilot-code-review/medium-v2-dark.svg"><source media="(prefers-color-scheme: light)" srcset="https://github.githubassets.com/static/images/icons/copilot-code-review/medium-v2-light.svg"><img src="https://github.githubassets.com/static/images/icons/copilot-code-review/medium-v2-light.png" alt="Medium severity" width="62" height="18" align="texttop"></picture> Check actual Copilot reviews before rewriting commits</summary>
+
+`skills/​branching-pr-workflow/​SKILL.md:61`
+
+Not having run `check-pr` does not mean Copilot has not started: a review can also be requested directly or by repository automation. In that case this gate permits rewriting commits that Copilot is already reviewing. Check the actual pending and submitted Copilot reviews on both PRs (for example with `copilot-review.sh`) before allowing the rewrite.
+</details>
+<details>
+<summary><picture><source media="(prefers-color-scheme: dark)" srcset="https://github.githubassets.com/static/images/icons/copilot-code-review/medium-v2-dark.svg"><source media="(prefers-color-scheme: light)" srcset="https://github.githubassets.com/static/images/icons/copilot-code-review/medium-v2-light.svg"><img src="https://github.githubassets.com/static/images/icons/copilot-code-review/medium-v2-light.png" alt="Medium severity" width="62" height="18" align="texttop"></picture> Fetch both refs explicitly and compute the merge base from their SHAs</summary>
+
+`skills/​diff-review/​SKILL.md:22`
+
+Fetching the base by name does not guarantee that its remote-tracking ref is updated, such as in a single-branch clone whose fetch mapping excludes that base. Since the referenced step 4 uses the remote-tracking ref, the review can fail or use a stale range; fetch the head and base separately, record their SHAs, and compute the merge base from those values.
+</details>
+<details>
+<summary><picture><source media="(prefers-color-scheme: dark)" srcset="https://github.githubassets.com/static/images/icons/copilot-code-review/medium-v2-dark.svg"><source media="(prefers-color-scheme: light)" srcset="https://github.githubassets.com/static/images/icons/copilot-code-review/medium-v2-light.svg"><img src="https://github.githubassets.com/static/images/icons/copilot-code-review/medium-v2-light.png" alt="Medium severity" width="62" height="18" align="texttop"></picture> Fetch and verify PR head and base before computing the review range</summary>
+
+`skills/​give-pr-review/​SKILL.md:24`
+
+The new reviewer and standalone fallback reuse step 4, which fetches the fork's `origin` base and never ensures the PR head is available locally. This can give a fork checkout the wrong range or leave the fallback unable to read the supplied SHA; fetch both commits from the PR's repository, verify `headRefOid`, and compute the range from those fetched SHAs.
+</details>
+</details>
+
+<details>
+<summary><strong>9 resolved since last review</strong></summary>
+
+- <picture><source media="(prefers-color-scheme: dark)" srcset="https://github.githubassets.com/static/images/icons/copilot-code-review/low-v2-dark.svg"><source media="(prefers-color-scheme: light)" srcset="https://github.githubassets.com/static/images/icons/copilot-code-review/low-v2-light.svg"><img src="https://github.githubassets.com/static/images/icons/copilot-code-review/low-v2-light.png" alt="Low severity" width="62" height="18" align="texttop"></picture> [Review trunk back-merge resolutions for dropped changes](https://github.com/heyFahad/agent-toolkit/pull/26#discussion_r4654576518)
+- <picture><source media="(prefers-color-scheme: dark)" srcset="https://github.githubassets.com/static/images/icons/copilot-code-review/low-v2-dark.svg"><source media="(prefers-color-scheme: light)" srcset="https://github.githubassets.com/static/images/icons/copilot-code-review/low-v2-light.svg"><img src="https://github.githubassets.com/static/images/icons/copilot-code-review/low-v2-light.png" alt="Low severity" width="62" height="18" align="texttop"></picture> [Provide a review fallback when the companion skill is absent](https://github.com/heyFahad/agent-toolkit/pull/26#discussion_r4654576499)
+- <picture><source media="(prefers-color-scheme: dark)" srcset="https://github.githubassets.com/static/images/icons/copilot-code-review/low-v2-dark.svg"><source media="(prefers-color-scheme: light)" srcset="https://github.githubassets.com/static/images/icons/copilot-code-review/low-v2-light.svg"><img src="https://github.githubassets.com/static/images/icons/copilot-code-review/low-v2-light.png" alt="Low severity" width="62" height="18" align="texttop"></picture> [Keep exploitable security and data-loss issues as blockers](https://github.com/heyFahad/agent-toolkit/pull/26#discussion_r4654576481)
+- <picture><source media="(prefers-color-scheme: dark)" srcset="https://github.githubassets.com/static/images/icons/copilot-code-review/low-v2-dark.svg"><source media="(prefers-color-scheme: light)" srcset="https://github.githubassets.com/static/images/icons/copilot-code-review/low-v2-light.svg"><img src="https://github.githubassets.com/static/images/icons/copilot-code-review/low-v2-light.png" alt="Low severity" width="62" height="18" align="texttop"></picture> [Keep supplied focus in single-reviewer conflict-resolution reviews](https://github.com/heyFahad/agent-toolkit/pull/26#discussion_r4654576467)
+- <picture><source media="(prefers-color-scheme: dark)" srcset="https://github.githubassets.com/static/images/icons/copilot-code-review/low-v2-dark.svg"><source media="(prefers-color-scheme: light)" srcset="https://github.githubassets.com/static/images/icons/copilot-code-review/low-v2-light.svg"><img src="https://github.githubassets.com/static/images/icons/copilot-code-review/low-v2-light.png" alt="Low severity" width="62" height="18" align="texttop"></picture> [Fetch and verify the PR head from its base repository](https://github.com/heyFahad/agent-toolkit/pull/26#discussion_r4654576445)
+- <picture><source media="(prefers-color-scheme: dark)" srcset="https://github.githubassets.com/static/images/icons/copilot-code-review/low-v2-dark.svg"><source media="(prefers-color-scheme: light)" srcset="https://github.githubassets.com/static/images/icons/copilot-code-review/low-v2-light.svg"><img src="https://github.githubassets.com/static/images/icons/copilot-code-review/low-v2-light.png" alt="Low severity" width="62" height="18" align="texttop"></picture> [Preserve merge ancestry when fixing conflict-resolution findings](https://github.com/heyFahad/agent-toolkit/pull/26#discussion_r4654576427)
+- <picture><source media="(prefers-color-scheme: dark)" srcset="https://github.githubassets.com/static/images/icons/copilot-code-review/low-v2-dark.svg"><source media="(prefers-color-scheme: light)" srcset="https://github.githubassets.com/static/images/icons/copilot-code-review/low-v2-light.svg"><img src="https://github.githubassets.com/static/images/icons/copilot-code-review/low-v2-light.png" alt="Low severity" width="62" height="18" align="texttop"></picture> [Limit force-push to the reviewed branch ref](https://github.com/heyFahad/agent-toolkit/pull/26#discussion_r4654576421)
+- <picture><source media="(prefers-color-scheme: dark)" srcset="https://github.githubassets.com/static/images/icons/copilot-code-review/low-v2-dark.svg"><source media="(prefers-color-scheme: light)" srcset="https://github.githubassets.com/static/images/icons/copilot-code-review/low-v2-light.svg"><img src="https://github.githubassets.com/static/images/icons/copilot-code-review/low-v2-light.png" alt="Low severity" width="62" height="18" align="texttop"></picture> [Check rewritten intermediate commits for broken dependencies](https://github.com/heyFahad/agent-toolkit/pull/26#discussion_r4654576409)
+- <picture><source media="(prefers-color-scheme: dark)" srcset="https://github.githubassets.com/static/images/icons/copilot-code-review/low-v2-dark.svg"><source media="(prefers-color-scheme: light)" srcset="https://github.githubassets.com/static/images/icons/copilot-code-review/low-v2-light.svg"><img src="https://github.githubassets.com/static/images/icons/copilot-code-review/low-v2-light.png" alt="Low severity" width="62" height="18" align="texttop"></picture> [Surface unverified findings before continuing](https://github.com/heyFahad/agent-toolkit/pull/26#discussion_r4654576392)
+</details>
+
+<sub>Review effort: Balanced</sub>
