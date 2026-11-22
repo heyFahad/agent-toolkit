@@ -97,7 +97,7 @@ Missed issues have no thread to reply to. Answer all of a PR's missed issues in 
 
 ```bash
 gh pr comment 101 --body-file - <<'EOF'
-Copilot's previously missed issues from https://github.com/o/r/pull/101#pullrequestreview-123 (links show the code it reviewed):
+Copilot's previously missed issues from https://github.com/o/r/pull/101#pullrequestreview-123 (*links show the code it reviewed*):
 
 - [skills/a/SKILL.md:41](https://github.com/o/r/blob/9f8e7d6c5b4a39281706f5e4d3c2b1a098765432/skills/a/SKILL.md#L41) Commit fixes individually: fixed in abc1234.
 - [skills/b/SKILL.md:24](https://github.com/o/r/blob/9f8e7d6c5b4a39281706f5e4d3c2b1a098765432/skills/b/SKILL.md#L24) Use verified SHAs: not applicable, step 4 already fetches both from the PR's repository:
