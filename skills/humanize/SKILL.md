@@ -87,6 +87,19 @@ Wherever the text renders rich (GitHub, Jira, Confluence, Slack, a chat reply), 
 
 The marks differ by surface. Markdown (GitHub, Confluence, chat replies, a Jira field that takes Markdown) uses `**bold**` and `*italics*`. Slack and Jira wiki markup use `*bold*` and `_italics_`. A rich-text editor or Jira's ADF takes the marks themselves. Plain text (commit messages, code comments, terminal output, plain-text fields) gets no markers at all, since they would show as literal characters.
 
+## Mentioning people
+
+When text says something about a person or in their name, tag them so it reaches them: a question or request, credit, their idea or decision, a quote, a disagreement with their work. They should see what is said about them and be able to correct it. A plain name lets people discuss someone where that person can't answer.
+
+- Tag a person at their first mention in a message; later mentions in the same message use the plain name.
+- Use the plain name, and link their work instead, for people outside the project: an upstream maintainer whose library you're discussing in your own repo doesn't need a notification from strangers.
+- Use the plain name for people who can't see the place: a private channel or repo they aren't in, where the notification leads nowhere or pulls them into a conversation they weren't part of.
+- Tag a bot only when a mention is how it's triggered, and only when you mean to trigger it.
+- Never guess an account. Look it up; if you can't find it, use the plain name and say so to the user.
+- Plain text that notifies nobody (commit messages, code comments) uses plain names.
+
+How to write a tag differs by platform: `github-native-writing` for GitHub, `external-reference-links` for Jira, Confluence and Slack.
+
 ## Commit messages, PR descriptions, and ticket comments
 
 The source page treats edit summaries as their own category, and it transfers directly. Four things to avoid:

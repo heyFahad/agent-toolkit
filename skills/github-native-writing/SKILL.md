@@ -1,6 +1,6 @@
 ---
 name: github-native-writing
-description: Reference-formatting rules specific to GitHub-native surfaces (PR/issue comments, review replies, PR/issue descriptions, Discussions) - paste bare URLs for PRs, issues and commits, never backtick them, and pick bare or named links to lines of code by how GitHub will render them. Use whenever writing a PR comment, review reply, PR/issue description, or Discussion post.
+description: Reference-formatting rules specific to GitHub-native surfaces (PR/issue comments, review replies, PR/issue descriptions, Discussions) - paste bare URLs for PRs, issues and commits, never backtick them, pick bare or named links to lines of code by how GitHub will render them, and @-mention people and bots correctly. Use whenever writing a PR comment, review reply, PR/issue description, or Discussion post.
 metadata:
   category: writing-conventions
 ---
@@ -56,5 +56,14 @@ So decide first what the link is for:
 This is the one place to hand-build a Markdown link to a GitHub resource. Unlike a PR, issue or commit URL, which GitHub shortens even across repositories (`O/other-repo#123`), a line link has no short form: bare, it is either a box or a raw URL.
 
 Either way, pin the link to the commit the reader is discussing, not a branch, so it keeps pointing at the same lines. When that isn't the PR's current head, say which version it shows. A box of the code a reviewer flagged, posted under "fixed in abc1234", looks like the current code unless the text says otherwise. For a Markdown file, a plain click on the link scrolls but does not highlight; `?plain=1` before the `#` opens the source view with the lines marked.
+
+## Mentioning people and bots
+
+When to tag someone is in `humanize`'s "Mentioning people". On GitHub:
+
+- Write `@login` bare in the text. Inside backticks it is literal and notifies no one, which is how to write a placeholder or an example (`@reviewer`).
+- Take the login from where the person already appears: the PR or issue author and commenters (`gh pr view N --json author,comments,reviews`). Confirm one you were given with `gh api users/<login>`. If you only have a name and the match isn't certain, ask the user rather than tagging a stranger.
+- `@org/team` notifies every member of the team. Use it only when the whole team should act.
+- A bot mention can start work: `@copilot` in a PR comment can hand the PR to Copilot's coding agent. Request Copilot's review with `gh pr edit N --add-reviewer @copilot` instead, and write `@copilot` in a comment only to give it work.
 
 If this rule is violated in a way a script can check (a backtick-wrapped `github.com` URL, SHA, or `#123`-style reference inside a `gh` comment/review/PR-body command), this plugin's `github-comment-formatting-gate` hook denies the command before it runs.
