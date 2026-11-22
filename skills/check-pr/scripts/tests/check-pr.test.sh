@@ -223,7 +223,7 @@ check "copilot: no review, no missed issues" '[[],false,null,false]' \
 copilot_fixture() {
   jq -n --rawfile body "$1" '{data: {repository: {pullRequest: {headRefOid: "head1",
     reviewRequests: {nodes: []},
-    reviews: {nodes: [{id: "R9", state: "COMMENTED", submittedAt: "2026-01-04T00:00:00Z", url: "r9", body: $body,
+    reviews: {nodes: [{id: "R9", state: "COMMENTED", submittedAt: "2026-01-04T00:00:00Z", url: "https://github.com/o/r/pull/12#pullrequestreview-9", body: $body,
       author: {login: "copilot-pull-request-reviewer"}, commit: {oid: "head1"}}]}}}}}' >"$FX/copilot.json"
   echo '{"data":{"repository":{"pullRequest":{"comments":{"pageInfo":{"hasNextPage":true,"endCursor":"c"},"nodes":[
     {"body":"unrelated","viewerDidAuthor":true,"authorAssociation":"OWNER"}]}}}}}' >"$FX/comments-1.json"
@@ -246,6 +246,8 @@ check "missed: zero-width spaces stripped from paths" \
   "$(q '[.missedIssues[0,4] | [.path, .line]]')"
 check "missed: no zero-width space left anywhere" false "$(q '[.missedIssues[] | .path, .body, .title] | any(test("​"))')"
 check "missed: title without the severity image" '"Commit fixes individually and protect staged changes"' "$(q '.missedIssues[0].title')"
+check "missed: permalink pinned to the reviewed commit" '"https://github.com/o/r/blob/head1/skills/branching-pr-workflow/SKILL.md#L41"' \
+  "$(q '.missedIssues[0].url')"
 check "missed: body is the description only" true \
   "$(q '.missedIssues[0].body | startswith("A path-based commit includes") and endswith("user-staged changes.")')"
 check "missed: resolved section not counted" false "$(q '[.missedIssues[].title] | any(test("Check rewrite safety"))')"
@@ -338,6 +340,7 @@ printf '%s\n' '<details>' '<summary><strong>1 previously missed issue</strong></
 copilot_fixture "$FX/body.txt"
 run copilot-review.sh -R o/r 12
 check "missed: finding without a title flagged" '[1,true]' "$(q '[(.missedIssues | length), .missedIssuesUnparsed]')"
+check "missed: no path, no permalink" null "$(q '.missedIssues[0].url')"
 
 # A summary wrapped across lines isn't parsed, so it must be flagged.
 # shellcheck disable=SC2016 # literal backticks: a code span

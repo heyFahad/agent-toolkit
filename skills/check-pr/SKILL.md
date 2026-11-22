@@ -55,7 +55,7 @@ Drafts are fine. Copilot usually answers within about five minutes, so read CI w
 For each PR run `pr-gate.sh` for the overview, then `review-threads.sh`, `copilot-review.sh` and `ci-status.sh`.
 
 - **CI failures.** For a failing check with a `jobId`, run `job-log.sh` and find the first real error, not the last line. A check without one (Socket Security, any other app) has no log here: open its `url`, or read that app's PR comment.
-- **Copilot's previously missed issues** live only in its review body, under "N previously missed issues", so they have no thread and `review-threads.sh` never lists them. Each has a `severity` (`High`, `Medium`, `Low`), `path`, `line`, `title` and `body`; assess them exactly like threads, High ones first. A review that says "No open issues" is not clean while these remain: `pr-gate.sh` blocks with `missed-issues` until step 6 answers them. If `missedIssuesUnparsed` is true, GitHub changed the format: read `review.body` yourself.
+- **Copilot's previously missed issues** live only in its review body, under "N previously missed issues", so they have no thread and `review-threads.sh` never lists them. Each has a `severity` (`High`, `Medium`, `Low`), `path`, `line`, `title`, `body` and `url`, a permalink to that line in the commit Copilot reviewed; assess them exactly like threads, High ones first. A review that says "No open issues" is not clean while these remain: `pr-gate.sh` blocks with `missed-issues` until step 6 answers them. If `missedIssuesUnparsed` is true, GitHub changed the format: read `review.body` yourself.
 - **Copilot's low-confidence comments** (an older body format) also live only in its review body. Assess them like the rest. If `lowConfidenceUnparsed` is true, read `review.body` yourself.
 - **A stale Copilot review** (`stale: true`) covers an older commit. That is a warning, not a blocker.
 - **Human reviews.** A human's `CHANGES_REQUESTED` blocks the PR until they change it. Their threads are in `review-threads.sh` with `authorType: "User"`.
@@ -88,13 +88,21 @@ Once the fixes are pushed, answer every thread you assessed with `reply-thread.s
 - Not applicable or out of scope: give the reason. Add `--resolve` for a bot's thread.
 - A human's thread: never pass `--resolve`. Post a "fixed" reply straight away; post a not-applicable or out-of-scope reply only once the user has agreed to it.
 
-Missed issues have no thread to reply to. Answer all of a PR's missed issues in one PR comment: one line per finding with its `path:line`, title and verdict (and the commit SHA for a fix), and `missedIssuesMarker` from `copilot-review.sh` as the last line, copied exactly. The marker names the review, and it is how `pr-gate.sh` knows they've been answered:
+Missed issues have no thread to reply to. Answer all of a PR's missed issues in one PR comment, using what `copilot-review.sh` printed:
+
+- First, the review it answers: its `review.url`, so readers can find the findings.
+- Then one entry per finding: its title and verdict (and the commit SHA for a fix), with its `url` bare on the next line. GitHub turns that permalink into a link to the exact line, in the version Copilot reviewed.
+- Last, `missedIssuesMarker`, copied exactly. The marker names the review, and it is how `pr-gate.sh` knows they've been answered.
 
 ```bash
 gh pr comment 101 --body-file - <<'EOF'
-Copilot's previously missed issues:
-- `skills/a/SKILL.md:41` Commit fixes individually: fixed in abc1234.
-- `skills/b/SKILL.md:24` Use verified SHAs: not applicable, step 4 already fetches both from the PR's repository.
+Copilot's previously missed issues from https://github.com/o/r/pull/101#pullrequestreview-123:
+
+- Commit fixes individually: fixed in abc1234.
+  https://github.com/o/r/blob/9f8e7d6/skills/a/SKILL.md#L41
+- Use verified SHAs: not applicable, step 4 already fetches both from the PR's repository.
+  https://github.com/o/r/blob/9f8e7d6/skills/b/SKILL.md#L24
+
 <!-- check-pr: answered missed issues of review PRR_... -->
 EOF
 ```

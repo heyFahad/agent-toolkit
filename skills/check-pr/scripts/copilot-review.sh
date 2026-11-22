@@ -28,10 +28,12 @@
 #   {headOid, requested,
 #    review: {id, state, submittedAt, commit, url, body} | null,
 #    stale,
-#    missedIssues: [{severity, path, line, title, body}], missedIssuesUnparsed,
+#    missedIssues: [{severity, path, line, title, body, url}], missedIssuesUnparsed,
 #    missedIssuesMarker, missedIssuesAnswered,
 #    lowConfidence: [{path, line, body}], lowConfidenceUnparsed}
-# severity is "High", "Medium" or "Low" as Copilot wrote it, or null.
+# severity is "High", "Medium" or "Low" as Copilot wrote it, or null. url is
+# a permalink to path at line, pinned to the commit Copilot reviewed (the
+# version its line numbers refer to), or null without a path.
 # missedIssuesUnparsed is true when the body has that section (a <summary>
 # saying "previously missed issues", not the words anywhere in the body) but
 # fewer findings could be parsed out of it than its summary announces, and
@@ -171,7 +173,11 @@ RESULT=$(gh api graphql -f query="$QUERY" -f owner="$OWNER" -f name="$NAME" -F n
         requested: any($pr.reviewRequests.nodes[]; (.requestedReviewer.login // "") | test($copilot)),
         review: (if $r == null then null else {id: $r.id, state: $r.state, submittedAt: $r.submittedAt, commit: $r.commit.oid, url: $r.url, body: $body} end),
         stale: ($r != null and $r.commit.oid != $pr.headRefOid),
-        missedIssues: $missed,
+        missedIssues: [($r.url // "" | capture("^(?<b>https?://[^/]+/[^/]+/[^/]+)/pull/").b) as $base
+          | $missed[]
+          | . + {url: (if .path == null or $base == null then null
+              else "\($base)/blob/\($r.commit.oid)/\(.path | split("/") | map(@uri) | join("/"))"
+                + (if .line == null then "" else "#L\(.line)" end) end)}],
         # The count in the summary ("7 previously missed issues"), or 1 when
         # it gives none: there is at least one.
         # A finding without a title or path (a summary that spans lines, say)
