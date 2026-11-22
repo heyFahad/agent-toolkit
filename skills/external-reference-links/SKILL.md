@@ -27,3 +27,15 @@ When to tag someone is in `humanize`'s "Mentioning people". A tag only notifies 
 Wrap every code-related reference in backticks: function/variable names, file paths, config keys, HTTP headers, anything that's literally an identifier in the code. This improves skimmability and is the standard Markdown-as-code convention.
 
 One minor, acceptable tradeoff: raw `git log` in a terminal shows literal backticks rather than rendering them. GitHub/GitLab's web views and most modern git tooling render them fine, and readability there outweighs the terminal cosmetic cost.
+
+## Links to files and lines
+
+A backticked `src/client/session.ts:88` looks like a reference but can't be clicked. When the reader may want to open the code, make it a named link to a permalink pinned to a commit (`https://github.com/O/R/blob/<sha>/src/client/session.ts#L88`), so it keeps pointing at the same lines. Its text is the path from the repository root, with the repository's name in front when the code lives in a repository other than the one the text is about (`other-repo/src/client/session.ts:88`). These surfaces never turn a link into a code preview, so every file or line reference that goes anywhere is a named link.
+
+Keep the code style on the link text where the surface allows it:
+
+- **Markdown** (Confluence, a Jira field that takes Markdown): `` [`src/client/session.ts:88`](url) ``.
+- **Jira's ADF**: one text node with both a `link` mark and a `code` mark; ADF allows `code` only together with `link`.
+- **Slack**: `<url|src/client/session.ts:88>`, with the label as plain text.
+
+An identifier that isn't a place the reader goes (a function name, a config key, a header) stays a plain backticked reference. Link it only when the text is pointing at where it is defined.
