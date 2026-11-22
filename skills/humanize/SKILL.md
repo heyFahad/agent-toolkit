@@ -1,6 +1,6 @@
 ---
 name: humanize
-description: Strip the tells of machine-generated prose out of anything a human will read, using Wikipedia's "Signs of AI writing" catalog as the source of truth. Use for any non-trivial prose - PR descriptions, Jira tickets, commit message bodies, docs, READMEs, reports, and chat replies of more than a couple of sentences - and whenever the user says something reads like AI, sounds robotic, or needs to sound human. Also apply it to your own replies in the same conversation, without being asked.
+description: Strip the tells of machine-generated prose out of anything a human will read, using Wikipedia's "Signs of AI writing" catalog as the source of truth. Use for any non-trivial prose - PR descriptions, Jira tickets, commit message bodies, docs, READMEs, reports, and chat replies of more than a couple of sentences - and whenever the user says something reads like AI, sounds robotic, or needs to sound human. It also sets how to format rich text (bold, italics, lists) on any surface. Also apply it to your own replies in the same conversation, without being asked.
 metadata:
   category: writing-conventions
   source: https://en.wikipedia.org/wiki/Wikipedia:Signs_of_AI_writing
@@ -52,8 +52,6 @@ These have no legitimate use in ordinary prose. Do not produce them.
 
 9. **Fabrication.** Never invent a citation, DOI, ISBN, URL, statistic, quote, or named expert. Never write "industry reports suggest" or "experts argue" with nothing behind it. If a source is unknown, say so plainly or drop the claim. Do not claim something is "not widely documented" and then speculate about what it probably is; that whole move, including the claim of absence, is invention. The same goes for attribution: in text that will be posted under someone's name, never write a first-person claim of work they did not do ("I tested," "I ran," "I compared"). Say what the text itself supports, and keep your own verification in the conversation.
 
-10. **Italic asides.** A house style, not an AI tell. Wherever the text will render rich (GitHub, Jira, Confluence, Slack, a chat reply), italicize the subtext inside parentheses: a qualifier, a clarification, a side note. Keep the parentheses themselves upright. Each surface marks italics its own way: `(*links show the code it reviewed*)` in Markdown (GitHub, Confluence, chat replies, a Jira field that takes Markdown), `(_links show the code it reviewed_)` in Slack and Jira wiki markup, and the italic mark in a rich-text editor or Jira's ADF. Leave out parentheses that hold only a reference rather than words: a code span, a link, a ticket or PR number, an abbreviation's expansion. Plain-text contexts (commit messages, code comments, terminal output, plain-text fields) get no italic markers at all, since the asterisks would show as literal characters.
-
 Items 4 and 5 are classed on the source page as **historical** indicators, common in 2022 to 2024 models and rarer now. They stay hard rules here because they carry no information either way.
 
 ## The judgment calls
@@ -77,6 +75,17 @@ Removing tells produces prose that is clean and dead. The source page lists thes
 - **Concrete over abstract.** Keep the odd, specific, checkable detail. Resist smoothing it into a category.
 - **Voice.** Match the person's actual register. In technical team communication that usually means short, direct, collegial, unpadded. Contractions are fine.
 - **Let structure follow content.** Not every piece needs an intro, three body sections, and a close. Sometimes the answer is two sentences with no heading.
+
+## Formatting rich text
+
+Wherever the text renders rich (GitHub, Jira, Confluence, Slack, a chat reply), formatting tells the reader what to stress, what is background and what is literal. Use it by feel, the way your voice would carry the text if you read it aloud, not by quota.
+
+- **Bold** what you would stress aloud: the words and phrases that carry the point, a warning, the answer to the question asked. As many as the text needs. If most of a paragraph wants to be bold, nothing in it will stand out, so rewrite instead. Bolding nouns because they are key terms is not stress; that is the tell in item 7.
+- *Italics* for subtext: the quieter, implied or secondary meaning the reader should take in without it competing with the main point, such as a qualifier, a side note or background. Parentheses often hold it, but they are not the test: some subtext has none, and some parentheses hold no subtext.
+- Backticks for anything literal from code: identifiers, paths, config keys, values, commands.
+- A list for three or more parallel items, prose otherwise. A table when the items share attributes worth comparing. Short paragraphs with a blank line between.
+
+The marks differ by surface. Markdown (GitHub, Confluence, chat replies, a Jira field that takes Markdown) uses `**bold**` and `*italics*`. Slack and Jira wiki markup use `*bold*` and `_italics_`. A rich-text editor or Jira's ADF takes the marks themselves. Plain text (commit messages, code comments, terminal output, plain-text fields) gets no markers at all, since they would show as literal characters.
 
 ## Commit messages, PR descriptions, and ticket comments
 
@@ -138,4 +147,4 @@ This skill governs prose. It does not apply to code, config, structured data, or
 
 ## Mechanical backstop
 
-This plugin's `hooks.json` also runs an experimental `agent`-type `PreToolUse` hook on GitHub PR/issue body-writing commands and on `Write`/`Edit` to `README.md`/`docs/*` files, scoped only to the hard-defaults list above (not the density-based judgment calls, and not item 10's house style, which isn't a sign of AI writing). It's a backstop for when this skill wasn't actually applied, not a substitute for applying it - it can only deny and ask for a rewrite, not fix the text itself.
+This plugin's `hooks.json` also runs an experimental `agent`-type `PreToolUse` hook on GitHub PR/issue body-writing commands and on `Write`/`Edit` to `README.md`/`docs/*` files, scoped only to the hard-defaults list above (not the density-based judgment calls, and not the formatting section, which is house style rather than a sign of AI writing). It's a backstop for when this skill wasn't actually applied, not a substitute for applying it - it can only deny and ask for a rewrite, not fix the text itself.
