@@ -90,18 +90,19 @@ Once the fixes are pushed, answer every thread you assessed with `reply-thread.s
 
 Missed issues have no thread to reply to. Answer all of a PR's missed issues in one PR comment, using what `copilot-review.sh` printed:
 
-- First, the review it answers: its `review.url`, so readers can find the findings.
-- Then one entry per finding: its title and verdict (and the commit SHA for a fix), with its `url` bare on the next line. GitHub turns that permalink into a link to the exact line, in the version Copilot reviewed.
+- First, the review it answers: its `review.url`, so readers can find the findings. Say that the links show the code as Copilot reviewed it, since that's the commit they're pinned to.
+- Then one entry per finding: a named link to where it is, `[path:line](url)`, then its title and verdict (and the commit SHA for a fix). A named link stays one short inline link; pasted bare, `url` would turn into a box of the old, pre-fix code (see `github-native-writing`).
+- When a verdict rests on code (not applicable because something already handles it), paste a permalink to that code bare on its own line under the entry, pinned to the head's full SHA, so the reader sees the evidence.
 - Last, `missedIssuesMarker`, copied exactly. The marker names the review, and it is how `pr-gate.sh` knows they've been answered.
 
 ```bash
 gh pr comment 101 --body-file - <<'EOF'
-Copilot's previously missed issues from https://github.com/o/r/pull/101#pullrequestreview-123:
+Copilot's previously missed issues from https://github.com/o/r/pull/101#pullrequestreview-123 (links show the code it reviewed):
 
-- Commit fixes individually: fixed in abc1234.
-  https://github.com/o/r/blob/9f8e7d6/skills/a/SKILL.md#L41
-- Use verified SHAs: not applicable, step 4 already fetches both from the PR's repository.
-  https://github.com/o/r/blob/9f8e7d6/skills/b/SKILL.md#L24
+- [skills/a/SKILL.md:41](https://github.com/o/r/blob/9f8e7d6c5b4a39281706f5e4d3c2b1a098765432/skills/a/SKILL.md#L41) Commit fixes individually: fixed in abc1234.
+- [skills/b/SKILL.md:24](https://github.com/o/r/blob/9f8e7d6c5b4a39281706f5e4d3c2b1a098765432/skills/b/SKILL.md#L24) Use verified SHAs: not applicable, step 4 already fetches both from the PR's repository:
+
+  https://github.com/o/r/blob/0a1b2c3d4e5f60718293a4b5c6d7e8f901234567/skills/b/SKILL.md#L30-L34
 
 <!-- check-pr: answered missed issues of review PRR_... -->
 EOF
