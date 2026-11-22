@@ -52,6 +52,8 @@ These have no legitimate use in ordinary prose. Do not produce them.
 
 9. **Fabrication.** Never invent a citation, DOI, ISBN, URL, statistic, quote, or named expert. Never write "industry reports suggest" or "experts argue" with nothing behind it. If a source is unknown, say so plainly or drop the claim. Do not claim something is "not widely documented" and then speculate about what it probably is; that whole move, including the claim of absence, is invention. The same goes for attribution: in text that will be posted under someone's name, never write a first-person claim of work they did not do ("I tested," "I ran," "I compared"). Say what the text itself supports, and keep your own verification in the conversation.
 
+10. **Italic asides.** A house style, not an AI tell. Wherever the text will render rich (GitHub, Jira, Confluence, Slack, a chat reply), italicize the subtext inside parentheses: a qualifier, a clarification, a side note. Keep the parentheses themselves upright. Each surface marks italics its own way: `(*links show the code it reviewed*)` in Markdown (GitHub, Confluence, chat replies, a Jira field that takes Markdown), `(_links show the code it reviewed_)` in Slack and Jira wiki markup, and the italic mark in a rich-text editor or Jira's ADF. Leave out parentheses that hold only a reference rather than words: a code span, a link, a ticket or PR number, an abbreviation's expansion. Plain-text contexts (commit messages, code comments, terminal output, plain-text fields) get no italic markers at all, since the asterisks would show as literal characters.
+
 Items 4 and 5 are classed on the source page as **historical** indicators, common in 2022 to 2024 models and rarer now. They stay hard rules here because they carry no information either way.
 
 ## The judgment calls
@@ -136,4 +138,4 @@ This skill governs prose. It does not apply to code, config, structured data, or
 
 ## Mechanical backstop
 
-This plugin's `hooks.json` also runs an experimental `agent`-type `PreToolUse` hook on GitHub PR/issue body-writing commands and on `Write`/`Edit` to `README.md`/`docs/*` files, scoped only to the hard-defaults list above (not the density-based judgment calls). It's a backstop for when this skill wasn't actually applied, not a substitute for applying it - it can only deny and ask for a rewrite, not fix the text itself.
+This plugin's `hooks.json` also runs an experimental `agent`-type `PreToolUse` hook on GitHub PR/issue body-writing commands and on `Write`/`Edit` to `README.md`/`docs/*` files, scoped only to the hard-defaults list above (not the density-based judgment calls, and not item 10's house style, which isn't a sign of AI writing). It's a backstop for when this skill wasn't actually applied, not a substitute for applying it - it can only deny and ask for a rewrite, not fix the text itself.
