@@ -1,6 +1,6 @@
 ---
 name: humanize
-description: Strip the tells of machine-generated prose out of anything a human will read, using Wikipedia's "Signs of AI writing" catalog as the source of truth. Use for any non-trivial prose - PR descriptions, Jira tickets, commit message bodies, docs, READMEs, reports, and chat replies of more than a couple of sentences - and whenever the user says something reads like AI, sounds robotic, or needs to sound human. Also apply it to your own replies in the same conversation, without being asked.
+description: Strip the tells of machine-generated prose out of anything a human will read, using Wikipedia's "Signs of AI writing" catalog as the source of truth. Use for any non-trivial prose - PR descriptions, Jira tickets, commit message bodies, docs, READMEs, reports, and chat replies of more than a couple of sentences - and whenever the user says something reads like AI, sounds robotic, or needs to sound human. It also sets how to format rich text (bold, italics, lists) on any surface. Also apply it to your own replies in the same conversation, without being asked.
 metadata:
   category: writing-conventions
   source: https://en.wikipedia.org/wiki/Wikipedia:Signs_of_AI_writing
@@ -76,6 +76,30 @@ Removing tells produces prose that is clean and dead. The source page lists thes
 - **Voice.** Match the person's actual register. In technical team communication that usually means short, direct, collegial, unpadded. Contractions are fine.
 - **Let structure follow content.** Not every piece needs an intro, three body sections, and a close. Sometimes the answer is two sentences with no heading.
 
+## Formatting rich text
+
+Wherever the text renders rich (GitHub, Jira, Confluence, Slack, a chat reply), formatting tells the reader what to stress, what is background and what is literal. Use it by feel, the way your voice would carry the text if you read it aloud, not by quota.
+
+- **Bold** what you would stress aloud: the words and phrases that carry the point, a warning, the answer to the question asked. As many as the text needs. If most of a paragraph wants to be bold, nothing in it will stand out, so rewrite instead. Bolding nouns because they are key terms is not stress; that is the tell in item 7.
+- *Italics* for subtext: the quieter, implied or secondary meaning the reader should take in without it competing with the main point, such as a qualifier, a side note or background. Parentheses often hold it, but they are not the test: some subtext has none, and some parentheses hold no subtext.
+- Backticks for anything literal from code: identifiers, paths, config keys, values, commands.
+- A list for three or more parallel items, prose otherwise. A table when the items share attributes worth comparing. Short paragraphs with a blank line between.
+
+The marks differ by surface. Markdown (GitHub, Confluence, chat replies, a Jira field that takes Markdown) uses `**bold**` and `*italics*`. Slack and Jira wiki markup use `*bold*` and `_italics_`. A rich-text editor or Jira's ADF takes the marks themselves. Plain text (commit messages, code comments, terminal output, plain-text fields) gets no bold or italic markers, since they would show as literal characters. Backticks around code references stay even there, as `commit-message-conventions` and `external-reference-links` require.
+
+## Mentioning people
+
+When text says something about a person or in their name, tag them so it reaches them: a question or request, credit, their idea or decision, a quote, a disagreement with their work. They should see what is said about them and be able to correct it. A plain name lets people discuss someone where that person can't answer.
+
+- Tag a person at their first mention in a message; later mentions in the same message use the plain name.
+- Use the plain name, and link their work instead, for people outside the project: an upstream maintainer whose library you're discussing in your own repo doesn't need a notification from strangers.
+- Use the plain name for people who can't see the place: a private channel or repo they aren't in, where the notification leads nowhere or pulls them into a conversation they weren't part of.
+- Tag a bot only when a mention is how it's triggered, and only when you mean to trigger it.
+- Never guess an account. Look it up; if you can't find it, use the plain name and say so to the user.
+- Plain text that notifies nobody (commit messages, code comments) uses plain names.
+
+How to write a tag differs by platform: `github-native-writing` for GitHub, `external-reference-links` for Jira, Confluence and Slack.
+
 ## Commit messages, PR descriptions, and ticket comments
 
 The source page treats edit summaries as their own category, and it transfers directly. Four things to avoid:
@@ -136,4 +160,4 @@ This skill governs prose. It does not apply to code, config, structured data, or
 
 ## Mechanical backstop
 
-This plugin's `hooks.json` also runs an experimental `agent`-type `PreToolUse` hook on GitHub PR/issue body-writing commands and on `Write`/`Edit` to `README.md`/`docs/*` files, scoped only to the hard-defaults list above (not the density-based judgment calls). It's a backstop for when this skill wasn't actually applied, not a substitute for applying it - it can only deny and ask for a rewrite, not fix the text itself.
+This plugin's `hooks.json` also runs an experimental `agent`-type `PreToolUse` hook on GitHub PR/issue body-writing commands and on `Write`/`Edit` to `README.md`/`docs/*` files, scoped only to the hard-defaults list above (not the density-based judgment calls, and not the formatting section, which is house style rather than a sign of AI writing). It's a backstop for when this skill wasn't actually applied, not a substitute for applying it - it can only deny and ask for a rewrite, not fix the text itself.
