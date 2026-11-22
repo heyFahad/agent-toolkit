@@ -85,7 +85,7 @@ Wherever the text renders rich (GitHub, Jira, Confluence, Slack, a chat reply), 
 - Backticks for anything literal from code: identifiers, paths, config keys, values, commands.
 - A list for three or more parallel items, prose otherwise. A table when the items share attributes worth comparing. Short paragraphs with a blank line between.
 
-The marks differ by surface. Markdown (GitHub, Confluence, chat replies, a Jira field that takes Markdown) uses `**bold**` and `*italics*`. Slack and Jira wiki markup use `*bold*` and `_italics_`. A rich-text editor or Jira's ADF takes the marks themselves. Plain text (commit messages, code comments, terminal output, plain-text fields) gets no markers at all, since they would show as literal characters.
+The marks differ by surface. Markdown (GitHub, Confluence, chat replies, a Jira field that takes Markdown) uses `**bold**` and `*italics*`. Slack and Jira wiki markup use `*bold*` and `_italics_`. A rich-text editor or Jira's ADF takes the marks themselves. Plain text (commit messages, code comments, terminal output, plain-text fields) gets no bold or italic markers, since they would show as literal characters. Backticks around code references stay even there, as `commit-message-conventions` and `external-reference-links` require.
 
 ## Mentioning people
 
