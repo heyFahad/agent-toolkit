@@ -11,9 +11,18 @@ ds_node_bin() {
     [ -f "$dir/.nvmrc" ] || ds_die 2 "$dir/.nvmrc not found"
     v=$(tr -d '[:space:]' < "$dir/.nvmrc")
   fi
+  local nvm=${NVM_DIR:-$HOME/.nvm} spec=$v best
+  # nvm aliases (lts/iron, default, ...) are files holding a version or another alias.
+  for _ in 1 2 3; do [ -f "$nvm/alias/$v" ] && v=$(tr -d '[:space:]' < "$nvm/alias/$v"); done
   v=${v#v}
-  local bin="${NVM_DIR:-$HOME/.nvm}/versions/node/v$v/bin"
-  [ -d "$bin" ] || ds_die 3 "Node $v isn't installed: run nvm install $v"
+  if [ ! -d "$nvm/versions/node/v$v/bin" ] && [[ $v =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+    # A partial version (22, 22.16): the newest installed match.
+    best=$(ls "$nvm/versions/node" 2>/dev/null | sed -n "s/^v\($v\.[0-9.]*\)$/\1/p" \
+      | sort -t. -k1,1n -k2,2n -k3,3n | tail -1)
+    [ -n "$best" ] && v=$best
+  fi
+  local bin="$nvm/versions/node/v$v/bin"
+  [ -d "$bin" ] || ds_die 3 "Node $spec isn't installed: run nvm install $spec"
   echo "$bin"
 }
 

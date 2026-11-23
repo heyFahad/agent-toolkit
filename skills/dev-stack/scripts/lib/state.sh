@@ -19,17 +19,6 @@ ds_owner_set() {
   jq --arg s "$1" --arg d "$2" '. + {($s): $d}' "$f" > "$tmp" && mv "$tmp" "$f"
 }
 
-# ds_claim <svc> <dir> <takeover:0|1>: take <svc> for <dir>, or refuse with 2
-# when another directory holds it and takeover wasn't asked for.
-ds_claim() {
-  local svc=$1 dir=$2 takeover=$3 cur
-  cur=$(ds_owner_get "$svc")
-  if [ -n "$cur" ] && [ "$cur" != "$dir" ] && [ "$takeover" != 1 ]; then
-    ds_die 2 "$svc is running from $cur; rerun with --takeover to switch it to $dir"
-  fi
-  [ "$cur" = "$dir" ] || ds_owner_set "$svc" "$dir"
-}
-
 # ds_copy_local_files <registry_json_file> <svc> <dir>: bring each listed local
 # file missing from <dir> over from the main checkout: files are copied,
 # directories symlinked. Never overwrites.

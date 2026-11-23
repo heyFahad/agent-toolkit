@@ -34,6 +34,17 @@ check "nvmrc with a leading v resolves" [ "$got" = "$NVM_DIR/versions/node/v16.2
 got=$(ds_node_bin "$TMP/ws/bsa" 16.20.2)
 check "pinned version resolves" [ "$got" = "$NVM_DIR/versions/node/v16.20.2/bin" ]
 
+# --- partial versions and nvm aliases resolve to an installed version ---
+mkdir -p "$NVM_DIR/versions/node/v22.20.0/bin" "$NVM_DIR/alias/lts"
+got=$(ds_node_bin "$TMP/ws/bsa" 22)
+check "partial version picks the newest installed match (got '$got')" [ "$got" = "$NVM_DIR/versions/node/v22.20.0/bin" ]
+echo v16.20.2 > "$NVM_DIR/alias/lts/gallium"
+mkdir -p "$TMP/ws/lts" && echo lts/gallium > "$TMP/ws/lts/.nvmrc"
+got=$(ds_node_bin "$TMP/ws/lts" nvmrc)
+check "an nvm alias in .nvmrc resolves (got '$got')" [ "$got" = "$NVM_DIR/versions/node/v16.20.2/bin" ]
+out=$(ds_node_bin "$TMP/ws/bsa" 19 2>&1); code=$?
+check "unmatched partial version exits 3 (got $code)" [ "$code" -eq 3 ]
+
 # --- missing_version_exit_3 (Review Focus) ---
 mkdir -p "$TMP/ws/new" && echo 24.99.0 > "$TMP/ws/new/.nvmrc"
 out=$(ds_node_bin "$TMP/ws/new" nvmrc 2>&1); code=$?

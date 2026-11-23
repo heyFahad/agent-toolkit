@@ -6,22 +6,10 @@
 . "$LIB/state.sh"
 mkdir -p "$DEVSTACK_STATE_DIR"
 
-# --- claim_unowned_ok / claim_same_dir_ok ---
-check "unowned claim succeeds" ds_claim bsa /a 0
+# --- owners: set and get ---
+ds_owner_set bsa /a
 check "owner recorded" [ "$(ds_owner_get bsa)" = /a ]
-check "same dir claim succeeds" ds_claim bsa /a 0
-
-# --- claim_other_dir_refused ---
-before=$(cat "$DEVSTACK_STATE_DIR/owners.json")
-out=$( (ds_claim bsa /b 0) 2>&1); code=$?
-check "other dir refused with 2 (got $code)" [ "$code" -eq 2 ]
-check "refusal names both dirs and --takeover" grep -q "bsa is running from /a; rerun with --takeover to switch it to /b" <<<"$out"
-check "owners.json unchanged" [ "$(cat "$DEVSTACK_STATE_DIR/owners.json")" = "$before" ]
-
-# --- claim_takeover_switches ---
-check "takeover succeeds" ds_claim bsa /b 1
-check "owner switched" [ "$(ds_owner_get bsa)" = /b ]
-check "owners.json is a flat object" [ "$(jq -r .bsa "$DEVSTACK_STATE_DIR/owners.json")" = /b ]
+check "owners.json is a flat object" [ "$(jq -r .bsa "$DEVSTACK_STATE_DIR/owners.json")" = /a ]
 
 # --- copies_missing_local_file / never_overwrites ---
 mkdir -p "$TMP/ws/svc" "$TMP/wt" "$TMP/wt2"

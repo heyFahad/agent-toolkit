@@ -249,6 +249,44 @@ check "down rejects an unknown name (got $code)" [ "$code" -eq 2 ]
 out=$(ds logs ../x 2>&1); code=$?
 check "logs rejects a path-like name (got $code)" [ "$code" -eq 2 ]
 
+# --- B1: up restarts a service nodemon reports as crashed but still running ---
+ds down >/dev/null 2>&1
+STUB_START_LOG='[nodemon] app crashed - waiting for file changes\n' STUB_NEVER_READY=ti-api ds up ti-api >/dev/null 2>&1
+: > "$TMP/calls.log"
+out=$(ds up ti-api 2>&1); code=$?
+check "crashed-but-running service is restarted (got $code: $out)" grep -qE "process (start|restart) ti-api" "$TMP/calls.log"
+check "and comes back Ready" grep -qE "^ti-api +3100 +Ready" <<<"$out"
+ds down >/dev/null 2>&1
+
+# --- B2: a failed http health check says what the URL answered ---
+stub_bin curl 'echo 404'
+out=$(STUB_NEVER_READY=bsa ds up bsa 2>&1)
+check "health failure reports the HTTP status (got: $out)" grep -q "health check http://localhost:3010/health answered 404" <<<"$out"
+rm -f "$TMP/bin/curl"
+ds down >/dev/null 2>&1
+
+# --- M2: docker not installed is a missing prerequisite (exit 3) ---
+mv "$TMP/bin/docker" "$TMP/bin/docker.off"
+out=$(PATH="$TMP/bin:$(dirname "$(command -v jq)"):$(dirname "$(command -v yq)"):/usr/bin:/bin" ds up bsa 2>&1); code=$?
+check "no docker exits 3 (got $code: $out)" [ "$code" -eq 3 ]
+mv "$TMP/bin/docker.off" "$TMP/bin/docker"
+
+# --- M3: long log lines are cut ---
+printf 'ERROR %0400d\n' 0 > "$DEVSTACK_STATE_DIR/logs/bsa.log"
+check "logs cap each line at 300 characters" [ "$(ds logs bsa | awk '{ print length }')" -le 300 ]
+
+# --- M4: the server doesn't inherit the caller's PORT / NODE_OPTIONS ---
+ds down >/dev/null 2>&1
+sed -i '' 's|^case "\$args" in|[[ "$args" == *" up "* ]] \&\& env > "$PCS/up.env"\ncase "$args" in|' "$TMP/bin/process-compose"
+PORT=9999 NODE_OPTIONS=--inspect ds up bsa >/dev/null 2>&1
+check "server env has no PORT" bash -c '! grep -q "^PORT=" "$1"' _ "$PCS/up.env"
+check "server env has no NODE_OPTIONS" bash -c '! grep -q "^NODE_OPTIONS=" "$1"' _ "$PCS/up.env"
+ds down >/dev/null 2>&1
+
+# --- M6: down on a fresh machine ---
+out=$(DEVSTACK_STATE_DIR="$TMP/fresh" ds down 2>&1); code=$?
+check "down on a fresh state dir exits 0 cleanly (got $code: $out)" bash -c '[ "$1" -eq 0 ] && ! grep -qi "no such file" <<<"$2"' _ "$code" "$out"
+
 # --- socket path too long ---
 out=$(DEVSTACK_STATE_DIR="$TMP/$(printf 'x%.0s' {1..110})" ds status 2>&1); code=$?
 check "too-long socket path exits 2 (got $code)" [ "$code" -eq 2 ]

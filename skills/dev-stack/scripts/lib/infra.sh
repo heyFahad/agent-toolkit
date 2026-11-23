@@ -8,7 +8,7 @@ DS_LIB=${DS_LIB:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}
 # ds_infra_ensure <container...>
 ds_infra_ensure() {
   [ $# -gt 0 ] || return 0
-  command -v docker >/dev/null 2>&1 || ds_die 1 "docker isn't installed, and $* must be running"
+  command -v docker >/dev/null 2>&1 || ds_die 3 "docker is missing (needed for: $*): install Docker Desktop"
   docker info >/dev/null 2>&1 || ds_die 1 "Docker isn't running (needed for: $*)"
   local c state
   for c in "$@"; do

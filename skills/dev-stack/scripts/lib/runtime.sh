@@ -34,7 +34,10 @@ _ds_server_ensure() {
     return
   fi
   rm -f "$DS_SOCK"
-  process-compose up -D -U -u "$DS_SOCK" -f "$cfg" --keep-project -L "$state/process-compose.log" >/dev/null 2>&1
+  # Services inherit the server's environment: drop what would silently change
+  # them (a stray PORT, NODE_OPTIONS=--inspect, NODE_ENV) from the caller's shell.
+  env -u PORT -u NODE_OPTIONS -u NODE_ENV \
+    process-compose up -D -U -u "$DS_SOCK" -f "$cfg" --keep-project -L "$state/process-compose.log" >/dev/null 2>&1
   for _ in 1 2 3 4 5 6 7 8 9 10; do _ds_alive && return 0; sleep 0.5; done
   ds_die 1 "process-compose didn't start; see $state/process-compose.log"
 }
@@ -100,7 +103,22 @@ _ds_error_lines() { # <svc>: up to 20 error-looking lines of its log
 # _ds_crashed <svc>: nodemon reported a crash and is waiting for file changes.
 _ds_crashed() { grep -qE '\[nodemon\] app crashed' "$(ds_state_dir)/logs/$1.log" 2>/dev/null; }
 
-_ds_plain() { sed $'s/\x1b\\[[0-9;]*[a-zA-Z]//g'; }   # strip colour codes
+# Strip colour codes and cap each line at 300 characters: one minified line
+# mustn't flood an agent. `logs --tail N` reads more when it's needed.
+_ds_plain() { sed $'s/\x1b\\[[0-9;]*[a-zA-Z]//g' | cut -c1-300; }
+
+# _ds_health_hint <svc>: one line on what the health check sees right now.
+_ds_health_hint() {
+  local h code port
+  h=$(_ds_field "$1" .health); port=$(_ds_field "$1" .port)
+  if [ "$h" = tcp ]; then
+    nc -z localhost "$port" 2>/dev/null && echo "  port $port accepts connections" || echo "  port $port isn't accepting connections"
+    return
+  fi
+  code=$(curl -s -o /dev/null -m 3 -w '%{http_code}' "$h" 2>/dev/null)
+  if [ -z "$code" ] || [ "$code" = 000 ]; then echo "  health check $h didn't answer"
+  else echo "  health check $h answered $code"; fi
+}
 
 _ds_line() { # <svc> <state> <dir|""> : one output line
   local port
@@ -120,7 +138,7 @@ _ds_wait() {
       [ "$ready" = Ready ] && { _ds_line "$svc" Ready ""; break; }
       now=$(date +%s)
       if [ "$running" != true ] && [ "$status" != Pending ] && [ "$status" != Launching ] && [ "$status" != Restarting ]; then
-        _ds_line "$svc" "${status:-Stopped}" ""; _ds_error_lines "$svc"; failed=1; break
+        _ds_line "$svc" "${status:-Stopped}" ""; _ds_error_lines "$svc"; _ds_health_hint "$svc"; failed=1; break
       fi
       # nodemon keeps a crashed app's process alive ("waiting for file changes"),
       # so the process never exits: read the log to fail now, not at the timeout.
@@ -128,7 +146,7 @@ _ds_wait() {
         _ds_line "$svc" Crashed ""; _ds_error_lines "$svc"; failed=1; break
       fi
       if [ "$now" -ge "$deadline" ]; then
-        _ds_line "$svc" "NotReady" ""; _ds_error_lines "$svc"; failed=1; break
+        _ds_line "$svc" "NotReady" ""; _ds_error_lines "$svc"; _ds_health_hint "$svc"; failed=1; break
       fi
       sleep 1
     done
@@ -226,7 +244,14 @@ _ds_up() {
   ps=$(_ds_ps)
   while IFS= read -r svc; do
     [ -n "$svc" ] || continue
-    [ "$(_ds_proc "$ps" "$svc" is_running)" = true ] && continue
+    if [ "$(_ds_proc "$ps" "$svc" is_running)" = true ]; then
+      # nodemon keeps a crashed app's process alive: restart it, so a fix (a
+      # Doppler key, say) is picked up by just running up again.
+      _ds_crashed "$svc" || continue
+      : > "$(ds_state_dir)/logs/$svc.log"
+      _ds_pc process restart "$svc" >/dev/null || ds_die 1 "process-compose couldn't restart $svc"
+      continue
+    fi
     : > "$(ds_state_dir)/logs/$svc.log"   # a fresh log per start: old crashes mustn't count
     _ds_pc process start "$svc" >/dev/null || ds_die 1 "process-compose couldn't start $svc"
     grep -qFx "$svc" <<<"$svcs" || echo "restarted $svc (its registry entry changed)" >&2
