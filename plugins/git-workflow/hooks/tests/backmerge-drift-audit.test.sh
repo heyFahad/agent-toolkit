@@ -11,6 +11,9 @@ AUDIT="$HERE/../../../../skills/back-merge/scripts/backmerge-drift-audit.sh"
 
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
+# `git rebase --exec` and git hooks export GIT_DIR. Left set, the git
+# commands below that build a throwaway repo would write to the real one.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY GIT_PREFIX
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.com GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.com
 
