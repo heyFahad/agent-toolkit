@@ -53,6 +53,11 @@ printf 'services:\n  "../x":\n%s\ntargets: {}\n' "$valid_service" > "$TMP/badnam
 out=$(. "$LIB/registry.sh" && ds_registry_json "$TMP/badname.yaml" 2>&1); code=$?
 check "path-like service key exits 2 (got $code)" [ "$code" -eq 2 ]
 
+# --- conflicts_with must be a list ---
+printf 'services:\n  s:\n%s\n    conflicts_with: other\ntargets: {}\n' "$valid_service" > "$TMP/badconf.yaml"
+out=$(. "$LIB/registry.sh" && ds_registry_json "$TMP/badconf.yaml" 2>&1); code=$?
+check "conflicts_with must be a list (got $code)" [ "$code" -eq 2 ]
+
 # --- a valid registry loads as JSON ---
 got=$(. "$LIB/registry.sh" && ds_registry_json "$TMP/ws/stack.yaml" | jq -r '.services.s.port')
 check "valid registry loads (got '$got')" [ "$got" = 3010 ]

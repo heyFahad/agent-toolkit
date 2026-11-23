@@ -202,6 +202,18 @@ _ds_up() {
       ds_die 2 "$svc is running from $owner; rerun with --takeover to switch it to $dir"
     fi
     ds_command "$DS_REG" "$svc" "$dir" >/dev/null || exit $?
+    # Some services can't share a folder (Next.js allows one dev server per project).
+    local c cdir
+    while IFS= read -r c; do
+      [ -n "$c" ] || continue
+      cdir=$(sed -n "s|^$c=||p" <<<"$plan")
+      if [ -z "$cdir" ] && [ "$(_ds_proc "$ps" "$c" is_running)" = true ]; then
+        cdir=$(ds_owner_get "$c"); cdir=${cdir:-$(_ds_main_dir "$c")}
+      fi
+      if [ -n "$cdir" ] && [ "$cdir" = "$dir" ]; then
+        ds_die 2 "$svc can't run while $c runs from the same folder ($dir): stop it with devstack down $c, or run $svc from another worktree with --from $svc=<path>"
+      fi
+    done < <(_ds_field "$svc" '.conflicts_with[]?')
     plan+="$svc=$dir"$'\n'
   done <<<"$svcs"
 

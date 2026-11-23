@@ -54,7 +54,7 @@ def problems($n; $s):
      then "\($n): port: must be a number from 1 to 65535" else empty end),
   (if $s.health == "tcp" or (($s.health | type) == "string" and ($s.health | startswith("http://"))) then empty
    else "\($n): health: must be tcp or an http:// URL" end),
-  ($s | to_entries[] | select(.key as $k | ["depends_on","optional_deps","infra","local_files"] | index($k))
+  ($s | to_entries[] | select(.key as $k | ["depends_on","optional_deps","infra","local_files","conflicts_with"] | index($k))
      | select((.value | type) != "array") | "\($n): \(.key): must be a list"),
   (if ($s.env // {} | type) != "object" then "\($n): env: must be a map" else empty end),
   (if ($s.timeout // 120 | type) != "number" then "\($n): timeout: must be seconds" else empty end);

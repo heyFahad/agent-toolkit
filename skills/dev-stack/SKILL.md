@@ -41,4 +41,5 @@ Exit codes: 0 fine, 1 a service failed or wasn't healthy in time, 2 a usage, reg
 - Don't `devstack down` while the user is still testing. Stopping the stack waits for their approval of the change.
 - Never stop, recreate or remove Docker containers to fix a failure. `up` only starts a stopped container that's listed in the registry's `infra`. If Docker itself is down, tell the user.
 - A port held by something else (`port 3010 for bsa is held by node (pid …)`) is the user's process. Tell them what's holding it rather than killing it.
+- If `up` says one service "can't run while" another runs from the same folder (two brands of one Next.js app, say), stop the other one or run this one from a worktree with `--from`. That limit comes from the app, not devstack.
 - Ports come from the registry. Don't pass a different port on the command line to get around a conflict.

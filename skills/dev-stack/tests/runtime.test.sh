@@ -287,6 +287,22 @@ ds down >/dev/null 2>&1
 out=$(DEVSTACK_STATE_DIR="$TMP/fresh" ds down 2>&1); code=$?
 check "down on a fresh state dir exits 0 cleanly (got $code: $out)" bash -c '[ "$1" -eq 0 ] && ! grep -qi "no such file" <<<"$2"' _ "$code" "$out"
 
+# --- conflicts_with: two services that can't share one checkout ---
+ds down >/dev/null 2>&1
+cat >> "$TMP/ws/stack.yaml" <<'YAML'
+YAML
+yq -i '.services."tn-web" = {"repo": "metro", "node": "nvmrc", "doppler": "none", "command": "true", "port": 5300, "health": "tcp", "conflicts_with": ["wl-atc"]} | .services."wl-atc".conflicts_with = ["tn-web"]' "$TMP/ws/stack.yaml"
+ds up wl-atc >/dev/null 2>&1
+: > "$TMP/calls.log"
+out=$(ds up tn-web 2>&1); code=$?
+check "conflicting service is refused with 2 (got $code)" [ "$code" -eq 2 ]
+check "refusal names the other service and the fix (got: $out)" grep -q "tn-web can't run while wl-atc runs from the same folder" <<<"$out"
+check "refusal starts nothing" bash -c '! grep -q "process start" "$1"' _ "$TMP/calls.log"
+mkdir -p "$TMP/wt-tn" && echo 22.16.0 > "$TMP/wt-tn/.nvmrc"
+out=$(ds up tn-web --from "tn-web=$TMP/wt-tn" 2>&1); code=$?
+check "from another folder it's allowed (got $code: $out)" [ "$code" -eq 0 ]
+ds down >/dev/null 2>&1
+
 # --- socket path too long ---
 out=$(DEVSTACK_STATE_DIR="$TMP/$(printf 'x%.0s' {1..110})" ds status 2>&1); code=$?
 check "too-long socket path exits 2 (got $code)" [ "$code" -eq 2 ]
