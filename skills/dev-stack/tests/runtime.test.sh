@@ -20,6 +20,7 @@ case "$args" in
   *" project state "*) [ -f "$PCS/alive" ] ;;
   *" project update "*)
     [ -f "$PCS/alive" ] || exit 1
+    [ -n "${STUB_UPDATE_FAILS:-}" ] && exit 1
     cfg=$(sed -E "s/.* -f ([^ ]+).*/\1/" <<<"$args")
     for f in "$PCS"/procs/*.json; do
       [ -f "$f" ] || continue
@@ -370,6 +371,48 @@ out=$(STUB_NEVER_READY=naia ds up connect-api --with naia 2>&1); code=$?
 check "unhealthy optional dep fails the run (got $code)" [ "$code" -eq 1 ]
 check "its dependant isn't started (calls: $(grep -c 'process start' "$TMP/calls.log"))" bash -c '! grep -q "process start connect-api" "$1"' _ "$TMP/calls.log"
 ds down >/dev/null 2>&1
+
+# --- X1: a running stack from another registry isn't changed from this one ---
+ds down >/dev/null 2>&1; ds up bsa >/dev/null 2>&1
+mkdir -p "$TMP/ws2/bsa" && echo 22.16.0 > "$TMP/ws2/bsa/.nvmrc"
+printf 'services:\n  bsa: {repo: bsa, node: nvmrc, doppler: none, command: "true", port: 3010, health: tcp}\ntargets: {}\n' > "$TMP/ws2/stack.yaml"
+: > "$TMP/calls.log"
+out=$(cd "$TMP/ws2" && bash "$DEVSTACK" up bsa 2>&1); code=$?
+check "another registry's stack is refused (got $code: $out)" [ "$code" -eq 2 ]
+check "...and isn't updated" bash -c '! grep -q "project update" "$1"' _ "$TMP/calls.log"
+ds down >/dev/null 2>&1
+
+# --- X2: a failed config update keeps the previous owner ---
+ds up ti-api >/dev/null 2>&1
+before=$(jq -c . "$DEVSTACK_STATE_DIR/owners.json")
+out=$(STUB_UPDATE_FAILS=1 ds up ti-api --from "ti-api=$TMP/wt" --takeover 2>&1); code=$?
+check "failed update exits 1 (got $code)" [ "$code" -eq 1 ]
+check "failed update leaves owners as they were" [ "$(jq -c . "$DEVSTACK_STATE_DIR/owners.json")" = "$before" ]
+ds down >/dev/null 2>&1
+
+# --- X3: naming an optional dependency starts it before its dependant ---
+: > "$TMP/calls.log"
+out=$(ds up connect-api naia 2>&1); code=$?
+check "naming an optional dep works (got $code: $(echo $out | cut -c1-80))" [ "$code" -eq 0 ]
+check "it starts before its dependant" [ "$(line_of naia)" -lt "$(line_of connect-api)" ]
+ds down >/dev/null 2>&1
+
+# --- X5: an unwritable state folder fails at once, not as lock contention ---
+mkdir -p "$TMP/ro" && chmod 555 "$TMP/ro"
+start=$(date +%s)
+out=$(DEVSTACK_STATE_DIR="$TMP/ro/st" ds down 2>&1); code=$?
+check "unwritable state exits 1 fast (got $code in $(( $(date +%s) - start ))s)" bash -c '[ "$1" -eq 1 ] && [ "$2" -le 2 ]' _ "$code" "$(( $(date +%s) - start ))"
+check "unwritable state names the folder" grep -q "$TMP/ro/st" <<<"$out"
+chmod 755 "$TMP/ro"
+
+# --- X6: a leftover reclaim guard doesn't spin forever ---
+LP=$(sh -c 'echo $$')   # the pid of a process that has already exited
+mkdir -p "$DEVSTACK_STATE_DIR/lock" "$DEVSTACK_STATE_DIR/lock.reclaim" && echo $LP > "$DEVSTACK_STATE_DIR/lock/pid"
+touch -t 202001010000 "$DEVSTACK_STATE_DIR/lock.reclaim"
+start=$(date +%s)
+out=$(DEVSTACK_LOCK_WAIT=3 ds down 2>&1); code=$?
+check "an old reclaim guard is cleared (got $code in $(( $(date +%s) - start ))s: $out)" bash -c '[ "$1" -eq 0 ] && [ "$2" -le 4 ]' _ "$code" "$(( $(date +%s) - start ))"
+rm -rf "$DEVSTACK_STATE_DIR/lock" "$DEVSTACK_STATE_DIR/lock.reclaim"
 
 # --- socket path too long ---
 out=$(DEVSTACK_STATE_DIR="$TMP/$(printf 'x%.0s' {1..110})" ds status 2>&1); code=$?

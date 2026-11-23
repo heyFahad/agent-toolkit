@@ -28,6 +28,11 @@ check "write replaces the old table" bash -c '! grep -q "old table" "$1"' _ "$TM
 check "write puts the new table in" grep -qF '| `3010` | bsa |' "$TMP/P.md"
 check "markers stay" grep -q 'devstack:ports:end' "$TMP/P.md"
 
+printf 'keep\n<!-- devstack:ports:end -->\nmiddle\n<!-- devstack:ports:start -->\ntail\n' > "$TMP/R.md"; cp "$TMP/R.md" "$TMP/R.orig"
+ds ports --write "$TMP/R.md" 2>/dev/null; code=$?
+check "markers in the wrong order exit 2 (got $code)" [ "$code" -eq 2 ]
+check "markers in the wrong order leave the file untouched" cmp -s "$TMP/R.md" "$TMP/R.orig"
+
 printf 'no markers\n' > "$TMP/N.md"
 ds ports --write "$TMP/N.md" 2>/dev/null; code=$?
 check "write without markers exits 2 (got $code)" [ "$code" -eq 2 ]

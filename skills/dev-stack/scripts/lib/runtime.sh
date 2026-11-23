@@ -36,19 +36,32 @@ _ds_alive() {
 _ds_reach() { _ds_alive >/dev/null || true; }
 _ds_ps() { if _ds_alive; then _ds_pc process list -o json; else echo '[]'; fi; }
 
+# _ds_same_registry: refuse to touch a running stack another registry started.
+# Two workspaces sharing one state folder would otherwise swap each other's
+# services (their ports would clash anyway).
+_ds_same_registry() {
+  local f owner
+  f="$(ds_state_dir)/server.registry"
+  _ds_alive || return 0
+  owner=$(cat "$f" 2>/dev/null)
+  [ -z "$owner" ] || [ "$owner" = "$DS_REG_PATH" ] \
+    || ds_die 2 "the running stack was started from $owner; stop it there with devstack down, or give this workspace its own DEVSTACK_STATE_DIR"
+}
+
 # _ds_server_ensure: apply the generated config to the running server, or start one.
 _ds_server_ensure() {
   local state cfg
   state=$(ds_state_dir); cfg="$state/process-compose.yaml"
   if _ds_alive; then
-    _ds_pc project update -f "$cfg" >/dev/null || ds_die 1 "process-compose rejected the new config ($cfg)"
-    return
+    _ds_pc project update -f "$cfg" >/dev/null || return 1
+    return 0
   fi
   rm -f "$DS_SOCK"
   # Services inherit the server's environment: drop what would silently change
   # them (a stray PORT, NODE_OPTIONS=--inspect, NODE_ENV) from the caller's shell.
   env -u PORT -u NODE_OPTIONS -u NODE_ENV \
     process-compose up -D -U -u "$DS_SOCK" -f "$cfg" --keep-project -L "$state/process-compose.log" >/dev/null 2>&1
+  echo "$DS_REG_PATH" > "$state/server.registry"
   for _ in 1 2 3 4 5 6 7 8 9 10; do _ds_alive && return 0; sleep 0.5; done
   ds_die 1 "process-compose didn't start; see $state/process-compose.log"
 }
@@ -58,7 +71,8 @@ _ds_server_ensure() {
 
 _ds_lock() {
   local lock waited=0 holder max=${DEVSTACK_LOCK_WAIT:-300}
-  lock="$(ds_state_dir)/lock"; mkdir -p "$(ds_state_dir)"
+  lock="$(ds_state_dir)/lock"
+  _ds_state_writable
   until mkdir "$lock" 2>/dev/null; do
     holder=$(cat "$lock/pid" 2>/dev/null)
     if [ -n "$holder" ] && ! kill -0 "$holder" 2>/dev/null; then
@@ -67,8 +81,10 @@ _ds_lock() {
       if mkdir "$lock.reclaim" 2>/dev/null; then
         [ "$(cat "$lock/pid" 2>/dev/null)" = "$holder" ] && rm -rf "$lock"
         rmdir "$lock.reclaim"
+        continue
       fi
-      continue
+      # A guard older than a minute belongs to a reclaimer that died mid-way.
+      [ -n "$(find "$lock.reclaim" -maxdepth 0 -mmin +1 2>/dev/null)" ] && rmdir "$lock.reclaim" 2>/dev/null && continue
     fi
     [ "$waited" -eq 0 ] && echo "devstack: waiting for another devstack command (pid ${holder:-?})" >&2
     [ "$waited" -ge "$max" ] && ds_die 1 "another devstack command is still running (pid ${holder:-?}); try again later"
@@ -82,6 +98,15 @@ _ds_unlock() { local lock; lock="$(ds_state_dir)/lock"; [ "$(cat "$lock/pid" 2>/
 # _ds_exit: the one EXIT trap: release the lock and drop this command's snapshot.
 _ds_exit() { _ds_unlock; [ -n "${DS_REG:-}" ] && rm -f "$DS_REG"; return 0; }
 
+# _ds_state_writable: fail at once (not as lock contention) when the state
+# folder can't be created or written, as in a sandbox that blocks it.
+_ds_state_writable() {
+  local st
+  st=$(ds_state_dir)
+  { mkdir -p "$st" 2>/dev/null && [ -w "$st" ]; } \
+    || ds_die 1 "can't write to $st (in a sandbox, add it to the writable folders; or set DEVSTACK_STATE_DIR)"
+}
+
 # _ds_check_name <svc>: a plain service name (it becomes a file name).
 _ds_check_name() { [[ $1 =~ ^[a-z0-9][a-z0-9-]*$ ]] || ds_die 2 "not a service name: $1"; }
 
@@ -91,11 +116,14 @@ _ds_check_name() { [[ $1 =~ ^[a-z0-9][a-z0-9-]*$ ]] || ds_die 2 "not a service n
 ds_load_registry() {
   local reg state json
   reg=$(ds_find_registry) || exit $?
-  state=$(ds_state_dir); mkdir -p "$state/logs"
+  state=$(ds_state_dir)
+  _ds_state_writable
+  mkdir -p "$state/logs"
   json=$(ds_registry_json "$reg") || exit $?
   # A snapshot per command: another session loading an edited or different
   # registry mid-run can't change what this command sees.
-  DS_REG=$(mktemp "$state/registry.XXXXXX")
+  DS_REG=$(mktemp "$state/registry.XXXXXX") || ds_die 1 "can't create a registry snapshot in $state"
+  DS_REG_PATH="$(ds_registry_root "$reg")/$(basename "$reg")"
   trap _ds_exit EXIT
   jq --arg r "$(ds_registry_root "$reg")" '. + {_root: $r}' <<<"$json" > "$DS_REG"
   DS_SOCK=$(_ds_sock) || exit $?
@@ -208,6 +236,9 @@ _ds_up() {
   shift 2
   while [ "$1" != -- ]; do froms+=("$1"); shift; done; shift
   names=("$@")
+  # An optional dependency named on the command line is as good as --with it,
+  # so it's ordered (and waited for) before its dependant.
+  with="$with,$(IFS=,; echo "${names[*]}")"
   svcs=$(ds_resolve "$DS_REG" "$with" "${names[@]}") || exit $?
 
   # Each --from must name a service this run starts.
@@ -218,6 +249,7 @@ _ds_up() {
   _from_of() { local f; for f in "${froms[@]+"${froms[@]}"}"; do [ "${f%%=*}" = "$1" ] && { _ds_abs "${f#*=}"; return; }; done; return 0; }
 
   _ds_reach
+  _ds_same_registry
   ps=$(_ds_ps)
   # Pass 1: decide each service's directory; refuse before changing anything.
   local plan=""
@@ -265,8 +297,9 @@ _ds_up() {
 
   # Pass 3: record owners (dropping those of services that aren't running) and
   # bring local files over.
-  local f_own keep
+  local f_own keep prev_owners
   f_own="$(ds_state_dir)/owners.json"
+  prev_owners=$(cat "$f_own" 2>/dev/null || echo '{}')
   keep=$(jq -c '[.[] | select(.is_running == true) | .name]' <<<"$ps")
   if [ -f "$f_own" ]; then
     jq --argjson keep "$keep" 'with_entries(select(.key as $k | $keep | index($k)))' "$f_own" > "$f_own.tmp" && mv "$f_own.tmp" "$f_own"
@@ -282,7 +315,12 @@ _ds_up() {
   local before
   before=$(jq -r '.[] | select(.is_running == true) | .name' <<<"$ps")
   ds_pc_config "$DS_REG" "$(ds_state_dir)"
-  _ds_server_ensure
+  if ! _ds_server_ensure; then
+    # Put the owners back so status and the next up see what's really running.
+    printf '%s\n' "$prev_owners" > "$f_own"
+    ds_pc_config "$DS_REG" "$(ds_state_dir)"
+    ds_die 1 "process-compose rejected the new config; nothing was changed"
+  fi
   ps=$(_ds_ps)
   while IFS= read -r svc; do
     [ -n "$svc" ] || continue
@@ -371,6 +409,8 @@ cmd_restart() {
   [ -n "$(_ds_field "$svc" .port)" ] || ds_die 2 "unknown service: $svc"
   _ds_lock
   local ps abs
+  _ds_reach
+  _ds_same_registry
   ps=$(_ds_ps)
   if [ -n "$from" ]; then
     abs=$(_ds_abs "$from") || exit $?
@@ -398,7 +438,7 @@ cmd_down() {
     if _ds_alive; then
       _ds_pc down >/dev/null || ds_die 1 "process-compose down failed; the stack may still be running (check devstack status)"
     fi
-    rm -f "$DS_SOCK"; echo '{}' > "$f"
+    rm -f "$DS_SOCK" "$(ds_state_dir)/server.registry"; echo '{}' > "$f"
     echo "stopped everything (Docker containers left running)"
     return
   fi
@@ -442,13 +482,15 @@ cmd_ports() {
     --markdown) _ds_ports_md ;;
     --write)
       local f=${2:?--write needs a file} table tmp
-      grep -q '<!-- devstack:ports:start -->' "$f" && grep -q '<!-- devstack:ports:end -->' "$f" \
-        || ds_die 2 "$f has no <!-- devstack:ports:start --> / <!-- devstack:ports:end --> markers"
+      awk '/<!-- devstack:ports:start -->/ { s++; if (!sl) sl = NR } /<!-- devstack:ports:end -->/ { e++; if (!el) el = NR }
+           END { exit !(s == 1 && e == 1 && sl < el) }' "$f" \
+        || ds_die 2 "$f needs exactly one <!-- devstack:ports:start --> followed by one <!-- devstack:ports:end -->"
       table=$(_ds_ports_md); tmp=$(mktemp)
       DS_TABLE="$table" awk '
         /<!-- devstack:ports:start -->/ { print; print ""; print ENVIRON["DS_TABLE"]; print ""; skip = 1; next }
         /<!-- devstack:ports:end -->/ { skip = 0 }
-        !skip { print }' "$f" > "$tmp" && mv "$tmp" "$f"
+        !skip { print }' "$f" > "$tmp" && mv "$tmp" "$f" \
+        || { rm -f "$tmp"; ds_die 1 "couldn't write $f"; }
       echo "updated the port table in $f" ;;
     *) ds_die 2 "ports: unknown option $1" ;;
   esac
