@@ -188,6 +188,15 @@ check "changed service comes back (got $code: $out)" [ "$code" -eq 0 ]
 check "changed service is started again" grep -q "process start bsa" "$TMP/calls.log"
 check "unchanged services aren't restarted" bash -c '! grep -q "process start ti-api" "$1"' _ "$TMP/calls.log"
 
+# --- a running service outside this run that the update stopped comes back too ---
+sed -i '' 's/  wl-atc: {repo: metro/  wl-atc: {timeout: 30, repo: metro/' "$TMP/ws/stack.yaml"
+ds up wl-atc >/dev/null 2>&1
+sed -i '' 's/  wl-atc: {timeout: 30, repo: metro/  wl-atc: {timeout: 40, repo: metro/' "$TMP/ws/stack.yaml"
+: > "$TMP/calls.log"
+ds up bsa >/dev/null 2>&1
+check "an untouched running service is restarted after the update stops it" grep -q "process start wl-atc" "$TMP/calls.log"
+check "status still lists it" grep -q "^wl-atc" <<<"$(ds status)"
+
 # --- logs are readable: no colour codes ---
 printf '\033[31mERROR red\033[0m\n' > "$DEVSTACK_STATE_DIR/logs/bsa.log"
 check "logs strip colour codes" [ "$(ds logs bsa)" = "ERROR red" ]

@@ -180,16 +180,20 @@ _ds_up() {
     # shellcheck disable=SC2046 # one word per container name
     ds_infra_ensure $(printf '%s\n' "${infra[@]}" | sort -u) || exit $?
   fi
+  # Everything running before the update, so a service outside this run that
+  # the update stops (its definition changed) is brought back as well.
+  local before
+  before=$(jq -r '.[] | select(.is_running == true) | .name' <<<"$ps")
   ds_pc_config "$DS_REG" "$(ds_state_dir)"
   _ds_server_ensure
-  # Start whatever isn't running now. That covers the services above, plus any
-  # running one the config update just stopped because its definition changed.
   ps=$(_ds_ps)
   while IFS= read -r svc; do
+    [ -n "$svc" ] || continue
     [ "$(_ds_proc "$ps" "$svc" is_running)" = true ] && continue
     : > "$(ds_state_dir)/logs/$svc.log"   # a fresh log per start: old crashes mustn't count
     _ds_pc process start "$svc" >/dev/null || ds_die 1 "process-compose couldn't start $svc"
-  done <<<"$svcs"
+    grep -qx "$svc" <<<"$svcs" || echo "restarted $svc (its registry entry changed)" >&2
+  done < <(printf '%s\n%s\n' "$svcs" "$before" | awk 'NF && !seen[$0]++')
   # shellcheck disable=SC2086 # one word per service
   _ds_wait $svcs || exit 1
 }
