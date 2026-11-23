@@ -74,6 +74,9 @@ _ds_error_lines() { # <svc>: up to 20 error-looking lines of its log
   { grep -iE 'error|exception|fatal|ERR!' "$log" || cat "$log"; } | _ds_plain | tail -20 | sed 's/^/  /'
 }
 
+# _ds_crashed <svc>: nodemon reported a crash and is waiting for file changes.
+_ds_crashed() { grep -qE '\[nodemon\] app crashed' "$(ds_state_dir)/logs/$1.log" 2>/dev/null; }
+
 _ds_plain() { sed $'s/\x1b\\[[0-9;]*[a-zA-Z]//g'; }   # strip colour codes
 
 _ds_line() { # <svc> <state> <dir|""> : one output line
@@ -98,7 +101,7 @@ _ds_wait() {
       fi
       # nodemon keeps a crashed app's process alive ("waiting for file changes"),
       # so the process never exits: read the log to fail now, not at the timeout.
-      if grep -qE '\[nodemon\] app crashed' "$(ds_state_dir)/logs/$svc.log" 2>/dev/null; then
+      if _ds_crashed "$svc"; then
         _ds_line "$svc" Crashed ""; _ds_error_lines "$svc"; failed=1; break
       fi
       if [ "$now" -ge "$deadline" ]; then
@@ -195,11 +198,15 @@ cmd_status() {
   local json=0
   [ "${1:-}" = --json ] && json=1
   ds_load_registry
-  local ps
+  local ps n crashed='[]'
   ps=$(_ds_ps)
-  jq -c --slurpfile reg "$DS_REG" --slurpfile own <(cat "$(ds_state_dir)/owners.json" 2>/dev/null || echo '{}') '
+  while IFS= read -r n; do
+    [ -n "$n" ] && _ds_crashed "$n" && crashed=$(jq -c --arg n "$n" '. + [$n]' <<<"$crashed")
+  done < <(jq -r '.[] | select(.is_ready != "Ready") | .name' <<<"$ps")
+  jq -c --slurpfile reg "$DS_REG" --argjson crashed "$crashed" --slurpfile own <(cat "$(ds_state_dir)/owners.json" 2>/dev/null || echo '{}') '
     map(select(.status != "Disabled"))
-    | map({name, status, ready: .is_ready, port: $reg[0].services[.name].port,
+    | map({name, status: (if (.name as $n | $crashed | index($n)) then "Crashed" else .status end),
+           ready: .is_ready, port: $reg[0].services[.name].port,
            dir: ($own[0][.name] // ($reg[0]._root + "/" + $reg[0].services[.name].repo))})' <<<"$ps" > "$(ds_state_dir)/status.json"
   if [ $json = 1 ]; then cat "$(ds_state_dir)/status.json"; return; fi
   if [ "$(jq length "$(ds_state_dir)/status.json")" = 0 ]; then echo "nothing running"; return; fi

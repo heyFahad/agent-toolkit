@@ -170,6 +170,7 @@ out=$(STUB_NEVER_READY=ti-api STUB_START_LOG='starting\nInvalid environment vari
 check "crashed app exits 1 (got $code)" [ "$code" -eq 1 ]
 check "crashed app fails fast" [ $(( $(date +%s) - start )) -le 5 ]
 check "crashed app shows the cause" grep -q "ITERABLE_API_KEY" <<<"$out"
+check "status calls a crashed app Crashed, not Running" grep -qE "^ti-api +3100 +Crashed" <<<"$(ds status)"
 ds down >/dev/null 2>&1
 
 # --- an old crash in the log doesn't fail a fresh start ---
