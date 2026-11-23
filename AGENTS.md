@@ -6,7 +6,7 @@ Cross-tool standing instructions for this toolkit's projects (see `.claude-plugi
 
 The git/PR workflow, Jira lifecycle, coding style, and writing conventions distributed as skills and hooks in this repo apply by default whenever a repo has both a `main` and a `staging` branch (or an equivalent long-lived pre-prod branch). If a project's own instructions file says something different, follow the project's file instead.
 
-Most of what used to live here as prose now lives as task-triggered skills under `skills/` (see each plugin under `plugins/` for the full skill set: `git-workflow`, `package-manager-safety`, `github-tooling`, `pr-conventions`, `atlassian-workflow`, `writing-conventions`, `coding-style`) or as Claude Code hooks that mechanically enforce a rule rather than relying on an agent remembering it. This file stays deliberately short: it's the fallback for the handful of rules that are mandatory but, on a tool without hook support (e.g. Codex today), have no mechanical enforcement available yet.
+Most of what used to live here as prose now lives as task-triggered skills under `skills/` (see each plugin under `plugins/` for the full skill set: `git-workflow`, `package-manager-safety`, `github-tooling`, `pr-conventions`, `atlassian-workflow`, `writing-conventions`, `coding-style`, `dev-stack`) or as Claude Code hooks that mechanically enforce a rule rather than relying on an agent remembering it. This file stays deliberately short: it's the fallback for the handful of rules that are mandatory but, on a tool without hook support (e.g. Codex today), have no mechanical enforcement available yet.
 
 ## Mandatory rules with no cross-tool enforcement mechanism (yet)
 
