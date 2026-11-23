@@ -4,16 +4,16 @@
 # Requests a Copilot review on each PR, then checks that each request was
 # accepted. When Copilot's monthly credits have run out, GitHub still accepts
 # `gh pr edit --add-reviewer @copilot`, but no request event for Copilot
-# reaches the PR's timeline and no review ever comes. So a request counts as
-# accepted only once a Copilot ReviewRequestedEvent dated at or after the
-# request shows up. The timeline is read up to CHECK_PR_REQUEST_READS times
-# (default 6), CHECK_PR_REQUEST_DELAY seconds apart (default 5), in case the
-# event lags. Every request is made first, so all PRs share one window.
-#
-# requestedAt is the time of the request minus 60 seconds, to absorb clock
-# skew between this machine and GitHub.
+# reaches the PR's timeline and no review ever comes. So the Copilot
+# ReviewRequestedEvents already on each timeline are noted first, and a
+# request counts as accepted only once a new one shows up: an event from an
+# earlier request, however recent, never counts. After the requests, the
+# timeline is read up to CHECK_PR_REQUEST_READS times (default 6),
+# CHECK_PR_REQUEST_DELAY seconds apart (default 5), in case the event lags.
+# Every request is made first, so all PRs share one window.
 #
 # Prints JSON: [{pr, accepted, requestedAt}]
+# requestedAt is when the requests were made.
 # Exit codes: 0 once every request was made, accepted or not; 2 bad usage, a
 # failed request or a failed timeline lookup.
 # shellcheck source-path=SCRIPTDIR source=lib.sh
@@ -27,35 +27,45 @@ for pr in "${ARGS[@]}"; do require_pr_number "$pr"; done
 READS=${CHECK_PR_REQUEST_READS:-6}
 DELAY=${CHECK_PR_REQUEST_DELAY:-5}
 
-# An epoch time as ISO 8601 UTC, on BSD (macOS) or GNU date.
-iso() { date -u -r "$1" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d "@$1" +%Y-%m-%dT%H:%M:%SZ; }
-SINCE=$(iso $(($(date -u +%s) - 60)))
-
-for pr in "${ARGS[@]}"; do
-  gh pr edit -R "$REPO" "$pr" --add-reviewer @copilot >/dev/null || die "requesting Copilot on #$pr failed"
-done
-
 # shellcheck disable=SC2016 # GraphQL variables, not shell ones
 QUERY='query($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
       timelineItems(last: 20, itemTypes: [REVIEW_REQUESTED_EVENT]) {
-        nodes { ... on ReviewRequestedEvent { createdAt requestedReviewer { __typename ... on Bot { login } ... on User { login } } } }
+        nodes { ... on ReviewRequestedEvent { id createdAt requestedReviewer { __typename ... on Bot { login } ... on User { login } } } }
       }
     }
   }
 }'
 
-# accepted PR: true when the timeline has a Copilot request event since SINCE.
-# A failed lookup stops the script: reporting it as a decline would send the
-# agent to a fallback review while Copilot may still be coming.
-accepted() {
+# copilot_events PR: the ids of the Copilot request events on its timeline,
+# as a JSON array. A failed lookup stops the script: reporting it as a
+# decline would send the agent to a fallback review while Copilot may still
+# be coming.
+copilot_events() {
   local json
   json=$(gh api graphql -f query="$QUERY" -f owner="$OWNER" -f name="$NAME" -F number="$1") ||
     die "reading PR #$1's timeline failed"
-  printf '%s' "$json" | jq -e --arg copilot "$COPILOT_LOGIN_RE" --arg since "$SINCE" '
-      any(.data.repository.pullRequest.timelineItems.nodes[];
-        ((.requestedReviewer.login // "") | test($copilot)) and (.createdAt // "") >= $since)' >/dev/null
+  printf '%s' "$json" | jq -c --arg copilot "$COPILOT_LOGIN_RE" '
+    [.data.repository.pullRequest.timelineItems.nodes[]
+      | select((.requestedReviewer.login // "") | test($copilot)) | .id]'
+}
+
+SNAP=$(mktemp -d)
+trap 'rm -rf "$SNAP"' EXIT
+for pr in "${ARGS[@]}"; do copilot_events "$pr" >"$SNAP/$pr"; done
+
+REQUESTED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+for pr in "${ARGS[@]}"; do
+  gh pr edit -R "$REPO" "$pr" --add-reviewer @copilot >/dev/null || die "requesting Copilot on #$pr failed"
+done
+
+# accepted PR: true when a Copilot request event not in the snapshot is there.
+accepted() {
+  local now
+  # die only leaves the $(...) subshell, and set -e is off inside `if`.
+  now=$(copilot_events "$1") || die "reading PR #$1's timeline failed"
+  jq -n -e --argjson before "$(cat "$SNAP/$1")" --argjson now "$now" '$now - $before | length > 0' >/dev/null
 }
 
 PENDING=" ${ARGS[*]} "
@@ -74,5 +84,5 @@ done
 
 for pr in "${ARGS[@]}"; do
   case "$ACCEPTED" in *" $pr "*) a=true ;; *) a=false ;; esac
-  jq -n --argjson pr "$pr" --argjson a "$a" --arg at "$SINCE" '{pr: $pr, accepted: $a, requestedAt: $at}'
+  jq -n --argjson pr "$pr" --argjson a "$a" --arg at "$REQUESTED_AT" '{pr: $pr, accepted: $a, requestedAt: $at}'
 done | jq -s .
