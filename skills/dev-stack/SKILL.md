@@ -7,7 +7,7 @@ metadata:
 
 # Dev stack
 
-`devstack` starts only what a change needs, plus everything it depends on, in order, and waits for each to answer its health check. It reads a registry, `stack.yaml`, from `$DEVSTACK_REGISTRY` or the nearest one above the current directory. Run it as `devstack` if it's on `PATH`, otherwise as `scripts/devstack` in this skill's directory.
+`devstack` starts only what a change needs, plus everything it depends on, in order, and waits for each to answer its health check. It reads a registry, `stack.yaml`, from `$DEVSTACK_REGISTRY` or the nearest one above the current directory. Run it as `devstack` if it's on `PATH`, otherwise as `scripts/devstack` in this skill's directory. Agents don't need it on `PATH`. For people using it from a terminal, a link is enough: `ln -s <this skill's directory>/scripts/devstack ~/.local/bin/devstack`.
 
 Prerequisites: `jq`, `yq` and `process-compose` (`brew install f1bonacc1/tap/process-compose`). If one is missing, every command says which and exits 3. Don't install it yourself: tell the user the line.
 
