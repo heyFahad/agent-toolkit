@@ -95,11 +95,11 @@ run_verify "$R" --list
 check "list: install-time scripts skipped" '["lint"]' "$(q '[.[].name]')"
 
 # Comments and echoed text in a workflow aren't CI running a script.
-R=$(mkrepo wfnoise '{"lint":"l","test":"t"}' "" "$(printf 'npm run lint\necho "run npm test locally"')")
+R=$(mkrepo wfnoise '{"lint":"l","test":"t","build":"b"}' "" "$(printf 'npm run lint\necho "run npm test locally"\nnpm run build && echo built')")
 printf '      # npm test is flaky, skipped for now\n' >>"$R/.github/workflows/ci.yml"
 git -C "$R" add -A && git -C "$R" -c user.email=t@t -c user.name=t commit -q -m noise
 run_verify "$R" --list
-check "list: comments and echo lines don't count" '["lint"]' "$(q '[.[].name]')"
+check "list: comments and echoed text don't count, a command next to an echo does" '["lint","build"]' "$(q '[.[].name]')"
 
 R=$(mkrepo nowf '{"lint":"l","test":"t"}' pnpm-lock.yaml "")
 run_verify "$R" --list

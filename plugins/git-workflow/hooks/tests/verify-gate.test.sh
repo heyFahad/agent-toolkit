@@ -262,6 +262,8 @@ git -C "$R" update-ref refs/remotes/origin/unv "$(git -C "$R" rev-parse feat)"
 git -C "$R" switch -q unv
 gate 'gh pr create --title t'
 check "pr create: no --head, an unverified local tip blocks even when origin's copy passed" 2 "$CODE"
+gate 'gh pr create -Hfeat --title t'
+check "pr create: -H<branch> attached is an explicit head" 0 "$CODE"
 git -C "$R" switch -q feat
 git -C "$R" update-ref -d refs/remotes/origin/unv
 
@@ -270,8 +272,14 @@ git -C "$R" config remote.origin.push 'refs/heads/*:refs/heads/*'
 gate 'git push'
 check "push: a configured remote.origin.push is blocked" 2 "$CODE"
 git -C "$R" config --unset remote.origin.push
+git -C "$R" config remote.backup.push 'refs/heads/*:refs/heads/*'
+gate 'git push origin'
+check "push: another remote's push setting doesn't block a push to origin" 0 "$CODE"
+git -C "$R" config --unset remote.backup.push
 gate "git push origin 'refs/heads/*:refs/heads/*'"
 check "push: a wildcard refspec is blocked" 2 "$CODE"
+gate "git push origin 'refs/tags/v1.*:refs/tags/v1.*'"
+check "push: a wildcard refspec of tags only needs no record" 0 "$CODE"
 
 # gh stack sync rebases and pushes in one go: blocked in favour of
 # rebase, verify, push.
@@ -302,6 +310,10 @@ OFF="$TMP/off"
 git init -q -b main "$OFF"
 echo x >"$OFF/x"
 git -C "$OFF" add -A && git -C "$OFF" commit -q -m x
+# A switch changes which branch's settings apply, so a push chained after one
+# stays blocked even where the current branch has no checks.
+gate 'git switch other && git push origin other' "$OFF"
+check "gate off: git switch then push is still blocked" 2 "$CODE"
 for cmd in 'git commit -m y' 'git push' 'gh pr create' 'git commit -m y && git push'; do
   gate "$cmd" "$OFF"
   check "gate off: $cmd allowed" 0 "$CODE"

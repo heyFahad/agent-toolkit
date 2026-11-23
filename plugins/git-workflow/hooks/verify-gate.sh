@@ -119,7 +119,7 @@ check_push() { # dir args...
   [ "$delete" = false ] || return 0
   if [ "${#refs[@]}" -eq 0 ]; then
     [ "$tags" = false ] || return 0
-    if git -C "$root" config --get-regexp '^remote\..*\.push$' >/dev/null 2>&1; then
+    if git -C "$root" config --get "remote.${remote:-origin}.push" >/dev/null 2>&1; then
       block "verify-gate: git push with no branch named follows this repo's remote.<name>.push setting, which can push branches nobody verified. Push each branch by name (git push origin <branch>) after verify --full on it."
       return 0
     fi
@@ -137,6 +137,7 @@ check_push() { # dir args...
     fi
     src=${t%%:*}
     [ -n "$src" ] || continue # :dst deletes dst
+    case "$src" in refs/tags/*) continue ;; esac
     case "$src" in *'*'*)
       block "verify-gate: git push $src expands to branches the hook can't check one by one. Push each branch by name after verify --full on it."
       continue
@@ -162,6 +163,7 @@ check_pr_create() { # dir args...
     case "$t" in
       --head | -H) next=true ;;
       --head=*) head=${t#--head=} ;;
+      -H?*) head=${t#-H} ;;
     esac
   done
   head=${head#*:}
@@ -252,7 +254,7 @@ moved_then() { # what
   block "verify-gate: $1 runs in the same Bash call as a command that moves the branch ($MOVED), so this hook can't see what it would push. Run the push in its own Bash call, after verify --full."
 }
 
-DIR=$CWD MOVED=""
+DIR=$CWD MOVED="" SWITCHED=false
 while IFS= read -r seg; do
   read -ra toks <<<"$seg" || true
   [ "${#toks[@]}" -gt 0 ] || continue
@@ -291,7 +293,9 @@ while IFS= read -r seg; do
           MOVED="git commit"
           ;;
         push)
-          if [ -n "$MOVED" ] && gate_root "$gdir" >/dev/null; then
+          # After a switch or checkout, the branch being pushed may have
+          # checks the current one doesn't: block whatever the gate says now.
+          if [ -n "$MOVED" ] && { [ "$SWITCHED" = true ] || gate_root "$gdir" >/dev/null; }; then
             moved_then "git push"
           else
             rest=()
@@ -299,13 +303,17 @@ while IFS= read -r seg; do
             check_push "$gdir" ${rest[@]+"${rest[@]}"}
           fi
           ;;
-        merge | rebase | cherry-pick | revert | reset | pull | am | switch | checkout | stash) MOVED="git ${words[$i]}" ;;
+        merge | rebase | cherry-pick | revert | reset | pull | am | stash) MOVED="git ${words[$i]}" ;;
+        switch | checkout)
+          MOVED="git ${words[$i]}"
+          SWITCHED=true
+          ;;
       esac
       ;;
     gh)
       sub="${words[$((i + 1))]:-} ${words[$((i + 2))]:-}"
       [ "$sub" != "pr new" ] || sub="pr create"
-      if [ -n "$MOVED" ] && gate_root "$DIR" >/dev/null; then
+      if [ -n "$MOVED" ] && { [ "$SWITCHED" = true ] || gate_root "$DIR" >/dev/null; }; then
         case "$sub" in "pr create" | "stack push" | "stack submit")
           moved_then "gh $sub"
           continue

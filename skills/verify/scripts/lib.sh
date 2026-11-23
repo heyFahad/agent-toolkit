@@ -95,7 +95,8 @@ vf_ci_scripts() {
       case "$args" in *'${{'*) args="" ;; esac
       found=1
       break
-    done < <(printf '%s\n' "$text" | grep -vE '^[[:space:]]*#|(^|[[:space:]])(echo|printf)[[:space:]]' |
+    done < <(printf '%s\n' "$text" | grep -vE '^[[:space:]]*#' |
+      sed -E 's/(^|[[:space:]])(echo|printf)[[:space:]]+[^;&|]*//g' |
       grep -E "(pnpm|npm|yarn|bun)$runre $re([[:space:]\"']|$)")
     [ -n "$found" ] || continue
     case "$n" in
