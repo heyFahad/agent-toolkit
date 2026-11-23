@@ -71,8 +71,10 @@ _ds_error_lines() { # <svc>: up to 20 error-looking lines of its log
   local log
   log="$(ds_state_dir)/logs/$1.log"
   [ -f "$log" ] || { echo "  (no log yet: $log)"; return; }
-  { grep -iE 'error|exception|fatal|ERR!' "$log" || cat "$log"; } | tail -20 | sed 's/^/  /'
+  { grep -iE 'error|exception|fatal|ERR!' "$log" || cat "$log"; } | _ds_plain | tail -20 | sed 's/^/  /'
 }
+
+_ds_plain() { sed $'s/\x1b\\[[0-9;]*[a-zA-Z]//g'; }   # strip colour codes
 
 _ds_line() { # <svc> <state> <dir|""> : one output line
   local port
@@ -129,7 +131,7 @@ cmd_up() {
 
 # _ds_up <takeover> <with_csv> <from...> -- <name...>
 _ds_up() {
-  local takeover=$1 with=$2 froms=() names=() svcs svc dir from ps running ready owner f infra=() todo=() holder
+  local takeover=$1 with=$2 froms=() names=() svcs svc dir from ps running owner f infra=() holder
   shift 2
   while [ "$1" != -- ]; do froms+=("$1"); shift; done; shift
   names=("$@")
@@ -161,7 +163,7 @@ _ds_up() {
   while IFS= read -r line; do
     [ -n "$line" ] || continue
     svc=${line%%=*}; dir=${line#*=}
-    owner=$(ds_owner_get "$svc"); running=$(_ds_proc "$ps" "$svc" is_running); ready=$(_ds_proc "$ps" "$svc" is_ready)
+    owner=$(ds_owner_get "$svc"); running=$(_ds_proc "$ps" "$svc" is_running)
     ds_owner_set "$svc" "$dir"
     ds_copy_local_files "$DS_REG" "$svc" "$dir" >&2
     while IFS= read -r a; do [ -n "$a" ] && infra+=("$a"); done < <(_ds_field "$svc" '.infra[]?')
@@ -169,7 +171,6 @@ _ds_up() {
     if [ "$running" != true ] && holder=$(_ds_port_holder "$(_ds_field "$svc" .port)"); then
       ds_die 1 "port $(_ds_field "$svc" .port) for $svc is held by $holder"
     fi
-    todo+=("$svc")
   done <<<"$plan"
 
   if [ ${#infra[@]} -gt 0 ]; then
@@ -178,10 +179,14 @@ _ds_up() {
   fi
   ds_pc_config "$DS_REG" "$(ds_state_dir)"
   _ds_server_ensure
-  for svc in "${todo[@]+"${todo[@]}"}"; do
+  # Start whatever isn't running now. That covers the services above, plus any
+  # running one the config update just stopped because its definition changed.
+  ps=$(_ds_ps)
+  while IFS= read -r svc; do
+    [ "$(_ds_proc "$ps" "$svc" is_running)" = true ] && continue
     : > "$(ds_state_dir)/logs/$svc.log"   # a fresh log per start: old crashes mustn't count
     _ds_pc process start "$svc" >/dev/null || ds_die 1 "process-compose couldn't start $svc"
-  done
+  done <<<"$svcs"
   # shellcheck disable=SC2086 # one word per service
   _ds_wait $svcs || exit 1
 }
@@ -216,8 +221,8 @@ cmd_logs() {
   local log
   log="$(ds_state_dir)/logs/$svc.log"
   [ -f "$log" ] || ds_die 2 "no log for $svc yet ($log)"
-  if [ $errors = 1 ]; then grep -iE 'error|exception|fatal|ERR!' "$log" | tail -n "$tail"
-  else tail -n "$tail" "$log"; fi
+  if [ $errors = 1 ]; then grep -iE 'error|exception|fatal|ERR!' "$log" | _ds_plain | tail -n "$tail"
+  else tail -n "$tail" "$log" | _ds_plain; fi
 }
 
 cmd_restart() {
@@ -243,7 +248,7 @@ cmd_restart() {
 }
 
 cmd_down() {
-  ds_load_registry
+  DS_SOCK=$(_ds_sock) || exit $?
   local f svc
   f="$(ds_state_dir)/owners.json"
   if [ $# -eq 0 ]; then

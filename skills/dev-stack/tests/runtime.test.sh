@@ -15,9 +15,19 @@ set_proc() { # name status ready running
     "$1" "$2" "$3" "$4" "$( [ "$4" = true ] && echo 100 || echo 0)" > "$PCS/procs/$(proc "$1").json"
 }
 case "$args" in
-  *" up "*) touch "$PCS/alive" ;;
+  *" up "*) touch "$PCS/alive"; yq -o=json . "$(sed -E "s/.* -f ([^ ]+).*/\1/" <<<"$args")" > "$PCS/cfg.json" ;;
   *" project state "*) [ -f "$PCS/alive" ] ;;
-  *" project update "*) [ -f "$PCS/alive" ] ;;
+  *" project update "*)
+    [ -f "$PCS/alive" ] || exit 1
+    cfg=$(sed -E "s/.* -f ([^ ]+).*/\1/" <<<"$args")
+    for f in "$PCS"/procs/*.json; do
+      [ -f "$f" ] || continue
+      n=$(jq -r .name "$f")
+      if [ -f "$PCS/cfg.json" ] && [ "$(yq -o=json ".processes.\"$n\"" "$cfg")" != "$(jq ".processes.\"$n\"" "$PCS/cfg.json")" ]; then
+        set_proc "$n" Disabled - false
+      fi
+    done
+    yq -o=json . "$cfg" > "$PCS/cfg.json" ;;
   *" process list "*)
     [ -f "$PCS/alive" ] || exit 1
     cat "$PCS"/procs/*.json 2>/dev/null | jq -s . ;;
@@ -167,6 +177,25 @@ printf '[nodemon] app crashed - waiting for file changes\n' > "$DEVSTACK_STATE_D
 out=$(STUB_NEVER_READY=connect-api ds up connect-api 2>&1)
 check "old crash line isn't read as a new crash (got: $out)" bash -c '! grep -q Crashed <<<"$1"' _ "$out"
 ds down >/dev/null 2>&1
+
+# --- update_restarts_changed: a config change that stops a running service ---
+ds up connect >/dev/null 2>&1
+sed -i '' 's/  bsa: {repo: bsa, node: nvmrc, doppler: none, command: "true"/  bsa: {timeout: 60, repo: bsa, node: nvmrc, doppler: none, command: "true"/' "$TMP/ws/stack.yaml"
+: > "$TMP/calls.log"
+out=$(ds up connect 2>&1); code=$?
+check "changed service comes back (got $code: $out)" [ "$code" -eq 0 ]
+check "changed service is started again" grep -q "process start bsa" "$TMP/calls.log"
+check "unchanged services aren't restarted" bash -c '! grep -q "process start ti-api" "$1"' _ "$TMP/calls.log"
+
+# --- logs are readable: no colour codes ---
+printf '\033[31mERROR red\033[0m\n' > "$DEVSTACK_STATE_DIR/logs/bsa.log"
+check "logs strip colour codes" [ "$(ds logs bsa)" = "ERROR red" ]
+
+# --- down_without_registry ---
+mkdir -p "$TMP/elsewhere"; : > "$TMP/calls.log"
+out=$(cd "$TMP/elsewhere" && bash "$DEVSTACK" down 2>&1); code=$?
+check "down works without a stack.yaml (got $code: $out)" [ "$code" -eq 0 ]
+check "down without a registry still stops the server" grep -q "process-compose down" "$TMP/calls.log"
 
 # --- socket path too long ---
 out=$(DEVSTACK_STATE_DIR="$TMP/$(printf 'x%.0s' {1..110})" ds status 2>&1); code=$?

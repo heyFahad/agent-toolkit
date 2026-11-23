@@ -61,7 +61,7 @@ def probe($s):
  processes: (.services | to_entries | map(select($cmds[.key])) | map(.key as $n | .value as $s | {key: $n, value: {
    command: $cmds[$n], working_dir: $dirs[$n], disabled: true,
    log_location: "\($state)/logs/\($n).log",
-   log_configuration: {flush_each_line: true, disable_json: true, no_color: true, no_metadata: true},
+   log_configuration: {flush_each_line: true, disable_json: true, no_color: true, no_metadata: true, fields_order: ["message"]},
    availability: {restart: "on_failure", max_restarts: 3},
    depends_on: (($s.depends_on // []) | map({key: ., value: {condition: "process_healthy"}}) | from_entries),
    readiness_probe: probe($s)}}) | from_entries)}

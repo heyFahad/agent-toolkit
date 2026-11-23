@@ -71,6 +71,7 @@ check "timeout sets failure_threshold" [ "$(jq -r '.processes."ti-api".readiness
 # --- logs are plain text, flushed per line (a short crash must reach the log) ---
 check "log flushes each line" [ "$(jq -r '.processes.bsa.log_configuration.flush_each_line' <<<"$cfg")" = true ]
 check "log is plain text" [ "$(jq -r '.processes.bsa.log_configuration.disable_json' <<<"$cfg")" = true ]
+check "log lines are the message only" [ "$(jq -c '.processes.bsa.log_configuration.fields_order' <<<"$cfg")" = '["message"]' ]
 check "log has no colour codes" [ "$(jq -r '.processes.bsa.log_configuration.no_color' <<<"$cfg")" = true ]
 
 # --- launcher scripts: no shell escaping inside the YAML (process-compose rejects it) ---
