@@ -839,5 +839,12 @@ run pr-gate.sh -R o/r 12
 check "gate: stale, no fallback of the head" '[null,true]' \
   "$(q '[.reviewer, ([.warnings[].reason] | index("copilot-stale") != null)]')"
 
+# A push between the Copilot and CI lookups leaves them describing different
+# heads: the review can't be credited to the head CI reports.
+fallback_fixture "<!-- check-pr: fallback review by codex of $H40 -->"
+run pr-gate.sh -R o/r 12
+check "gate: review and CI on different heads block" '[false,true]' \
+  "$(q '[.clean, ([.blocking[].reason] | index("head-moved") != null)]')"
+
 echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]

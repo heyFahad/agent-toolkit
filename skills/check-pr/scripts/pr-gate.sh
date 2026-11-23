@@ -12,6 +12,9 @@
 #                      issues (or has that section and it couldn't be
 #                      parsed), and no PR comment answers them yet
 #   merge-conflict     GitHub reports the PR can't merge cleanly
+#   head-moved         the head changed between the lookups (a push landed),
+#                      so the review and CI results describe different
+#                      commits; run it again
 # These are reported as "warnings" and never block on their own:
 #   copilot-stale      Copilot's latest review predates the head commit,
 #                      and no fallback review (Codex or diff-review, when
@@ -77,7 +80,9 @@ RESULT=$(jq -n --arg repo "$REPO" --argjson pr "$PR" \
             + (if $copilot.missedIssuesUnparsed then "; the section announces more than could be parsed, so read the review body for the rest" else "" end)
           end)} else empty end),
       (if $copilot.requested then {reason: "copilot-pending", detail: "a Copilot review is requested and has not arrived yet"} else empty end),
-      (if $p.mergeable == "CONFLICTING" then {reason: "merge-conflict", detail: "the PR has merge conflicts with its base branch"} else empty end)
+      (if $p.mergeable == "CONFLICTING" then {reason: "merge-conflict", detail: "the PR has merge conflicts with its base branch"} else empty end),
+      (if $copilot.headOid != $ci.headOid then {reason: "head-moved",
+        detail: "the head moved from \($copilot.headOid[0:7]) to \($ci.headOid[0:7]) between lookups; run pr-gate.sh again"} else empty end)
     ] as $blocking
   | [
       (if $copilot.stale and ($copilot.requested | not) and ($copilot.fallbackReviewedHead | not) then {reason: "copilot-stale",
