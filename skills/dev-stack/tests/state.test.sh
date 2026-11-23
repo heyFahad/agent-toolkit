@@ -38,4 +38,13 @@ check "existing .env left alone" grep -q WT=1 "$TMP/wt2/.env"
 check "nothing reported when nothing copied" [ -z "$out" ]
 check "copying into the main checkout itself is a no-op" ds_copy_local_files "$TMP/reg.json" svc "$TMP/ws/svc"
 
+# --- a directory is linked, not copied (keeps credentials in one place) ---
+mkdir -p "$TMP/ws/svc/config" "$TMP/wt3" && echo KEY=1 > "$TMP/ws/svc/config/key.pem"
+cat > "$TMP/reg2.json" <<JSON
+{"_root": "$TMP/ws", "services": {"svc": {"repo": "svc", "local_files": ["config"]}}, "targets": {}}
+JSON
+ds_copy_local_files "$TMP/reg2.json" svc "$TMP/wt3" >/dev/null
+check "directory is a symlink" [ -L "$TMP/wt3/config" ]
+check "symlink points at the main checkout" [ "$(readlink "$TMP/wt3/config")" = "$TMP/ws/svc/config" ]
+
 finish

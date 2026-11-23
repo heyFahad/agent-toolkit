@@ -30,8 +30,9 @@ ds_claim() {
   [ "$cur" = "$dir" ] || ds_owner_set "$svc" "$dir"
 }
 
-# ds_copy_local_files <registry_json_file> <svc> <dir>: copy each listed local
-# file missing from <dir> out of the main checkout. Never overwrites.
+# ds_copy_local_files <registry_json_file> <svc> <dir>: bring each listed local
+# file missing from <dir> over from the main checkout: files are copied,
+# directories symlinked. Never overwrites.
 ds_copy_local_files() {
   local file=$1 svc=$2 dir=$3 main f
   main=$(jq -r --arg s "$svc" '._root + "/" + .services[$s].repo' "$file")
@@ -41,6 +42,12 @@ ds_copy_local_files() {
     [ -e "$dir/$f" ] && continue
     [ -e "$main/$f" ] || continue
     mkdir -p "$(dirname "$dir/$f")"
-    cp -p "$main/$f" "$dir/$f" && echo "copied $f from $main"
+    if [ -d "$main/$f" ]; then
+      # A directory (say, a gitignored config/ with keys) is linked, so
+      # credentials aren't duplicated into every worktree.
+      ln -s "$main/$f" "$dir/$f" && echo "linked $f to $main/$f"
+    else
+      cp -p "$main/$f" "$dir/$f" && echo "copied $f from $main"
+    fi
   done < <(jq -r --arg s "$svc" '.services[$s].local_files // [] | .[]' "$file")
 }
