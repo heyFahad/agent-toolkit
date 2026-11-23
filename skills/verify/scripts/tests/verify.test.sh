@@ -94,6 +94,13 @@ R=$(mkrepo prep '{"prepare":"p","lint":"l"}' pnpm-lock.yaml "$(printf 'pnpm prep
 run_verify "$R" --list
 check "list: install-time scripts skipped" '["lint"]' "$(q '[.[].name]')"
 
+# Comments and echoed text in a workflow aren't CI running a script.
+R=$(mkrepo wfnoise '{"lint":"l","test":"t"}' "" "$(printf 'npm run lint\necho "run npm test locally"')")
+printf '      # npm test is flaky, skipped for now\n' >>"$R/.github/workflows/ci.yml"
+git -C "$R" add -A && git -C "$R" -c user.email=t@t -c user.name=t commit -q -m noise
+run_verify "$R" --list
+check "list: comments and echo lines don't count" '["lint"]' "$(q '[.[].name]')"
+
 R=$(mkrepo nowf '{"lint":"l","test":"t"}' pnpm-lock.yaml "")
 run_verify "$R" --list
 check "list: no workflow runs any script" '[]' "$OUT"

@@ -256,6 +256,23 @@ git -C "$R" update-ref -d refs/remotes/origin/feat
 gate 'gh pr create --head nosuch'
 check "pr create: a head that can't be found blocks" 2 "$CODE"
 
+# gh pr create with no --head: gh may push the local tip, so a local branch
+# ahead of a verified origin copy is checked too.
+git -C "$R" update-ref refs/remotes/origin/unv "$(git -C "$R" rev-parse feat)"
+git -C "$R" switch -q unv
+gate 'gh pr create --title t'
+check "pr create: no --head, an unverified local tip blocks even when origin's copy passed" 2 "$CODE"
+git -C "$R" switch -q feat
+git -C "$R" update-ref -d refs/remotes/origin/unv
+
+# Pushes the hook can't resolve branch by branch are blocked like --all.
+git -C "$R" config remote.origin.push 'refs/heads/*:refs/heads/*'
+gate 'git push'
+check "push: a configured remote.origin.push is blocked" 2 "$CODE"
+git -C "$R" config --unset remote.origin.push
+gate "git push origin 'refs/heads/*:refs/heads/*'"
+check "push: a wildcard refspec is blocked" 2 "$CODE"
+
 # gh stack sync rebases and pushes in one go: blocked in favour of
 # rebase, verify, push.
 jq -n '{branches: [{name: "feat", isMerged: false, isQueued: false}]}' >"$FX/stack.json"
@@ -285,7 +302,7 @@ OFF="$TMP/off"
 git init -q -b main "$OFF"
 echo x >"$OFF/x"
 git -C "$OFF" add -A && git -C "$OFF" commit -q -m x
-for cmd in 'git commit -m y' 'git push' 'gh pr create'; do
+for cmd in 'git commit -m y' 'git push' 'gh pr create' 'git commit -m y && git push'; do
   gate "$cmd" "$OFF"
   check "gate off: $cmd allowed" 0 "$CODE"
 done

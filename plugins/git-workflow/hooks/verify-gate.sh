@@ -119,6 +119,10 @@ check_push() { # dir args...
   [ "$delete" = false ] || return 0
   if [ "${#refs[@]}" -eq 0 ]; then
     [ "$tags" = false ] || return 0
+    if git -C "$root" config --get-regexp '^remote\..*\.push$' >/dev/null 2>&1; then
+      block "verify-gate: git push with no branch named follows this repo's remote.<name>.push setting, which can push branches nobody verified. Push each branch by name (git push origin <branch>) after verify --full on it."
+      return 0
+    fi
     if [ "$(git -C "$root" config push.default 2>/dev/null)" = matching ]; then
       block "verify-gate: git push with push.default=matching pushes every matching branch, verified or not. Push each branch by name (git push origin <branch>) after verify --full on it."
       return 0
@@ -133,6 +137,11 @@ check_push() { # dir args...
     fi
     src=${t%%:*}
     [ -n "$src" ] || continue # :dst deletes dst
+    case "$src" in *'*'*)
+      block "verify-gate: git push $src expands to branches the hook can't check one by one. Push each branch by name after verify --full on it."
+      continue
+      ;;
+    esac
     case "$src" in refs/tags/*) continue ;; esac
     git -C "$root" show-ref -q --verify "refs/tags/$src" 2>/dev/null && continue
     tree=$(tree_of "$root" "$src") || continue # unknown ref: git push fails on its own
@@ -156,7 +165,12 @@ check_pr_create() { # dir args...
     esac
   done
   head=${head#*:}
-  [ -n "$head" ] || head=$(git -C "$root" symbolic-ref -q --short HEAD) || return 0
+  if [ -z "$head" ]; then
+    head=$(git -C "$root" symbolic-ref -q --short HEAD) || return 0
+    # With no --head, gh may push the local branch first: its tip counts too.
+    tree=$(git -C "$root" rev-parse -q --verify "$head^{tree}" 2>/dev/null) &&
+      need "$tree" full "$root" "gh pr create from $head (its local tip, which gh may push)" "$head"
+  fi
   # The PR shows the branch as it is on GitHub: origin's copy first.
   tree=$(git -C "$root" rev-parse -q --verify "origin/$head^{tree}" 2>/dev/null ||
     git -C "$root" rev-parse -q --verify "$head^{tree}" 2>/dev/null) || {
@@ -277,7 +291,7 @@ while IFS= read -r seg; do
           MOVED="git commit"
           ;;
         push)
-          if [ -n "$MOVED" ]; then
+          if [ -n "$MOVED" ] && gate_root "$gdir" >/dev/null; then
             moved_then "git push"
           else
             rest=()
@@ -291,7 +305,7 @@ while IFS= read -r seg; do
     gh)
       sub="${words[$((i + 1))]:-} ${words[$((i + 2))]:-}"
       [ "$sub" != "pr new" ] || sub="pr create"
-      if [ -n "$MOVED" ]; then
+      if [ -n "$MOVED" ] && gate_root "$DIR" >/dev/null; then
         case "$sub" in "pr create" | "stack push" | "stack submit")
           moved_then "gh $sub"
           continue
