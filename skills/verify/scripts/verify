@@ -1,0 +1,35 @@
+#!/bin/bash
+# Usage: verify --list [--related] [FILES...]
+#
+# Runs a repo's checks and records that they passed, so the verify-gate hook
+# lets the tree be committed or pushed. See lib.sh for where the checks come
+# from, and the verify skill for when to run each level.
+#
+#   --list [--related] [FILES...]  print the checks as JSON [{name, run}]
+#
+# Exit codes: 0 success; 2 bad usage or not a git repo; 3 a missing
+# prerequisite (the Node version .nvmrc names).
+set -euo pipefail
+HERE=$(cd "$(dirname "$0")" && pwd)
+# shellcheck source-path=SCRIPTDIR source=lib.sh
+. "$HERE/lib.sh"
+
+MODE="" LEVEL=full
+FILES=()
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --list) MODE=list ;;
+    --related) LEVEL=related ;;
+    --full) LEVEL=full ;;
+    -*) vf_die 2 "unknown option $1" ;;
+    *) FILES+=("$1") ;;
+  esac
+  shift
+done
+[ -n "$MODE" ] || vf_die 2 "usage: verify --list [--related] [FILES...]"
+
+ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || vf_die 2 "not in a git repository"
+
+case "$MODE" in
+  list) vf_checks "$ROOT" "$LEVEL" ${FILES[@]+"${FILES[@]}"} ;;
+esac
