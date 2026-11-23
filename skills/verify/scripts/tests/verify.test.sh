@@ -161,5 +161,86 @@ CODE=$?
 check "node: missing version exits 3" 3 "$CODE"
 check "node: missing version says how to install it" true "$(grep -q 'nvm install 20' "$TMP/stderr" && echo true || echo false)"
 
+# ----------------------------------------------------------------------- run
+# A stub npm runs the package.json script body with sh and notes the CI it saw.
+cat >"$TMP/bin/npm" <<'EOF'
+#!/bin/bash
+[ "$1" = run ] && shift
+echo "CI=${CI:-unset}" >>"$CI_SEEN"
+exec sh -c "$(jq -r --arg n "$1" '.scripts[$n]' package.json)"
+EOF
+chmod +x "$TMP/bin/npm"
+export CI_SEEN="$TMP/ci-seen"
+lib() { bash -c '. "$1/lib.sh"; shift; "$@"' _ "$S" "$@"; }
+
+R=$(mkrepo runok '{"lint":"echo linted","test":"echo tested"}' "" "$(printf 'npm run lint\nnpm test')")
+: >"$CI_SEEN"
+run_verify "$R" --full
+check "run: full passes" 0 "$CODE"
+check "run: one line per check" "$(printf 'PASS lint\nPASS test')" "$(printf '%s' "$OUT" | grep -E '^(PASS|FAIL)')"
+run_verify "$R" --status
+check "run: record says full, passed, with exit codes" '["full",true,[["lint",0],["test",0]]]' \
+  "$(q '[.level, .passed, [.commands[] | [.name, .exit]]]')"
+check "run: CI=true reaches the scripts" "$(printf 'CI=true\nCI=true')" "$(cat "$CI_SEEN")"
+
+echo edit >>"$R/package.json"
+run_verify "$R" --status
+check "run: an edit after verifying means no record" 1 "$CODE"
+git -C "$R" checkout -q package.json
+
+# Untracked files are part of the tree; the tracked tree leaves them out.
+T1=$(lib vf_tree "$R") K1=$(lib vf_tracked_tree "$R")
+echo new >"$R/new.txt"
+T2=$(lib vf_tree "$R") K2=$(lib vf_tracked_tree "$R")
+check "run: tree covers untracked files" true "$([ "$T1" != "$T2" ] && [ "$K1" = "$K2" ] && echo true || echo false)"
+run_verify "$R" --full
+check "run: records under both hashes" true \
+  "$([ -f "$AGENT_TOOLKIT_STATE_DIR/verify/$T2.json" ] && [ -f "$AGENT_TOOLKIT_STATE_DIR/verify/$K2.json" ] && echo true || echo false)"
+rm "$R/new.txt"
+
+# A staged checkpoint stays exactly as the user left it.
+echo staged >>"$R/package.json"
+git -C "$R" add package.json
+echo unstaged >"$R/other.txt"
+before_idx=$(shasum "$R/.git/index") before_cached=$(git -C "$R" diff --cached)
+run_verify "$R" --full
+check "run: the real index is untouched" true \
+  "$([ "$before_idx" = "$(shasum "$R/.git/index")" ] && [ "$before_cached" = "$(git -C "$R" diff --cached)" ] && echo true || echo false)"
+git -C "$R" reset -q --hard && rm -f "$R/other.txt"
+
+run_verify "$R" --related
+TREE=$(lib vf_tree "$R")
+check "run: related record does not satisfy full" 1 "$(lib vf_record_ok "$TREE" full; echo $?)"
+check "run: related record satisfies related" 0 "$(lib vf_record_ok "$TREE" related; echo $?)"
+run_verify "$R" --full
+check "run: full record satisfies related" 0 "$(lib vf_record_ok "$TREE" related; echo $?)"
+
+R=$(mkrepo runfail '{"lint":"echo bad lint; exit 1","test":"touch ran-test"}' "" "$(printf 'npm run lint\nnpm test')")
+run_verify "$R" --full
+check "run: stops at the first failure" '[1,false]' "[$CODE,$([ -f "$R/ran-test" ] && echo true || echo false)]"
+check "run: failure shows the check and its output" true \
+  "$(printf '%s' "$OUT" | grep -q '^FAIL lint (exit 1)' && printf '%s' "$OUT" | grep -q 'bad lint' && echo true || echo false)"
+run_verify "$R" --status
+check "run: failed record says so" false "$(q .passed)"
+
+R=$(mkrepo runfmt '{"format":"echo x >> a.txt"}' "" 'npm run format')
+echo a >"$R/a.txt"
+git -C "$R" add a.txt && git -C "$R" -c user.email=t@t -c user.name=t commit -q -m a
+run_verify "$R" --full
+check "run: a check that changes tracked files fails" 1 "$CODE"
+check "run: and names the file" true "$(printf '%s' "$OUT" | grep -q 'a.txt' && echo true || echo false)"
+
+R=$(mkrepo runbuild '{"build":"mkdir -p out && echo x > out/b.js"}' "" 'npm run build')
+run_verify "$R" --full
+check "run: untracked build output doesn't fail the run" 0 "$CODE"
+check "run: and the record matches the tree after the run" 0 "$(lib vf_record_ok "$(lib vf_tree "$R")" full; echo $?)"
+
+R=$(mkrepo runoff '{"lint":"l"}' "" "")
+rm -rf "$AGENT_TOOLKIT_STATE_DIR"
+run_verify "$R" --full
+check "run: gate off exits 0" 0 "$CODE"
+check "run: gate off says so" true "$(printf '%s' "$OUT" | grep -q 'gate off' && echo true || echo false)"
+check "run: gate off writes nothing" 0 "$(find "$AGENT_TOOLKIT_STATE_DIR" -name '*.json' 2>/dev/null | wc -l | tr -d ' ')"
+
 echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]

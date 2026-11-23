@@ -156,3 +156,46 @@ vf_node_path() {
   [ -d "$nvm/versions/node/v$v/bin" ] || vf_die 3 "Node $spec (from .nvmrc) isn't installed: run nvm install $spec"
   echo "$nvm/versions/node/v$v/bin"
 }
+
+# vf_tree ROOT / vf_tracked_tree ROOT: the hash of the working tree as git
+# would commit it with `git add -A` (untracked files that aren't ignored
+# included) or `git add -u` (tracked files only). Built in a copy of the
+# index, never the real one, which may hold a checkpoint the user staged. The
+# copy keeps git's stat cache, so unchanged files aren't read again.
+vf_tree() { _vf_tree_with "$1" -A; }
+vf_tracked_tree() { _vf_tree_with "$1" -u; }
+_vf_tree_with() {
+  local root=$1 flag=$2 idx tmp tree
+  idx=$(git -C "$root" rev-parse --path-format=absolute --git-path index)
+  tmp=$(mktemp "${TMPDIR:-/tmp}/verify-index.XXXXXX")
+  if [ -f "$idx" ]; then cp "$idx" "$tmp"; else rm -f "$tmp"; fi
+  tree=$(GIT_INDEX_FILE=$tmp git -C "$root" add "$flag" . >/dev/null 2>&1 &&
+    GIT_INDEX_FILE=$tmp git -C "$root" write-tree) || {
+    rm -f "$tmp"
+    return 1
+  }
+  rm -f "$tmp"
+  echo "$tree"
+}
+
+# vf_record_file TREE: where the record for TREE lives.
+vf_record_file() { echo "$(vf_state_dir)/$1.json"; }
+
+# vf_record_ok TREE LEVEL: exit 0 when TREE has a passing record at LEVEL or
+# above (a full run satisfies related).
+vf_record_ok() {
+  local f
+  f=$(vf_record_file "$1")
+  [ -f "$f" ] || return 1
+  jq -e --arg want "$2" '.passed == true and (.level == "full" or .level == $want)' "$f" >/dev/null 2>&1
+}
+
+# vf_changed_files ROOT: files changed against HEAD, plus untracked files that
+# aren't ignored, that still exist. One per line, relative to ROOT.
+vf_changed_files() {
+  (
+    cd "$1" || exit 0
+    { git diff --name-only HEAD 2>/dev/null; git ls-files --others --exclude-standard; } |
+      sort -u | while IFS= read -r f; do [ -e "$f" ] && printf '%s\n' "$f"; done
+  )
+}
