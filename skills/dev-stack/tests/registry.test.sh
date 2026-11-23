@@ -70,6 +70,11 @@ for bad in 0.5 0 -3; do
   check "timeout $bad exits 2 (got $code)" [ "$code" -eq 2 ]
 done
 
+# --- a target can't share a name with a service ---
+printf 'services:\n  db:\n%s\ntargets:\n  db: [db]\n' "$valid_service" > "$TMP/clash.yaml"
+out=$(. "$LIB/registry.sh" && ds_registry_json "$TMP/clash.yaml" 2>&1); code=$?
+check "target named like a service exits 2 (got $code)" [ "$code" -eq 2 ]
+
 # --- a valid registry loads as JSON ---
 got=$(. "$LIB/registry.sh" && ds_registry_json "$TMP/ws/stack.yaml" | jq -r '.services.s.port')
 check "valid registry loads (got '$got')" [ "$got" = 3010 ]

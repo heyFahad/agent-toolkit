@@ -33,6 +33,10 @@ ds ports --write "$TMP/R.md" 2>/dev/null; code=$?
 check "markers in the wrong order exit 2 (got $code)" [ "$code" -eq 2 ]
 check "markers in the wrong order leave the file untouched" cmp -s "$TMP/R.md" "$TMP/R.orig"
 
+printf '<!-- devstack:ports:start --><!-- devstack:ports:start -->\nx\n<!-- devstack:ports:end -->\n' > "$TMP/D.md"
+ds ports --write "$TMP/D.md" 2>/dev/null; code=$?
+check "two start markers on one line exit 2 (got $code)" [ "$code" -eq 2 ]
+
 printf 'no markers\n' > "$TMP/N.md"
 ds ports --write "$TMP/N.md" 2>/dev/null; code=$?
 check "write without markers exits 2 (got $code)" [ "$code" -eq 2 ]

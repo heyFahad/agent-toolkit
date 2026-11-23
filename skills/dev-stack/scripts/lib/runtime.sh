@@ -44,7 +44,10 @@ _ds_same_registry() {
   f="$(ds_state_dir)/server.registry"
   _ds_alive || return 0
   owner=$(cat "$f" 2>/dev/null)
-  [ -z "$owner" ] || [ "$owner" = "$DS_REG_PATH" ] \
+  # A stack from before owners were recorded is claimed by the first registry
+  # that touches it, so a second workspace is refused from then on.
+  [ -n "$owner" ] || { echo "$DS_REG_PATH" > "$f"; return 0; }
+  [ "$owner" = "$DS_REG_PATH" ] \
     || ds_die 2 "the running stack was started from $owner; stop it there with devstack down, or give this workspace its own DEVSTACK_STATE_DIR"
 }
 
@@ -83,11 +86,15 @@ _ds_lock() {
         rmdir "$lock.reclaim"
         continue
       fi
-      # A guard older than a minute belongs to a reclaimer that died mid-way.
-      [ -n "$(find "$lock.reclaim" -maxdepth 0 -mmin +1 2>/dev/null)" ] && rmdir "$lock.reclaim" 2>/dev/null && continue
+      # Another waiter is reclaiming (or one died mid-reclaim): wait like any
+      # other contention. Guards are never deleted by others, so two waiters
+      # can't both get past the dead-pid check.
     fi
     [ "$waited" -eq 0 ] && echo "devstack: waiting for another devstack command (pid ${holder:-?})" >&2
-    [ "$waited" -ge "$max" ] && ds_die 1 "another devstack command is still running (pid ${holder:-?}); try again later"
+    if [ "$waited" -ge "$max" ]; then
+      [ -d "$lock.reclaim" ] && ds_die 1 "a lock left by a stopped devstack command is stuck; if no devstack command is running, remove $lock and $lock.reclaim"
+      ds_die 1 "another devstack command is still running (pid ${holder:-?}); try again later"
+    fi
     sleep 1; waited=$((waited + 1))
   done
   echo $$ > "$lock/pid"
@@ -314,13 +321,22 @@ _ds_up() {
   # the update stops (its definition changed) is brought back as well.
   local before
   before=$(jq -r '.[] | select(.is_running == true) | .name' <<<"$ps")
-  ds_pc_config "$DS_REG" "$(ds_state_dir)"
+  local st prev
+  st=$(ds_state_dir); prev="$st/.prev"
+  rm -rf "$prev"; mkdir -p "$prev"
+  cp -p "$st/process-compose.yaml" "$prev/" 2>/dev/null
+  [ -d "$st/run" ] && cp -Rp "$st/run" "$prev/run"
+  ds_pc_config "$DS_REG" "$st"
   if ! _ds_server_ensure; then
-    # Put the owners back so status and the next up see what's really running.
+    # Put back what the server last accepted: owners, config and launchers, so
+    # status, restart and the next up see what's really running.
     printf '%s\n' "$prev_owners" > "$f_own"
-    ds_pc_config "$DS_REG" "$(ds_state_dir)"
+    [ -f "$prev/process-compose.yaml" ] && cp -p "$prev/process-compose.yaml" "$st/"
+    if [ -d "$prev/run" ]; then rm -rf "$st/run"; cp -Rp "$prev/run" "$st/run"; fi
+    rm -rf "$prev"
     ds_die 1 "process-compose rejected the new config; nothing was changed"
   fi
+  rm -rf "$prev"
   ps=$(_ds_ps)
   while IFS= read -r svc; do
     [ -n "$svc" ] || continue
@@ -482,7 +498,8 @@ cmd_ports() {
     --markdown) _ds_ports_md ;;
     --write)
       local f=${2:?--write needs a file} table tmp
-      awk '/<!-- devstack:ports:start -->/ { s++; if (!sl) sl = NR } /<!-- devstack:ports:end -->/ { e++; if (!el) el = NR }
+      awk '{ l = $0; n = gsub(/<!-- devstack:ports:start -->/, "", l); s += n; if (n && !sl) sl = NR
+             l = $0; n = gsub(/<!-- devstack:ports:end -->/, "", l); e += n; if (n && !el) el = NR }
            END { exit !(s == 1 && e == 1 && sl < el) }' "$f" \
         || ds_die 2 "$f needs exactly one <!-- devstack:ports:start --> followed by one <!-- devstack:ports:end -->"
       table=$(_ds_ports_md); tmp=$(mktemp)

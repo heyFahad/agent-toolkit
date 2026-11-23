@@ -382,12 +382,23 @@ check "another registry's stack is refused (got $code: $out)" [ "$code" -eq 2 ]
 check "...and isn't updated" bash -c '! grep -q "project update" "$1"' _ "$TMP/calls.log"
 ds down >/dev/null 2>&1
 
+# --- X1b: a live stack with no owner marker is claimed by the first registry ---
+ds up bsa >/dev/null 2>&1; rm -f "$DEVSTACK_STATE_DIR/server.registry"
+ds up bsa >/dev/null 2>&1
+out=$(cd "$TMP/ws2" && bash "$DEVSTACK" up bsa 2>&1); code=$?
+check "unmarked stack is claimed, then another registry is refused (got $code)" [ "$code" -eq 2 ]
+ds down >/dev/null 2>&1
+
 # --- X2: a failed config update keeps the previous owner ---
 ds up ti-api >/dev/null 2>&1
 before=$(jq -c . "$DEVSTACK_STATE_DIR/owners.json")
 out=$(STUB_UPDATE_FAILS=1 ds up ti-api --from "ti-api=$TMP/wt" --takeover 2>&1); code=$?
 check "failed update exits 1 (got $code)" [ "$code" -eq 1 ]
 check "failed update leaves owners as they were" [ "$(jq -c . "$DEVSTACK_STATE_DIR/owners.json")" = "$before" ]
+yq -i '.services."ti-api".command = "echo rejected"' "$TMP/ws/stack.yaml"
+STUB_UPDATE_FAILS=1 ds up ti-api >/dev/null 2>&1
+check "a rejected update leaves the old launcher" bash -c '! grep -q rejected "$1"' _ "$DEVSTACK_STATE_DIR/run/ti-api.sh"
+yq -i '.services."ti-api".command = "true"' "$TMP/ws/stack.yaml"
 ds down >/dev/null 2>&1
 
 # --- X3: naming an optional dependency starts it before its dependant ---
@@ -408,10 +419,10 @@ chmod 755 "$TMP/ro"
 # --- X6: a leftover reclaim guard doesn't spin forever ---
 LP=$(sh -c 'echo $$')   # the pid of a process that has already exited
 mkdir -p "$DEVSTACK_STATE_DIR/lock" "$DEVSTACK_STATE_DIR/lock.reclaim" && echo $LP > "$DEVSTACK_STATE_DIR/lock/pid"
-touch -t 202001010000 "$DEVSTACK_STATE_DIR/lock.reclaim"
 start=$(date +%s)
 out=$(DEVSTACK_LOCK_WAIT=3 ds down 2>&1); code=$?
-check "an old reclaim guard is cleared (got $code in $(( $(date +%s) - start ))s: $out)" bash -c '[ "$1" -eq 0 ] && [ "$2" -le 4 ]' _ "$code" "$(( $(date +%s) - start ))"
+check "a leftover reclaim guard times out instead of spinning (got $code in $(( $(date +%s) - start ))s)" bash -c '[ "$1" -eq 1 ] && [ "$2" -le 6 ]' _ "$code" "$(( $(date +%s) - start ))"
+check "...and names what to remove" grep -q "lock.reclaim" <<<"$out"
 rm -rf "$DEVSTACK_STATE_DIR/lock" "$DEVSTACK_STATE_DIR/lock.reclaim"
 
 # --- socket path too long ---
