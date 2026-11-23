@@ -48,6 +48,11 @@ out=$(. "$LIB/registry.sh" && ds_registry_json "$TMP/badhealth.yaml" 2>&1); code
 check "bad health exits 2 (got $code)" [ "$code" -eq 2 ]
 check "bad health names the field" grep -q "bad-health: health" <<<"$out"
 
+# --- F6: service keys are plain names ---
+printf 'services:\n  "../x":\n%s\ntargets: {}\n' "$valid_service" > "$TMP/badname.yaml"
+out=$(. "$LIB/registry.sh" && ds_registry_json "$TMP/badname.yaml" 2>&1); code=$?
+check "path-like service key exits 2 (got $code)" [ "$code" -eq 2 ]
+
 # --- a valid registry loads as JSON ---
 got=$(. "$LIB/registry.sh" && ds_registry_json "$TMP/ws/stack.yaml" | jq -r '.services.s.port')
 check "valid registry loads (got '$got')" [ "$got" = 3010 ]

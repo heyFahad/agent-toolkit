@@ -207,6 +207,48 @@ out=$(cd "$TMP/elsewhere" && bash "$DEVSTACK" down 2>&1); code=$?
 check "down works without a stack.yaml (got $code: $out)" [ "$code" -eq 0 ]
 check "down without a registry still stops the server" grep -q "process-compose down" "$TMP/calls.log"
 
+# --- F1: a bad --from path fails instead of silently using main ---
+ds down >/dev/null 2>&1
+out=$(ds up bsa --from bsa=/nonexistent/wt 2>&1); code=$?
+check "bad --from exits 2 (got $code: $out)" [ "$code" -eq 2 ]
+check "bad --from starts nothing" bash -c '! grep -q "Ready" <<<"$1"' _ "$out"
+
+# --- F2: a stale owner doesn't choose the directory of a stopped service ---
+ds down >/dev/null 2>&1
+echo "{\"bsa\": \"$TMP/gone-wt\"}" > "$DEVSTACK_STATE_DIR/owners.json"
+out=$(ds up bsa 2>&1); code=$?
+check "stale owner ignored (got $code: $out)" [ "$code" -eq 0 ]
+check "runs from the main checkout" [ "$(yq -r '.processes.bsa.working_dir' "$DEVSTACK_STATE_DIR/process-compose.yaml")" = "$TMP/ws/bsa" ]
+ds down >/dev/null 2>&1
+out=$(STUB_LSOF="3010:node:4242" ds up bsa --from "bsa=$TMP/wt" 2>&1)
+check "a failed up records no new owner" bash -c '! grep -q "$1" "$2" 2>/dev/null' _ "$TMP/wt" "$DEVSTACK_STATE_DIR/owners.json"
+
+# --- F3: a registry env change reaches the running service ---
+ds up bsa >/dev/null 2>&1
+sed -i '' 's/  bsa: {timeout: 60, repo: bsa/  bsa: {env: {FOO: bar}, timeout: 60, repo: bsa/' "$TMP/ws/stack.yaml"
+: > "$TMP/calls.log"
+ds up bsa >/dev/null 2>&1
+check "env change restarts the service" grep -q "process start bsa" "$TMP/calls.log"
+
+# --- F5: a live lock makes a second command wait, then give up ---
+sleep 30 & LOCKPID=$!
+mkdir -p "$DEVSTACK_STATE_DIR/lock" && echo $LOCKPID > "$DEVSTACK_STATE_DIR/lock/pid"
+out=$(DEVSTACK_LOCK_WAIT=1 ds down 2>&1); code=$?
+check "held lock: exits 1 (got $code)" [ "$code" -eq 1 ]
+check "held lock: names the holder" grep -q "pid $LOCKPID" <<<"$out"
+kill $LOCKPID 2>/dev/null; wait $LOCKPID 2>/dev/null
+out=$(DEVSTACK_LOCK_WAIT=1 ds down 2>&1); code=$?
+check "stale lock is cleared (got $code: $out)" [ "$code" -eq 0 ]
+check "lock released after the command" [ ! -d "$DEVSTACK_STATE_DIR/lock" ]
+
+# --- F6: service names are checked ---
+out=$(ds restart ../../x 2>&1); code=$?
+check "restart rejects a path-like name (got $code)" [ "$code" -eq 2 ]
+out=$(ds down nosuch 2>&1); code=$?
+check "down rejects an unknown name (got $code)" [ "$code" -eq 2 ]
+out=$(ds logs ../x 2>&1); code=$?
+check "logs rejects a path-like name (got $code)" [ "$code" -eq 2 ]
+
 # --- socket path too long ---
 out=$(DEVSTACK_STATE_DIR="$TMP/$(printf 'x%.0s' {1..110})" ds status 2>&1); code=$?
 check "too-long socket path exits 2 (got $code)" [ "$code" -eq 2 ]

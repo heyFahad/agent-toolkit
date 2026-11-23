@@ -59,7 +59,9 @@ def problems($n; $s):
   (if ($s.env // {} | type) != "object" then "\($n): env: must be a map" else empty end),
   (if ($s.timeout // 120 | type) != "number" then "\($n): timeout: must be seconds" else empty end);
 if (.services | type) != "object" then "registry: services: required map"
-else (.services | to_entries[] | problems(.key; .value)) end,
+else (.services | to_entries[] | problems(.key; .value)),
+     (.services | keys[] | select(test("^[a-z0-9][a-z0-9-]*$") | not)
+       | "\(.): name: use lowercase letters, digits and dashes") end,
 (if (.targets // {} | type) != "object" then "registry: targets: must be a map" else empty end)
 '
 

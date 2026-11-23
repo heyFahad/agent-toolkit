@@ -80,6 +80,24 @@ check "launcher has no backslash escapes in the config" bash -c '! grep -q "\\\\
 got=$(bash "$TMP/state/run/envy.sh")
 check "launcher runs the service command (got '$got')" [ "$got" = "a b \$c 'q'" ]
 
+# --- F3: the definition changes when the launcher's contents change ---
+rev1=$(jq -r '.processes.envy.environment[0]' <<<"$cfg")
+check "definition carries a revision" grep -q "^DEVSTACK_REV=" <<<"$rev1"
+jq '.services.envy.env.X = "changed"' "$TMP/reg.json" > "$TMP/reg2.json"
+ds_pc_config "$TMP/reg2.json" "$TMP/state"
+rev2=$(yq -r '.processes.envy.environment[0]' "$TMP/state/process-compose.yaml")
+check "revision changes with the command (got $rev1 / $rev2)" [ "$rev1" != "$rev2" ]
+ds_pc_config "$TMP/reg.json" "$TMP/state"
+
+# --- F4: a service whose command can't be built stays in the config ---
+echo 99.0.0 > "$TMP/ws/env/.nvmrc"
+ds_pc_config "$TMP/reg.json" "$TMP/state"
+check "unbuildable service stays in the config" [ "$(yq -r '.processes.envy.disabled' "$TMP/state/process-compose.yaml")" = true ]
+out=$(bash "$TMP/state/run/envy.sh" 2>&1); code=$?
+check "its launcher fails with the reason (got $code: $out)" bash -c '[ "$1" -ne 0 ] && grep -q "nvm install 99.0.0" <<<"$2"' _ "$code" "$out"
+echo 22.16.0 > "$TMP/ws/env/.nvmrc"
+ds_pc_config "$TMP/reg.json" "$TMP/state"
+
 # --- an owner overrides working_dir ---
 echo "{\"bsa\": \"$TMP/wt\"}" > "$TMP/state/owners.json"
 mkdir -p "$TMP/wt" && echo 22.16.0 > "$TMP/wt/.nvmrc"

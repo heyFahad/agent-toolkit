@@ -39,6 +39,29 @@ _ds_server_ensure() {
   ds_die 1 "process-compose didn't start; see $state/process-compose.log"
 }
 
+# --- one command at a time ------------------------------------------------------
+# bash 3.2 and macOS have no flock, so the lock is a directory with a pid file.
+
+_ds_lock() {
+  local lock waited=0 holder max=${DEVSTACK_LOCK_WAIT:-300}
+  lock="$(ds_state_dir)/lock"; mkdir -p "$(ds_state_dir)"
+  until mkdir "$lock" 2>/dev/null; do
+    holder=$(cat "$lock/pid" 2>/dev/null)
+    if [ -n "$holder" ] && ! kill -0 "$holder" 2>/dev/null; then
+      rm -rf "$lock"; continue   # its owner died: stale
+    fi
+    [ "$waited" -eq 0 ] && echo "devstack: waiting for another devstack command (pid ${holder:-?})" >&2
+    [ "$waited" -ge "$max" ] && ds_die 1 "another devstack command is still running (pid ${holder:-?}); try again later"
+    sleep 1; waited=$((waited + 1))
+  done
+  echo $$ > "$lock/pid"
+  trap '_ds_unlock' EXIT
+}
+_ds_unlock() { local lock; lock="$(ds_state_dir)/lock"; [ "$(cat "$lock/pid" 2>/dev/null)" = $$ ] && rm -rf "$lock"; }
+
+# _ds_check_name <svc>: a plain service name (it becomes a file name).
+_ds_check_name() { [[ $1 =~ ^[a-z0-9][a-z0-9-]*$ ]] || ds_die 2 "not a service name: $1"; }
+
 # --- registry -----------------------------------------------------------------
 
 # ds_load_registry: validate the registry into $STATE/registry.json (with _root).
@@ -129,12 +152,13 @@ cmd_up() {
   done
   [ ${#names[@]} -gt 0 ] || ds_die 2 "up: name a target or service"
   ds_load_registry
+  _ds_lock
   _ds_up "$takeover" "$with" "${froms[@]+"${froms[@]}"}" -- "${names[@]}"
 }
 
 # _ds_up <takeover> <with_csv> <from...> -- <name...>
 _ds_up() {
-  local takeover=$1 with=$2 froms=() names=() svcs svc dir from ps running owner f infra=() holder
+  local takeover=$1 with=$2 froms=() names=() svcs svc dir from ps running owner f infra=() holder a
   shift 2
   while [ "$1" != -- ]; do froms+=("$1"); shift; done; shift
   names=("$@")
@@ -143,17 +167,19 @@ _ds_up() {
   # Each --from must name a service this run starts.
   for f in "${froms[@]+"${froms[@]}"}"; do
     [[ $f == *=* ]] || ds_die 2 "--from needs <svc>=<path>, got $f"
-    grep -qx "${f%%=*}" <<<"$svcs" || ds_die 2 "--from names ${f%%=*}, which this run doesn't start"
+    grep -qFx "${f%%=*}" <<<"$svcs" || ds_die 2 "--from names ${f%%=*}, which this run doesn't start"
   done
-  _from_of() { local f; for f in "${froms[@]+"${froms[@]}"}"; do [ "${f%%=*}" = "$1" ] && { _ds_abs "${f#*=}"; return; }; done; }
+  _from_of() { local f; for f in "${froms[@]+"${froms[@]}"}"; do [ "${f%%=*}" = "$1" ] && { _ds_abs "${f#*=}"; return; }; done; return 0; }
 
   ps=$(_ds_ps)
   # Pass 1: decide each service's directory; refuse before changing anything.
   local plan=""
   while IFS= read -r svc; do
-    from=$(_from_of "$svc"); owner=$(ds_owner_get "$svc"); running=$(_ds_proc "$ps" "$svc" is_running)
-    dir=${from:-${owner:-$(_ds_main_dir "$svc")}}
+    from=$(_from_of "$svc") || exit $?
+    owner=$(ds_owner_get "$svc"); running=$(_ds_proc "$ps" "$svc" is_running)
+    # An owner only counts while its service runs; a stopped one goes back to main.
     [ "$running" = true ] || owner=""
+    dir=${from:-${owner:-$(_ds_main_dir "$svc")}}
     if [ -n "$owner" ] && [ "$owner" != "$dir" ] && [ "$takeover" != 1 ]; then
       ds_die 2 "$svc is running from $owner; rerun with --takeover to switch it to $dir"
     fi
@@ -161,25 +187,36 @@ _ds_up() {
     plan+="$svc=$dir"$'\n'
   done <<<"$svcs"
 
-  # Pass 2: record owners, copy local files, collect infra and what to start.
+  # Pass 2: checks that can still fail (ports, Docker). Nothing is recorded yet.
   local line
   while IFS= read -r line; do
     [ -n "$line" ] || continue
-    svc=${line%%=*}; dir=${line#*=}
-    owner=$(ds_owner_get "$svc"); running=$(_ds_proc "$ps" "$svc" is_running)
-    ds_owner_set "$svc" "$dir"
-    ds_copy_local_files "$DS_REG" "$svc" "$dir" >&2
+    svc=${line%%=*}
     while IFS= read -r a; do [ -n "$a" ] && infra+=("$a"); done < <(_ds_field "$svc" '.infra[]?')
-    if [ "$running" = true ] && [ "$owner" = "$dir" ]; then continue; fi
+    running=$(_ds_proc "$ps" "$svc" is_running)
     if [ "$running" != true ] && holder=$(_ds_port_holder "$(_ds_field "$svc" .port)"); then
       ds_die 1 "port $(_ds_field "$svc" .port) for $svc is held by $holder"
     fi
   done <<<"$plan"
-
   if [ ${#infra[@]} -gt 0 ]; then
     # shellcheck disable=SC2046 # one word per container name
     ds_infra_ensure $(printf '%s\n' "${infra[@]}" | sort -u) || exit $?
   fi
+
+  # Pass 3: record owners (dropping those of services that aren't running) and
+  # bring local files over.
+  local f_own keep
+  f_own="$(ds_state_dir)/owners.json"
+  keep=$(jq -c '[.[] | select(.is_running == true) | .name]' <<<"$ps")
+  if [ -f "$f_own" ]; then
+    jq --argjson keep "$keep" 'with_entries(select(.key as $k | $keep | index($k)))' "$f_own" > "$f_own.tmp" && mv "$f_own.tmp" "$f_own"
+  fi
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    svc=${line%%=*}; dir=${line#*=}
+    ds_owner_set "$svc" "$dir"
+    ds_copy_local_files "$DS_REG" "$svc" "$dir" >&2
+  done <<<"$plan"
   # Everything running before the update, so a service outside this run that
   # the update stops (its definition changed) is brought back as well.
   local before
@@ -192,7 +229,7 @@ _ds_up() {
     [ "$(_ds_proc "$ps" "$svc" is_running)" = true ] && continue
     : > "$(ds_state_dir)/logs/$svc.log"   # a fresh log per start: old crashes mustn't count
     _ds_pc process start "$svc" >/dev/null || ds_die 1 "process-compose couldn't start $svc"
-    grep -qx "$svc" <<<"$svcs" || echo "restarted $svc (its registry entry changed)" >&2
+    grep -qFx "$svc" <<<"$svcs" || echo "restarted $svc (its registry entry changed)" >&2
   done < <(printf '%s\n%s\n' "$svcs" "$before" | awk 'NF && !seen[$0]++')
   # shellcheck disable=SC2086 # one word per service
   _ds_wait $svcs || exit 1
@@ -229,6 +266,7 @@ cmd_logs() {
     esac
   done
   [ -n "$svc" ] || ds_die 2 "logs: name a service"
+  _ds_check_name "$svc"
   local log
   log="$(ds_state_dir)/logs/$svc.log"
   [ -f "$log" ] || ds_die 2 "no log for $svc yet ($log)"
@@ -247,7 +285,10 @@ cmd_restart() {
     esac
   done
   [ -n "$svc" ] || ds_die 2 "restart: name a service"
+  _ds_check_name "$svc"
   ds_load_registry
+  [ -n "$(_ds_field "$svc" .port)" ] || ds_die 2 "unknown service: $svc"
+  _ds_lock
   if [ -n "$from" ]; then
     _ds_up "$takeover" "" "$svc=$from" -- "$svc"
     return
@@ -260,7 +301,9 @@ cmd_restart() {
 
 cmd_down() {
   DS_SOCK=$(_ds_sock) || exit $?
-  local f svc
+  local f svc ps
+  for svc in "$@"; do _ds_check_name "$svc"; done
+  _ds_lock
   f="$(ds_state_dir)/owners.json"
   if [ $# -eq 0 ]; then
     _ds_alive && _ds_pc down >/dev/null
@@ -268,8 +311,12 @@ cmd_down() {
     echo "stopped everything (Docker containers left running)"
     return
   fi
+  ps=$(_ds_ps)
   for svc in "$@"; do
-    _ds_alive && _ds_pc process stop "$svc" >/dev/null
+    jq -e --arg s "$svc" 'map(.name) | index($s)' <<<"$ps" >/dev/null || ds_die 2 "unknown service: $svc (not in the running stack)"
+  done
+  for svc in "$@"; do
+    _ds_pc process stop "$svc" >/dev/null
     [ -f "$f" ] && jq --arg s "$svc" 'del(.[$s])' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
     echo "stopped $svc"
   done
