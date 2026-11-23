@@ -1,0 +1,83 @@
+#!/bin/bash
+# Node version lookup, each service's command, and the process-compose config.
+DS_LIB=${DS_LIB:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}
+# shellcheck source=common.sh
+. "$DS_LIB/common.sh"
+
+# ds_node_bin <dir> <node_field>: the nvm bin directory for that Node version.
+ds_node_bin() {
+  local dir=$1 v=$2
+  if [ "$v" = nvmrc ]; then
+    [ -f "$dir/.nvmrc" ] || ds_die 2 "$dir/.nvmrc not found"
+    v=$(tr -d '[:space:]' < "$dir/.nvmrc")
+  fi
+  v=${v#v}
+  local bin="${NVM_DIR:-$HOME/.nvm}/versions/node/v$v/bin"
+  [ -d "$bin" ] || ds_die 3 "Node $v isn't installed: run nvm install $v"
+  echo "$bin"
+}
+
+# ds_command <registry_json_file> <svc> <dir>: the shell command that runs <svc>
+# from <dir>. env overrides go after doppler run, so they win over Doppler values.
+ds_command() {
+  local file=$1 svc=$2 dir=$3 s node_bin out k
+  s=$(jq -c --arg s "$svc" '.services[$s]' "$file")
+  node_bin=$(ds_node_bin "$dir" "$(jq -r .node <<<"$s")") || exit $?
+  out="export PATH=$(printf %q "$node_bin"):\"\$PATH\";"
+  if [ "$(jq -r '.doppler | type' <<<"$s")" = object ]; then
+    local p c
+    p=$(jq -r .doppler.project <<<"$s"); c=$(jq -r .doppler.config <<<"$s")
+    out+=" export DOPPLER_PROJECT=$(printf %q "$p") DOPPLER_CONFIG=$(printf %q "$c");"
+    out+=" exec doppler run --project $(printf %q "$p") --config $(printf %q "$c") -- env"
+  else
+    out+=" exec env"
+  fi
+  while IFS= read -r k; do
+    [ -n "$k" ] || continue
+    out+=" $(printf %q "$k=$(jq -r --arg k "$k" '.env[$k]' <<<"$s")")"
+  done < <(jq -r '.env // {} | keys[]' <<<"$s")
+  out+=" bash -c $(printf %q "$(jq -r .command <<<"$s")")"
+  echo "$out"
+}
+
+# ds_service_dir <registry_json_file> <state_dir> <svc>: where <svc> runs from.
+ds_service_dir() {
+  local owner
+  owner=$(jq -r --arg s "$3" '.[$s] // empty' "$2/owners.json" 2>/dev/null)
+  if [ -n "$owner" ]; then echo "$owner"; return; fi
+  jq -r --arg s "$3" '._root + "/" + .services[$s].repo' "$1"
+}
+
+# shellcheck disable=SC2016 # a jq program, not shell
+_DS_PC='
+def probe($s):
+  if $s.health == "tcp" then {exec: {command: "nc -z localhost \($s.port)"}}
+  else ($s.health | capture("^http://(?<host>[^:/]+)(:(?<port>[0-9]+))?(?<path>/.*)?$")) as $u
+    | {http_get: {scheme: "http", host: $u.host, port: (($u.port // "80") | tonumber), path: ($u.path // "/")}}
+  end
+  + {initial_delay_seconds: 2, period_seconds: 2, timeout_seconds: 2,
+     failure_threshold: ((($s.timeout // 120) / 2) | ceil)};
+{version: "0.5",
+ processes: (.services | to_entries | map(select($cmds[.key])) | map(.key as $n | .value as $s | {key: $n, value: {
+   command: $cmds[$n], working_dir: $dirs[$n], disabled: true,
+   log_location: "\($state)/logs/\($n).log",
+   availability: {restart: "on_failure", max_restarts: 3},
+   depends_on: (($s.depends_on // []) | map({key: ., value: {condition: "process_healthy"}}) | from_entries),
+   readiness_probe: probe($s)}}) | from_entries)}
+'
+
+# ds_pc_config <registry_json_file> <state_dir>: write <state_dir>/process-compose.yaml.
+# A service whose command can't be built (say, its Node isn't installed) is left
+# out; `up` reports that error itself when the service is asked for.
+ds_pc_config() {
+  local file=$1 state=$2 svc dir cmd cmds='{}' dirs='{}'
+  mkdir -p "$state/logs"
+  while IFS= read -r svc; do
+    dir=$(ds_service_dir "$file" "$state" "$svc")
+    dirs=$(jq -c --arg k "$svc" --arg v "$dir" '. + {($k): $v}' <<<"$dirs")
+    cmd=$( (ds_command "$file" "$svc" "$dir") 2>/dev/null) || continue
+    cmds=$(jq -c --arg k "$svc" --arg v "$cmd" '. + {($k): $v}' <<<"$cmds")
+  done < <(jq -r '.services | keys[]' "$file")
+  jq --argjson cmds "$cmds" --argjson dirs "$dirs" --arg state "$state" "$_DS_PC" "$file" \
+    > "$state/process-compose.yaml.tmp" && mv "$state/process-compose.yaml.tmp" "$state/process-compose.yaml"
+}
