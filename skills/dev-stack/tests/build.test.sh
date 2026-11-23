@@ -68,6 +68,12 @@ check "working_dir defaults to the repo" [ "$(jq -r '.processes.bsa.working_dir'
 check "log per service" [ "$(jq -r '.processes.bsa.log_location' <<<"$cfg")" = "$TMP/state/logs/bsa.log" ]
 check "timeout sets failure_threshold" [ "$(jq -r '.processes."ti-api".readiness_probe.failure_threshold' <<<"$cfg")" = 30 ]
 
+# --- launcher scripts: no shell escaping inside the YAML (process-compose rejects it) ---
+check "command runs a launcher script" [ "$(jq -r '.processes.envy.command' <<<"$cfg")" = "exec bash $TMP/state/run/envy.sh" ]
+check "launcher has no backslash escapes in the config" bash -c '! grep -q "\\\\" "$1"' _ "$TMP/state/process-compose.yaml"
+got=$(bash "$TMP/state/run/envy.sh")
+check "launcher runs the service command (got '$got')" [ "$got" = "a b \$c 'q'" ]
+
 # --- an owner overrides working_dir ---
 echo "{\"bsa\": \"$TMP/wt\"}" > "$TMP/state/owners.json"
 mkdir -p "$TMP/wt" && echo 22.16.0 > "$TMP/wt/.nvmrc"
