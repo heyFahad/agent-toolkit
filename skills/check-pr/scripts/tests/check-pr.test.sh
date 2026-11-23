@@ -173,6 +173,8 @@ check "threads: bad PR number" 2 "$CODE"
 # --------------------------------------------------------------- copilot-review
 # shellcheck disable=SC2016 # literal backticks: a Markdown code fence
 LOWCONF='Copilot reviewed 3 files.\n\n<details>\n<summary>Comments suppressed due to low confidence (3)</summary>\n\n**src/a.ts:10**\n* First thought.\n```ts\n* not a bullet\n**src/x.ts:1**\n```\n* Second thought on the same line.\n\n**src/b.ts:20-24**\n* Range comment\nspanning two lines.\n</details>\n\n<details><summary>Show a summary per file</summary>\n\n**not/a/finding.ts:1**\n* table text\n</details>'
+# A stale review or none means the comments get read for a fallback marker.
+echo '{"data":{"repository":{"pullRequest":{"comments":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}' >"$FX/comments-1.json"
 cat >"$FX/copilot.json" <<EOF
 {"data":{"repository":{"pullRequest":{"headRefOid":"head2",
  "reviewRequests":{"nodes":[{"requestedReviewer":{"__typename":"User","login":"alice"}}]},
@@ -197,6 +199,7 @@ check "copilot: parsed, so not unparsed" false "$(q .lowConfidenceUnparsed)"
 
 jq '.data.repository.pullRequest.headRefOid = "head1"
   | .data.repository.pullRequest.reviewRequests.nodes += [{"requestedReviewer":{"__typename":"Bot","login":"Copilot"}}]
+  | .data.repository.pullRequest.timelineItems.nodes = [{"createdAt":"2026-01-03T00:00:00Z","requestedReviewer":{"__typename":"Bot","login":"copilot-pull-request-reviewer"}}]
   | .data.repository.pullRequest.reviews.nodes[1].body = "<details>\n<summary>Comments suppressed due to low confidence (1)</summary>\nsomething new\n</details>"' \
   "$FX/copilot.json" >"$FX/c2.json" && mv "$FX/c2.json" "$FX/copilot.json"
 run copilot-review.sh -R o/r 12
@@ -222,7 +225,7 @@ check "copilot: no review, no missed issues" '[[],false,null,false]' \
 # every page.
 copilot_fixture() {
   jq -n --rawfile body "$1" '{data: {repository: {pullRequest: {headRefOid: "head1",
-    reviewRequests: {nodes: []},
+    reviewRequests: {nodes: []}, timelineItems: {nodes: []},
     reviews: {nodes: [{id: "R9", state: "COMMENTED", submittedAt: "2026-01-04T00:00:00Z", url: "https://github.com/o/r/pull/12#pullrequestreview-9", body: $body,
       author: {login: "copilot-pull-request-reviewer"}, commit: {oid: "head1"}}]}}}}}' >"$FX/copilot.json"
   echo '{"data":{"repository":{"pullRequest":{"comments":{"pageInfo":{"hasNextPage":true,"endCursor":"c"},"nodes":[
@@ -374,6 +377,70 @@ run copilot-review.sh -R o/r 12
 check "missed: partial parse flagged" '[[null,"a.ts",3,"Only one","Text."],true]' \
   "$(q '[(.missedIssues[0] | [.severity, .path, .line, .title, .body]), .missedIssuesUnparsed]')"
 
+# ------------------------------------------------- copilot-review: requests
+# A request counts as pending only when Copilot is listed AND a request event
+# for it reached the timeline after its latest review. When its credits run
+# out, GitHub accepts the request but no event appears.
+# copilot_request LISTED EVENT_AT: Copilot listed in reviewRequests or not
+# (true/false), and one request event at EVENT_AT ("" for none). The fixture
+# review was submitted 2026-01-04.
+copilot_request() {
+  jq --argjson listed "$1" --arg at "$2" '
+    .data.repository.pullRequest.reviewRequests.nodes = (if $listed then [{requestedReviewer: {__typename: "Bot", login: "Copilot"}}] else [] end)
+    | .data.repository.pullRequest.timelineItems.nodes = (if $at == "" then [] else
+        [{createdAt: $at, requestedReviewer: {__typename: "Bot", login: "copilot-pull-request-reviewer"}}] end)' \
+    "$FX/copilot.json" >"$FX/c2.json" && mv "$FX/c2.json" "$FX/copilot.json"
+}
+: >"$FX/empty.txt"
+copilot_fixture "$FX/empty.txt"
+copilot_request true 2026-01-05T00:00:00Z
+run copilot-review.sh -R o/r 12
+check "requested: listed and an event after the last review" true "$(q .requested)"
+copilot_request true 2026-01-03T00:00:00Z
+run copilot-review.sh -R o/r 12
+check "requested: listed but no event since the last review (declined)" false "$(q .requested)"
+copilot_request false 2026-01-05T00:00:00Z
+run copilot-review.sh -R o/r 12
+check "requested: event but not listed" false "$(q .requested)"
+jq '.data.repository.pullRequest.reviews.nodes = []' "$FX/copilot.json" >"$FX/c2.json" && mv "$FX/c2.json" "$FX/copilot.json"
+copilot_request true 2000-01-01T00:00:00Z
+run copilot-review.sh -R o/r 12
+check "requested: no review yet, any event counts" true "$(q .requested)"
+
+# ------------------------------------------ copilot-review: fallback markers
+# When Copilot declines, check-pr reviews with Codex or diff-review and
+# answers in a PR comment whose last line names the head it reviewed.
+H40=0123456789abcdef0123456789abcdef01234567
+OLD40=fedcba9876543210fedcba9876543210fedcba98
+# fallback_fixture COMMENT [ASSOCIATION]: a Copilot review of an older commit
+# (so stale), no missed issues, head H40, and COMMENT on page 2.
+fallback_fixture() {
+  copilot_fixture "$FX/empty.txt" "$1" "${2:-COLLABORATOR}"
+  jq --arg h "$H40" '.data.repository.pullRequest.headRefOid = $h' "$FX/copilot.json" >"$FX/c2.json" && mv "$FX/c2.json" "$FX/copilot.json"
+}
+fallback_fixture "$(printf 'Reviewed.\n<!-- check-pr: fallback review by codex of %s -->' "$H40")"
+run copilot-review.sh -R o/r 12
+check "fallback: marker for the head counts" "[true,\"$H40\",\"codex\"]" \
+  "$(q '[.fallbackReviewedHead, .fallbackLastHead, .fallbackReviewer]')"
+check "fallback: comments read when the review is stale even with no missed issues" 1 "$(calls 'graphql --paginate')"
+fallback_fixture "$(printf 'Reviewed.\n<!-- check-pr: fallback review by diff-review of %s -->' "$OLD40")"
+run copilot-review.sh -R o/r 12
+check "fallback: marker for an older head" "[false,\"$OLD40\",\"diff-review\"]" \
+  "$(q '[.fallbackReviewedHead, .fallbackLastHead, .fallbackReviewer]')"
+fallback_fixture "<!-- check-pr: fallback review by codex of $H40 -->" NONE
+run copilot-review.sh -R o/r 12
+check "fallback: an outsider's marker does not count" '[false,null,null]' \
+  "$(q '[.fallbackReviewedHead, .fallbackLastHead, .fallbackReviewer]')"
+fallback_fixture "Run the fallback, then end with <!-- check-pr: fallback review by codex of $H40 --> please."
+run copilot-review.sh -R o/r 12
+check "fallback: a quoted marker does not count" '[false,null,null]' \
+  "$(q '[.fallbackReviewedHead, .fallbackLastHead, .fallbackReviewer]')"
+copilot_fixture "$FX/empty.txt"
+run copilot-review.sh -R o/r 12
+check "fallback: current review, nothing to answer, comments not read" 0 "$(calls 'graphql --paginate')"
+check "fallback: no comments read, no marker" '[false,null,null]' \
+  "$(q '[.fallbackReviewedHead, .fallbackLastHead, .fallbackReviewer]')"
+
 # ----------------------------------------------------------------- reply-thread
 echo '{"data":{"addPullRequestReviewThreadReply":{"comment":{"url":"https://example.test/reply"}}}}' >"$FX/reply.json"
 echo '{"data":{"resolveReviewThread":{"thread":{"isResolved":true}}}}' >"$FX/resolve.json"
@@ -491,7 +558,8 @@ check "gate: clean exits 0" 0 "$CODE"
 check "gate: clean, nothing to report" '[true,[],[]]' "$(q '[.clean, .blocking, .warnings]')"
 
 # A requested Copilot review and a merge conflict each block on their own.
-jq '.data.repository.pullRequest.reviewRequests.nodes = [{"requestedReviewer":{"__typename":"Bot","login":"copilot-pull-request-reviewer"}}]' "$FX/copilot.json" >"$FX/c2.json" && mv "$FX/c2.json" "$FX/copilot.json"
+jq '.data.repository.pullRequest.reviewRequests.nodes = [{"requestedReviewer":{"__typename":"Bot","login":"copilot-pull-request-reviewer"}}]
+  | .data.repository.pullRequest.timelineItems.nodes = [{"createdAt":"2026-01-03T00:00:00Z","requestedReviewer":{"__typename":"Bot","login":"copilot-pull-request-reviewer"}}]' "$FX/copilot.json" >"$FX/c2.json" && mv "$FX/c2.json" "$FX/copilot.json"
 jq '.data.repository.pullRequest.mergeable = "CONFLICTING"' "$FX/prinfo.json" >"$FX/p2.json" && mv "$FX/p2.json" "$FX/prinfo.json"
 run pr-gate.sh -R o/r 12
 check "gate: copilot pending and conflicts block" '["copilot-pending","merge-conflict"]' "$(q '[.blocking[].reason]')"
