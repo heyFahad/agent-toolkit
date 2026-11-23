@@ -39,7 +39,7 @@ case "$args" in
     else set_proc "$n" Running Ready true; fi ;;
   *" process stop "*)
     n=$(sed -E "s/.* process stop ([^ ]+).*/\1/" <<<"$args"); set_proc "$n" Completed - false ;;
-  *" down "*) rm -f "$PCS/alive" "$PCS"/procs/*.json ;;
+  *" down "*) [ -n "${STUB_DOWN_FAILS:-}" ] && exit 1; rm -f "$PCS/alive" "$PCS"/procs/*.json ;;
   *" attach "*) echo attached ;;
   *) exit 1 ;;
 esac'
@@ -182,7 +182,7 @@ ds down >/dev/null 2>&1
 
 # --- update_restarts_changed: a config change that stops a running service ---
 ds up connect >/dev/null 2>&1
-sed -i '' 's/  bsa: {repo: bsa, node: nvmrc, doppler: none, command: "true"/  bsa: {timeout: 60, repo: bsa, node: nvmrc, doppler: none, command: "true"/' "$TMP/ws/stack.yaml"
+sedi 's/  bsa: {repo: bsa, node: nvmrc, doppler: none, command: "true"/  bsa: {timeout: 60, repo: bsa, node: nvmrc, doppler: none, command: "true"/' "$TMP/ws/stack.yaml"
 : > "$TMP/calls.log"
 out=$(ds up connect 2>&1); code=$?
 check "changed service comes back (got $code: $out)" [ "$code" -eq 0 ]
@@ -190,9 +190,9 @@ check "changed service is started again" grep -q "process start bsa" "$TMP/calls
 check "unchanged services aren't restarted" bash -c '! grep -q "process start ti-api" "$1"' _ "$TMP/calls.log"
 
 # --- a running service outside this run that the update stopped comes back too ---
-sed -i '' 's/  wl-atc: {repo: metro/  wl-atc: {timeout: 30, repo: metro/' "$TMP/ws/stack.yaml"
+sedi 's/  wl-atc: {repo: metro/  wl-atc: {timeout: 30, repo: metro/' "$TMP/ws/stack.yaml"
 ds up wl-atc >/dev/null 2>&1
-sed -i '' 's/  wl-atc: {timeout: 30, repo: metro/  wl-atc: {timeout: 40, repo: metro/' "$TMP/ws/stack.yaml"
+sedi 's/  wl-atc: {timeout: 30, repo: metro/  wl-atc: {timeout: 40, repo: metro/' "$TMP/ws/stack.yaml"
 : > "$TMP/calls.log"
 ds up bsa >/dev/null 2>&1
 check "an untouched running service is restarted after the update stops it" grep -q "process start wl-atc" "$TMP/calls.log"
@@ -226,7 +226,7 @@ check "a failed up records no new owner" bash -c '! grep -q "$1" "$2" 2>/dev/nul
 
 # --- F3: a registry env change reaches the running service ---
 ds up bsa >/dev/null 2>&1
-sed -i '' 's/  bsa: {timeout: 60, repo: bsa/  bsa: {env: {FOO: bar}, timeout: 60, repo: bsa/' "$TMP/ws/stack.yaml"
+sedi 's/  bsa: {timeout: 60, repo: bsa/  bsa: {env: {FOO: bar}, timeout: 60, repo: bsa/' "$TMP/ws/stack.yaml"
 : > "$TMP/calls.log"
 ds up bsa >/dev/null 2>&1
 check "env change restarts the service" grep -q "process start bsa" "$TMP/calls.log"
@@ -268,8 +268,13 @@ ds down >/dev/null 2>&1
 
 # --- M2: docker not installed is a missing prerequisite (exit 3) ---
 mv "$TMP/bin/docker" "$TMP/bin/docker.off"
-out=$(PATH="$TMP/bin:$(dirname "$(command -v jq)"):$(dirname "$(command -v yq)"):/usr/bin:/bin" ds up bsa 2>&1); code=$?
-check "no docker exits 3 (got $code: $out)" [ "$code" -eq 3 ]
+bare="$TMP/bin:$(dirname "$(command -v jq)"):$(dirname "$(command -v yq)"):/usr/bin:/bin"
+if PATH="$bare" command -v docker >/dev/null 2>&1; then
+  echo "skipped the no-docker case: a real docker is on this machine's base PATH"
+else
+  out=$(PATH="$bare" ds up bsa 2>&1); code=$?
+  check "no docker exits 3 (got $code: $out)" [ "$code" -eq 3 ]
+fi
 mv "$TMP/bin/docker.off" "$TMP/bin/docker"
 
 # --- M3: long log lines are cut ---
@@ -278,7 +283,7 @@ check "logs cap each line at 300 characters" [ "$(ds logs bsa | awk '{ print len
 
 # --- M4: the server doesn't inherit the caller's PORT / NODE_OPTIONS ---
 ds down >/dev/null 2>&1
-sed -i '' 's|^case "\$args" in|[[ "$args" == *" up "* ]] \&\& env > "$PCS/up.env"\ncase "$args" in|' "$TMP/bin/process-compose"
+sedi 's|^case "\$args" in|[[ "$args" == *" up "* ]] \&\& env > "$PCS/up.env"\ncase "$args" in|' "$TMP/bin/process-compose"
 PORT=9999 NODE_OPTIONS=--inspect ds up bsa >/dev/null 2>&1
 check "server env has no PORT" bash -c '! grep -q "^PORT=" "$1"' _ "$PCS/up.env"
 check "server env has no NODE_OPTIONS" bash -c '! grep -q "^NODE_OPTIONS=" "$1"' _ "$PCS/up.env"
@@ -317,6 +322,41 @@ STUB_START_LOG='[nodemon] app crashed - waiting\n' STUB_NEVER_READY=ti-api ds up
 ds down ti-api >/dev/null 2>&1
 out=$(ds status 2>&1)
 check "stopped service isn't Crashed (got: $out)" bash -c '! grep -qE "^ti-api .*Crashed" <<<"$1"' _ "$out"
+ds down >/dev/null 2>&1
+
+# --- R1: a recovered service (old crash line, now Ready) isn't restarted ---
+ds down >/dev/null 2>&1
+ds up ti-api >/dev/null 2>&1
+printf '[nodemon] app crashed - waiting for file changes\n[nodemon] restarting due to changes...\n[nodemon] starting `node x`\n' >> "$DEVSTACK_STATE_DIR/logs/ti-api.log"
+: > "$TMP/calls.log"
+ds up ti-api >/dev/null 2>&1
+check "recovered service isn't restarted" bash -c '! grep -qE "process (start|restart) ti-api" "$1"' _ "$TMP/calls.log"
+
+# --- R2: restart --from the folder it already runs from still restarts ---
+: > "$TMP/calls.log"
+ds restart ti-api --from "$TMP/ws/ti" >/dev/null 2>&1
+check "restart --from the same folder restarts" grep -qE "process (start|restart) ti-api" "$TMP/calls.log"
+
+# --- R3: restart of a stopped service is refused ---
+ds down ti-api >/dev/null 2>&1
+: > "$TMP/calls.log"
+out=$(ds restart ti-api 2>&1); code=$?
+check "restart of a stopped service exits 1 (got $code)" [ "$code" -eq 1 ]
+check "restart of a stopped service starts nothing" bash -c '! grep -qE "process (start|restart) ti-api" "$1"' _ "$TMP/calls.log"
+ds down >/dev/null 2>&1
+
+# --- R4: a failed down is reported, and the socket is kept ---
+ds up bsa >/dev/null 2>&1
+out=$(STUB_DOWN_FAILS=1 ds down 2>&1); code=$?
+check "failed down exits 1 (got $code: $out)" [ "$code" -eq 1 ]
+check "failed down doesn't claim success" bash -c '! grep -q "stopped everything" <<<"$1"' _ "$out"
+ds down >/dev/null 2>&1
+
+# --- R5: conflicts_with works when only the other side declares it ---
+yq -i 'del(.services."wl-atc".conflicts_with)' "$TMP/ws/stack.yaml"
+ds up tn-web >/dev/null 2>&1
+out=$(ds up wl-atc 2>&1); code=$?
+check "one-sided conflicts_with still refuses (got $code)" [ "$code" -eq 2 ]
 ds down >/dev/null 2>&1
 
 # --- socket path too long ---

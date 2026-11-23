@@ -7,7 +7,8 @@ DS_LIB=${DS_LIB:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}
 # ds_require_tools: exit 3 with an install line for each missing tool.
 ds_require_tools() {
   local missing=() t
-  for t in jq yq process-compose; do
+  local want=("$@"); [ ${#want[@]} -gt 0 ] || want=(jq yq process-compose)
+  for t in "${want[@]}"; do
     command -v "$t" >/dev/null 2>&1 || missing+=("$t")
   done
   [ ${#missing[@]} -eq 0 ] && return 0
@@ -52,8 +53,8 @@ def problems($n; $s):
   (if ($s.command | type) != "string" then "\($n): command: required string" else empty end),
   (if ($s.port | type) != "number" or $s.port < 1 or $s.port > 65535 or ($s.port | floor) != $s.port
      then "\($n): port: must be a number from 1 to 65535" else empty end),
-  (if $s.health == "tcp" or (($s.health | type) == "string" and ($s.health | startswith("http://"))) then empty
-   else "\($n): health: must be tcp or an http:// URL" end),
+  (if $s.health == "tcp" or (($s.health | type) == "string" and ($s.health | test("^http://[^:/?#\\[\\]]+(:[0-9]+)?([/?][^#]*)?$"))) then empty
+   else "\($n): health: must be tcp or an http://host[:port][/path][?query] URL" end),
   ($s | to_entries[] | select(.key as $k | ["depends_on","optional_deps","infra","local_files","conflicts_with"] | index($k))
      | select((.value | type) != "array") | "\($n): \(.key): must be a list"),
   (if ($s.env // {} | type) != "object" then "\($n): env: must be a map" else empty end),

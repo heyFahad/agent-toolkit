@@ -35,4 +35,13 @@ ds_copy_local_files "$TMP/reg2.json" svc "$TMP/wt3" >/dev/null
 check "directory is a symlink" [ -L "$TMP/wt3/config" ]
 check "symlink points at the main checkout" [ "$(readlink "$TMP/wt3/config")" = "$TMP/ws/svc/config" ]
 
+# --- a linked directory is excluded from git status in the worktree ---
+git init -q "$TMP/repo" && (cd "$TMP/repo" && printf 'config/\n' > .gitignore && git add . && git -c user.email=t@t -c user.name=t commit -qm init && git worktree add -q "$TMP/repo-wt" -b wt) 
+mkdir -p "$TMP/repo/config" && echo k > "$TMP/repo/config/key"
+cat > "$TMP/reg3.json" <<JSON
+{"_root": "$TMP", "services": {"svc": {"repo": "repo", "local_files": ["config"]}}, "targets": {}}
+JSON
+ds_copy_local_files "$TMP/reg3.json" svc "$TMP/repo-wt" >/dev/null
+check "linked dir doesn't show as untracked" [ -z "$(git -C "$TMP/repo-wt" status --porcelain)" ]
+
 finish

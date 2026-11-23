@@ -84,7 +84,10 @@ ds_load_registry() {
   reg=$(ds_find_registry) || exit $?
   state=$(ds_state_dir); mkdir -p "$state/logs"
   json=$(ds_registry_json "$reg") || exit $?
-  jq --arg r "$(ds_registry_root "$reg")" '. + {_root: $r}' <<<"$json" > "$state/registry.json"
+  # Written atomically: another session's `up` may be reading it right now.
+  local tmp
+  tmp=$(mktemp "$state/registry.json.XXXXXX")
+  jq --arg r "$(ds_registry_root "$reg")" '. + {_root: $r}' <<<"$json" > "$tmp" && mv "$tmp" "$state/registry.json"
   DS_REG="$state/registry.json"
   DS_SOCK=$(_ds_sock) || exit $?
 }
@@ -112,7 +115,12 @@ _ds_error_lines() { # <svc>: up to 20 error-looking lines of its log
 }
 
 # _ds_crashed <svc>: nodemon reported a crash and is waiting for file changes.
-_ds_crashed() { grep -qE '\[nodemon\] app crashed' "$(ds_state_dir)/logs/$1.log" 2>/dev/null; }
+# Only the latest nodemon state counts: a crash that nodemon has since restarted
+# from ("restarting due to changes", "starting") is history, not a crash.
+_ds_crashed() {
+  grep -E '\[nodemon\] (app crashed|restarting|starting)' "$(ds_state_dir)/logs/$1.log" 2>/dev/null \
+    | tail -1 | grep -q 'app crashed'
+}
 
 # Strip colour codes and cap each line at 300 characters: one minified line
 # mustn't flood an agent. `logs --tail N` reads more when it's needed.
@@ -225,7 +233,8 @@ _ds_up() {
       if [ -n "$cdir" ] && [ "$cdir" = "$dir" ]; then
         ds_die 2 "$svc can't run while $c runs from the same folder ($dir): stop it with devstack down $c, or run $svc from another worktree with --from $svc=<path>"
       fi
-    done < <(_ds_field "$svc" '.conflicts_with[]?')
+    done < <({ _ds_field "$svc" '.conflicts_with[]?'
+               jq -r --arg s "$svc" '.services | to_entries[] | select((.value.conflicts_with // []) | index($s)) | .key' "$DS_REG"; } | sort -u)
     plan+="$svc=$dir"$'\n'
   done <<<"$svcs"
 
@@ -271,6 +280,7 @@ _ds_up() {
     if [ "$(_ds_proc "$ps" "$svc" is_running)" = true ]; then
       # nodemon keeps a crashed app's process alive: restart it, so a fix (a
       # Doppler key, say) is picked up by just running up again.
+      [ "$(_ds_proc "$ps" "$svc" is_ready)" = Ready ] && continue
       _ds_crashed "$svc" || continue
       : > "$(ds_state_dir)/logs/$svc.log"
       _ds_pc process restart "$svc" >/dev/null || ds_die 1 "process-compose couldn't restart $svc"
@@ -340,11 +350,18 @@ cmd_restart() {
   ds_load_registry
   [ -n "$(_ds_field "$svc" .port)" ] || ds_die 2 "unknown service: $svc"
   _ds_lock
+  local ps abs
+  ps=$(_ds_ps)
   if [ -n "$from" ]; then
-    _ds_up "$takeover" "" "$svc=$from" -- "$svc"
-    return
+    abs=$(_ds_abs "$from") || exit $?
+    # Switching folders (or starting a stopped service) goes through up; the
+    # same folder falls through to a plain restart below.
+    if [ "$(_ds_proc "$ps" "$svc" is_running)" != true ] || [ "$(ds_owner_get "$svc")" != "$abs" ]; then
+      _ds_up "$takeover" "" "$svc=$abs" -- "$svc"
+      return
+    fi
   fi
-  _ds_alive || ds_die 1 "$svc isn't running; use devstack up $svc"
+  [ "$(_ds_proc "$ps" "$svc" is_running)" = true ] || ds_die 1 "$svc isn't running; use devstack up $svc"
   : > "$(ds_state_dir)/logs/$svc.log"
   _ds_pc process restart "$svc" >/dev/null || ds_die 1 "process-compose couldn't restart $svc"
   _ds_wait "$svc" || exit 1
@@ -358,7 +375,9 @@ cmd_down() {
   _ds_reach
   f="$(ds_state_dir)/owners.json"
   if [ $# -eq 0 ]; then
-    _ds_alive && _ds_pc down >/dev/null
+    if _ds_alive; then
+      _ds_pc down >/dev/null || ds_die 1 "process-compose down failed; the stack may still be running (check devstack status)"
+    fi
     rm -f "$DS_SOCK"; echo '{}' > "$f"
     echo "stopped everything (Docker containers left running)"
     return
@@ -368,7 +387,7 @@ cmd_down() {
     jq -e --arg s "$svc" 'map(.name) | index($s)' <<<"$ps" >/dev/null || ds_die 2 "unknown service: $svc (not in the running stack)"
   done
   for svc in "$@"; do
-    _ds_pc process stop "$svc" >/dev/null
+    _ds_pc process stop "$svc" >/dev/null || ds_die 1 "process-compose couldn't stop $svc"
     [ -f "$f" ] && jq --arg s "$svc" 'del(.[$s])' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
     echo "stopped $svc"
   done

@@ -61,8 +61,9 @@ ds_service_dir() {
 _DS_PC='
 def probe($s):
   if $s.health == "tcp" then {exec: {command: "nc -z localhost \($s.port)"}}
-  else ($s.health | capture("^http://(?<host>[^:/]+)(:(?<port>[0-9]+))?(?<path>/.*)?$")) as $u
-    | {http_get: {scheme: "http", host: $u.host, port: (($u.port // "80") | tonumber), path: ($u.path // "/")}}
+  else ($s.health | capture("^http://(?<host>[^:/?#]+)(:(?<port>[0-9]+))?(?<path>[/?][^#]*)?$")) as $u
+    | {http_get: {scheme: "http", host: $u.host, port: (($u.port // "80") | tonumber),
+                  path: ($u.path // "/" | if startswith("?") then "/" + . else . end)}}
   end
   + {initial_delay_seconds: 2, period_seconds: 2, timeout_seconds: 2,
      failure_threshold: ((($s.timeout // 120) / 2) | ceil)};
@@ -100,7 +101,7 @@ ds_pc_config() {
     cmds=$(jq -c --arg k "$svc" --arg v "exec bash $(printf %q "$launcher")" '. + {($k): $v}' <<<"$cmds")
     # The revision changes whenever the launcher does, so process-compose sees
     # a new definition and the next up restarts the service.
-    revs=$(jq -c --arg k "$svc" --arg v "$(shasum -a 256 "$launcher" | cut -c1-16)" '. + {($k): $v}' <<<"$revs")
+    revs=$(jq -c --arg k "$svc" --arg v "$(_ds_sha256 "$launcher" | cut -c1-16)" '. + {($k): $v}' <<<"$revs")
   done < <(jq -r '.services | keys[]' "$file")
   rm -f "$state/run/.err"
   jq --argjson cmds "$cmds" --argjson dirs "$dirs" --argjson revs "$revs" --arg state "$state" "$_DS_PC" "$file" \

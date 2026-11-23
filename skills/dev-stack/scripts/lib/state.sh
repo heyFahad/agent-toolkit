@@ -19,6 +19,16 @@ ds_owner_set() {
   jq --arg s "$1" --arg d "$2" '. + {($s): $d}' "$f" > "$tmp" && mv "$tmp" "$f"
 }
 
+# _ds_git_exclude <dir> <path>: keep a linked path out of `git status` there.
+# An ignore rule like `config/` matches directories only, not a symlink to one.
+_ds_git_exclude() {
+  local ex
+  ex=$(git -C "$1" rev-parse --git-path info/exclude 2>/dev/null) || return 0
+  case $ex in /*) ;; *) ex="$1/$ex" ;; esac
+  mkdir -p "$(dirname "$ex")"
+  grep -qxF "/$2" "$ex" 2>/dev/null || echo "/$2" >> "$ex"
+}
+
 # ds_copy_local_files <registry_json_file> <svc> <dir>: bring each listed local
 # file missing from <dir> over from the main checkout: files are copied,
 # directories symlinked. Never overwrites.
@@ -35,6 +45,7 @@ ds_copy_local_files() {
       # A directory (say, a gitignored config/ with keys) is linked, so
       # credentials aren't duplicated into every worktree.
       ln -s "$main/$f" "$dir/$f" && echo "linked $f to $main/$f"
+      _ds_git_exclude "$dir" "$f"
     else
       cp -p "$main/$f" "$dir/$f" && echo "copied $f from $main"
     fi

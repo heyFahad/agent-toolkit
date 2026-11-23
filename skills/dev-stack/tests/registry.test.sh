@@ -58,6 +58,11 @@ printf 'services:\n  s:\n%s\n    conflicts_with: other\ntargets: {}\n' "$valid_s
 out=$(. "$LIB/registry.sh" && ds_registry_json "$TMP/badconf.yaml" 2>&1); code=$?
 check "conflicts_with must be a list (got $code)" [ "$code" -eq 2 ]
 
+# --- a health URL the probe can't use is refused up front ---
+printf 'services:\n  bad-url:\n%s\ntargets: {}\n' "${valid_service/health: tcp/health: http://[::1]:3010/health}" > "$TMP/badurl.yaml"
+out=$(. "$LIB/registry.sh" && ds_registry_json "$TMP/badurl.yaml" 2>&1); code=$?
+check "unusable health URL exits 2 (got $code)" [ "$code" -eq 2 ]
+
 # --- a valid registry loads as JSON ---
 got=$(. "$LIB/registry.sh" && ds_registry_json "$TMP/ws/stack.yaml" | jq -r '.services.s.port')
 check "valid registry loads (got '$got')" [ "$got" = 3010 ]

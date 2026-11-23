@@ -109,6 +109,12 @@ check "its launcher fails with the reason (got $code: $out)" bash -c '[ "$1" -ne
 echo 22.16.0 > "$TMP/ws/env/.nvmrc"
 ds_pc_config "$TMP/reg.json" "$TMP/state"
 
+# --- a health URL with a query string keeps its service and its query ---
+jq '.services.bsa.health = "http://localhost:3010?ready=1"' "$TMP/reg.json" > "$TMP/reg3.json"
+ds_pc_config "$TMP/reg3.json" "$TMP/state"
+check "query-string health keeps the service" [ "$(yq -r '.processes.bsa.readiness_probe.http_get.path' "$TMP/state/process-compose.yaml")" = "/?ready=1" ]
+ds_pc_config "$TMP/reg.json" "$TMP/state"
+
 # --- an owner overrides working_dir ---
 echo "{\"bsa\": \"$TMP/wt\"}" > "$TMP/state/owners.json"
 mkdir -p "$TMP/wt" && echo 22.16.0 > "$TMP/wt/.nvmrc"

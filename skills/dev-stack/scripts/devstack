@@ -31,7 +31,7 @@ cmd=${1:-}
 shift
 case $cmd in
   up|status|logs|restart|down|urls|attach|ports)
-    ds_require_tools
+    if [ "$cmd" = ports ]; then ds_require_tools jq yq; else ds_require_tools; fi
     fn="cmd_$cmd"
     if declare -F "$fn" >/dev/null; then "$fn" "$@"; else ds_die 2 "$cmd: not implemented yet"; fi
     ;;

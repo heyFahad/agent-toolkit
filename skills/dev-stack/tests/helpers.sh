@@ -38,6 +38,9 @@ stub_bin() {
   chmod +x "$TMP/bin/$1"
 }
 
+# sedi <sed args...> <file>: in-place edit that works with BSD (macOS) and GNU sed.
+sedi() { local f=${*: -1}; sed -i.bak "$@" && rm -f "$f.bak"; }
+
 finish() {
   echo "$(basename "$0" .test.sh): $pass passed, $fail failed"
   [ "$fail" -eq 0 ]
