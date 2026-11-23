@@ -359,6 +359,18 @@ out=$(ds up wl-atc 2>&1); code=$?
 check "one-sided conflicts_with still refuses (got $code)" [ "$code" -eq 2 ]
 ds down >/dev/null 2>&1
 
+# --- C2: each command reads its own registry snapshot and leaves none behind ---
+ds status >/dev/null 2>&1
+check "no registry snapshots left behind" [ -z "$(ls "$DEVSTACK_STATE_DIR"/registry* 2>/dev/null)" ]
+
+# --- C3: a selected optional dependency is healthy before its dependant starts ---
+yq -i '.services.naia = {"repo": "bsa", "node": "nvmrc", "doppler": "none", "command": "true", "port": 4010, "health": "tcp", "timeout": 2} | .services."connect-api".optional_deps = ["naia"]' "$TMP/ws/stack.yaml"
+ds down >/dev/null 2>&1; : > "$TMP/calls.log"
+out=$(STUB_NEVER_READY=naia ds up connect-api --with naia 2>&1); code=$?
+check "unhealthy optional dep fails the run (got $code)" [ "$code" -eq 1 ]
+check "its dependant isn't started (calls: $(grep -c 'process start' "$TMP/calls.log"))" bash -c '! grep -q "process start connect-api" "$1"' _ "$TMP/calls.log"
+ds down >/dev/null 2>&1
+
 # --- socket path too long ---
 out=$(DEVSTACK_STATE_DIR="$TMP/$(printf 'x%.0s' {1..110})" ds status 2>&1); code=$?
 check "too-long socket path exits 2 (got $code)" [ "$code" -eq 2 ]

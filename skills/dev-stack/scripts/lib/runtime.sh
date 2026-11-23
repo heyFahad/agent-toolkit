@@ -62,16 +62,25 @@ _ds_lock() {
   until mkdir "$lock" 2>/dev/null; do
     holder=$(cat "$lock/pid" 2>/dev/null)
     if [ -n "$holder" ] && ! kill -0 "$holder" 2>/dev/null; then
-      rm -rf "$lock"; continue   # its owner died: stale
+      # Its owner died. Reclaim under a guard, and only if the lock still names
+      # that same dead pid, so two waiters can't delete each other's new lock.
+      if mkdir "$lock.reclaim" 2>/dev/null; then
+        [ "$(cat "$lock/pid" 2>/dev/null)" = "$holder" ] && rm -rf "$lock"
+        rmdir "$lock.reclaim"
+      fi
+      continue
     fi
     [ "$waited" -eq 0 ] && echo "devstack: waiting for another devstack command (pid ${holder:-?})" >&2
     [ "$waited" -ge "$max" ] && ds_die 1 "another devstack command is still running (pid ${holder:-?}); try again later"
     sleep 1; waited=$((waited + 1))
   done
   echo $$ > "$lock/pid"
-  trap '_ds_unlock' EXIT
+  trap _ds_exit EXIT
 }
 _ds_unlock() { local lock; lock="$(ds_state_dir)/lock"; [ "$(cat "$lock/pid" 2>/dev/null)" = $$ ] && rm -rf "$lock"; }
+
+# _ds_exit: the one EXIT trap: release the lock and drop this command's snapshot.
+_ds_exit() { _ds_unlock; [ -n "${DS_REG:-}" ] && rm -f "$DS_REG"; return 0; }
 
 # _ds_check_name <svc>: a plain service name (it becomes a file name).
 _ds_check_name() { [[ $1 =~ ^[a-z0-9][a-z0-9-]*$ ]] || ds_die 2 "not a service name: $1"; }
@@ -84,11 +93,11 @@ ds_load_registry() {
   reg=$(ds_find_registry) || exit $?
   state=$(ds_state_dir); mkdir -p "$state/logs"
   json=$(ds_registry_json "$reg") || exit $?
-  # Written atomically: another session's `up` may be reading it right now.
-  local tmp
-  tmp=$(mktemp "$state/registry.json.XXXXXX")
-  jq --arg r "$(ds_registry_root "$reg")" '. + {_root: $r}' <<<"$json" > "$tmp" && mv "$tmp" "$state/registry.json"
-  DS_REG="$state/registry.json"
+  # A snapshot per command: another session loading an edited or different
+  # registry mid-run can't change what this command sees.
+  DS_REG=$(mktemp "$state/registry.XXXXXX")
+  trap _ds_exit EXIT
+  jq --arg r "$(ds_registry_root "$reg")" '. + {_root: $r}' <<<"$json" > "$DS_REG"
   DS_SOCK=$(_ds_sock) || exit $?
 }
 
@@ -286,6 +295,16 @@ _ds_up() {
       _ds_pc process restart "$svc" >/dev/null || ds_die 1 "process-compose couldn't restart $svc"
       continue
     fi
+    # process-compose only orders required deps; an optional one picked with
+    # --with has to be healthy before its dependant starts.
+    local d dout
+    while IFS= read -r d; do
+      [ -n "$d" ] && grep -qFx "$d" <<<"$svcs" || continue
+      if ! dout=$(_ds_wait "$d"); then
+        echo "$dout"
+        ds_die 1 "$svc wasn't started: its dependency $d isn't healthy"
+      fi
+    done < <(_ds_field "$svc" '.optional_deps[]?')
     : > "$(ds_state_dir)/logs/$svc.log"   # a fresh log per start: old crashes mustn't count
     _ds_pc process start "$svc" >/dev/null || ds_die 1 "process-compose couldn't start $svc"
     grep -qFx "$svc" <<<"$svcs" || echo "restarted $svc (its registry entry changed)" >&2
@@ -304,15 +323,16 @@ cmd_status() {
   while IFS= read -r n; do
     [ -n "$n" ] && _ds_crashed "$n" && crashed=$(jq -c --arg n "$n" '. + [$n]' <<<"$crashed")
   done < <(jq -r '.[] | select(.is_ready != "Ready" and .is_running == true) | .name' <<<"$ps")
-  jq -c --slurpfile reg "$DS_REG" --argjson crashed "$crashed" --slurpfile own <(cat "$(ds_state_dir)/owners.json" 2>/dev/null || echo '{}') '
+  local rows
+  rows=$(jq -c --slurpfile reg "$DS_REG" --argjson crashed "$crashed" --slurpfile own <(cat "$(ds_state_dir)/owners.json" 2>/dev/null || echo '{}') '
     map(select(.status != "Disabled"))
     | map({name, status: (if (.name as $n | $crashed | index($n)) then "Crashed"
                           elif (.is_running != true and .status == "Completed") then "Stopped" else .status end),
            ready: .is_ready, port: $reg[0].services[.name].port,
-           dir: ($own[0][.name] // ($reg[0]._root + "/" + $reg[0].services[.name].repo))})' <<<"$ps" > "$(ds_state_dir)/status.json"
-  if [ $json = 1 ]; then cat "$(ds_state_dir)/status.json"; return; fi
-  if [ "$(jq length "$(ds_state_dir)/status.json")" = 0 ]; then echo "nothing running"; return; fi
-  jq -r '.[] | [.name, (.port|tostring), (if .ready == "Ready" then "Ready" else .status end), .dir] | @tsv' "$(ds_state_dir)/status.json" \
+           dir: ($own[0][.name] // ($reg[0]._root + "/" + $reg[0].services[.name].repo))})' <<<"$ps")
+  if [ $json = 1 ]; then echo "$rows"; return; fi
+  if [ "$(jq length <<<"$rows")" = 0 ]; then echo "nothing running"; return; fi
+  jq -r '.[] | [.name, (.port|tostring), (if .ready == "Ready" then "Ready" else .status end), .dir] | @tsv' <<<"$rows" \
     | while IFS=$'\t' read -r n p s d; do printf '%-16s %-5s %-10s %s\n' "$n" "$p" "$s" "$d"; done
 }
 

@@ -58,7 +58,8 @@ def problems($n; $s):
   ($s | to_entries[] | select(.key as $k | ["depends_on","optional_deps","infra","local_files","conflicts_with"] | index($k))
      | select((.value | type) != "array") | "\($n): \(.key): must be a list"),
   (if ($s.env // {} | type) != "object" then "\($n): env: must be a map" else empty end),
-  (if ($s.timeout // 120 | type) != "number" then "\($n): timeout: must be seconds" else empty end);
+  (($s.timeout // 120) as $t | if ($t | type) != "number" or $t < 1 or ($t | floor) != $t
+     then "\($n): timeout: must be a whole number of seconds, 1 or more" else empty end);
 if (.services | type) != "object" then "registry: services: required map"
 else (.services | to_entries[] | problems(.key; .value)),
      (.services | keys[] | select(test("^[a-z0-9][a-z0-9-]*$") | not)
