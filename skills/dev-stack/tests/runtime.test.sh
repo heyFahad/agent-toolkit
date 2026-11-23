@@ -14,6 +14,7 @@ set_proc() { # name status ready running
   printf "{\"name\":\"%s\",\"status\":\"%s\",\"is_ready\":\"%s\",\"is_running\":%s,\"pid\":%s}" \
     "$1" "$2" "$3" "$4" "$( [ "$4" = true ] && echo 100 || echo 0)" > "$PCS/procs/$(proc "$1").json"
 }
+[ -n "${STUB_SANDBOX:-}" ] && { echo "dial unix $PCS/x.sock: connect: operation not permitted" >&2; exit 1; }
 case "$args" in
   *" up "*) touch "$PCS/alive"; yq -o=json . "$(sed -E "s/.* -f ([^ ]+).*/\1/" <<<"$args")" > "$PCS/cfg.json" ;;
   *" project state "*) [ -f "$PCS/alive" ] ;;
@@ -37,7 +38,7 @@ case "$args" in
     if [[ " ${STUB_NEVER_READY:-} " == *" $n "* ]]; then set_proc "$n" Running "Not Ready" true
     else set_proc "$n" Running Ready true; fi ;;
   *" process stop "*)
-    n=$(sed -E "s/.* process stop ([^ ]+).*/\1/" <<<"$args"); set_proc "$n" Disabled - false ;;
+    n=$(sed -E "s/.* process stop ([^ ]+).*/\1/" <<<"$args"); set_proc "$n" Completed - false ;;
   *" down "*) rm -f "$PCS/alive" "$PCS"/procs/*.json ;;
   *" attach "*) echo attached ;;
   *) exit 1 ;;
@@ -301,6 +302,21 @@ check "refusal starts nothing" bash -c '! grep -q "process start" "$1"' _ "$TMP/
 mkdir -p "$TMP/wt-tn" && echo 22.16.0 > "$TMP/wt-tn/.nvmrc"
 out=$(ds up tn-web --from "tn-web=$TMP/wt-tn" 2>&1); code=$?
 check "from another folder it's allowed (got $code: $out)" [ "$code" -eq 0 ]
+ds down >/dev/null 2>&1
+
+# --- S1: a sandbox that blocks the socket isn't reported as "nothing running" ---
+ds up bsa >/dev/null 2>&1
+out=$(STUB_SANDBOX=1 ds status 2>&1); code=$?
+check "blocked socket exits 1 (got $code: $out)" [ "$code" -eq 1 ]
+check "blocked socket says why" grep -q "can't reach the devstack server" <<<"$out"
+check "blocked socket isn't 'nothing running'" bash -c '! grep -q "nothing running" <<<"$1"' _ "$out"
+
+# --- S2: a service stopped with down shows Stopped, not Crashed ---
+ds down >/dev/null 2>&1
+STUB_START_LOG='[nodemon] app crashed - waiting\n' STUB_NEVER_READY=ti-api ds up ti-api >/dev/null 2>&1
+ds down ti-api >/dev/null 2>&1
+out=$(ds status 2>&1)
+check "stopped service isn't Crashed (got: $out)" bash -c '! grep -qE "^ti-api .*Crashed" <<<"$1"' _ "$out"
 ds down >/dev/null 2>&1
 
 # --- socket path too long ---

@@ -11,6 +11,8 @@ metadata:
 
 Prerequisites: `jq`, `yq` and `process-compose` (`brew install f1bonacc1/tap/process-compose`). If one is missing, every command says which and exits 3. Don't install it yourself: tell the user the line.
 
+In a sandbox, devstack needs to reach its unix socket and write to its state folder (`~/.local/state/devstack`). In Codex that means `sandbox_workspace_write.network_access = true` and the state folder in `sandbox_workspace_write.writable_roots`. Without them it says so instead of guessing.
+
 ## Commands
 
 | Command | Use it to |

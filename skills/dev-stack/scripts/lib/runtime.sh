@@ -22,7 +22,18 @@ _ds_sock() {
   echo "$s"
 }
 _ds_pc() { process-compose "$@" -U -u "$DS_SOCK" 2>/dev/null; }
-_ds_alive() { _ds_pc project state >/dev/null; }
+_ds_alive() {
+  local out
+  out=$(process-compose project state -U -u "$DS_SOCK" 2>&1) && return 0
+  # A sandbox (Codex's, say) that blocks the socket isn't "nothing running".
+  if grep -q "operation not permitted" <<<"$out"; then
+    ds_die 1 "can't reach the devstack server at $DS_SOCK: this sandbox blocks the connection. Allow network access and writes to $(ds_state_dir) (in Codex: sandbox_workspace_write.network_access = true and writable_roots)"
+  fi
+  return 1
+}
+# _ds_reach: run in the main shell (not inside $(...)) so a blocked socket
+# ends the command with exit 1 instead of reading as "nothing running".
+_ds_reach() { _ds_alive >/dev/null || true; }
 _ds_ps() { if _ds_alive; then _ds_pc process list -o json; else echo '[]'; fi; }
 
 # _ds_server_ensure: apply the generated config to the running server, or start one.
@@ -189,6 +200,7 @@ _ds_up() {
   done
   _from_of() { local f; for f in "${froms[@]+"${froms[@]}"}"; do [ "${f%%=*}" = "$1" ] && { _ds_abs "${f#*=}"; return; }; done; return 0; }
 
+  _ds_reach
   ps=$(_ds_ps)
   # Pass 1: decide each service's directory; refuse before changing anything.
   local plan=""
@@ -277,13 +289,15 @@ cmd_status() {
   [ "${1:-}" = --json ] && json=1
   ds_load_registry
   local ps n crashed='[]'
+  _ds_reach
   ps=$(_ds_ps)
   while IFS= read -r n; do
     [ -n "$n" ] && _ds_crashed "$n" && crashed=$(jq -c --arg n "$n" '. + [$n]' <<<"$crashed")
-  done < <(jq -r '.[] | select(.is_ready != "Ready") | .name' <<<"$ps")
+  done < <(jq -r '.[] | select(.is_ready != "Ready" and .is_running == true) | .name' <<<"$ps")
   jq -c --slurpfile reg "$DS_REG" --argjson crashed "$crashed" --slurpfile own <(cat "$(ds_state_dir)/owners.json" 2>/dev/null || echo '{}') '
     map(select(.status != "Disabled"))
-    | map({name, status: (if (.name as $n | $crashed | index($n)) then "Crashed" else .status end),
+    | map({name, status: (if (.name as $n | $crashed | index($n)) then "Crashed"
+                          elif (.is_running != true and .status == "Completed") then "Stopped" else .status end),
            ready: .is_ready, port: $reg[0].services[.name].port,
            dir: ($own[0][.name] // ($reg[0]._root + "/" + $reg[0].services[.name].repo))})' <<<"$ps" > "$(ds_state_dir)/status.json"
   if [ $json = 1 ]; then cat "$(ds_state_dir)/status.json"; return; fi
@@ -341,6 +355,7 @@ cmd_down() {
   local f svc ps
   for svc in "$@"; do _ds_check_name "$svc"; done
   _ds_lock
+  _ds_reach
   f="$(ds_state_dir)/owners.json"
   if [ $# -eq 0 ]; then
     _ds_alive && _ds_pc down >/dev/null
@@ -362,6 +377,7 @@ cmd_down() {
 cmd_urls() {
   ds_load_registry
   local ps
+  _ds_reach
   ps=$(_ds_ps)
   jq -r --slurpfile reg "$DS_REG" '
     map(select(.is_running == true)) | map($reg[0].services[.name].port as $p | {name, p: ($p|tostring)})
