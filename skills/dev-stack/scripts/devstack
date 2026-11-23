@@ -12,8 +12,8 @@ while [ -L "$src" ]; do
 done
 DS_LIB="$(cd "$(dirname "$src")" && pwd)/lib"
 export DS_LIB
-# shellcheck source=lib/registry.sh
-. "$DS_LIB/registry.sh"
+# shellcheck source=lib/runtime.sh
+. "$DS_LIB/runtime.sh"
 
 usage() {
   cat <<'USAGE'
