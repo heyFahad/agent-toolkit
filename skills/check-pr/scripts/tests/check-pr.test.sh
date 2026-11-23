@@ -35,6 +35,7 @@ out() {
 case "$1 ${2:-}" in
   "auth token") echo "${GH_TOKEN:-${GITHUB_TOKEN:-stub-token}}"; exit 0 ;;
   "repo view") echo o/r; exit 0 ;;
+  "pr edit") exit 0 ;;
 esac
 all="$*"
 case "$all" in
@@ -46,6 +47,13 @@ case "$all" in
   *latestOpinionatedReviews*) out "$FX/prinfo.json" ;;
   *statusCheckRollup*) out "$FX/checks.json" ;;
   *reviewRequests*) out "$FX/copilot.json" ;;
+  *timelineItems*)
+    # The Nth read answers from timeline-N.json, or timeline.json without one,
+    # so a test can make an event show up late.
+    n=$(($(cat "$FX/timeline.count" 2>/dev/null || echo 0) + 1))
+    echo "$n" >"$FX/timeline.count"
+    if [ -f "$FX/timeline-$n.json" ]; then out "$FX/timeline-$n.json"; else out "$FX/timeline.json"; fi
+    ;;
   *defaultBranchRef*) out "$FX/pulls.json" ;;
   *"/compare/"*)
     range=${all#*/compare/}
@@ -440,6 +448,55 @@ run copilot-review.sh -R o/r 12
 check "fallback: current review, nothing to answer, comments not read" 0 "$(calls 'graphql --paginate')"
 check "fallback: no comments read, no marker" '[false,null,null]' \
   "$(q '[.fallbackReviewedHead, .fallbackLastHead, .fallbackReviewer]')"
+
+# -------------------------------------------------------------- request-copilot
+# request-copilot.sh requests Copilot, then reads the timeline until a request
+# event dated after the request shows up, or gives up: Copilot declined.
+export CHECK_PR_REQUEST_DELAY=0
+# timeline_fixture FILE EVENT_AT: a timeline with one Copilot request event at
+# EVENT_AT, or none when it's "".
+timeline_fixture() {
+  jq -n --arg at "$2" '{data: {repository: {pullRequest: {timelineItems: {nodes:
+    (if $at == "" then [] else [{createdAt: $at, requestedReviewer: {__typename: "Bot", login: "copilot-pull-request-reviewer"}}] end)}}}}}' >"$1"
+}
+NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+reset_timeline() { rm -f "$FX"/timeline*.json "$FX/timeline.count"; }
+
+reset_timeline
+timeline_fixture "$FX/timeline.json" "$NOW"
+run request-copilot.sh -R o/r 12
+check "request: event on the first read" '[[12,true]]' "$(q '[.[] | [.pr, .accepted]]')"
+check "request: one request with @copilot" 1 "$(calls 'pr edit -R o/r 12 --add-reviewer @copilot')"
+check "request: one timeline read" 1 "$(calls timelineItems)"
+
+reset_timeline
+timeline_fixture "$FX/timeline-1.json" ""
+timeline_fixture "$FX/timeline-2.json" ""
+timeline_fixture "$FX/timeline.json" "$NOW"
+run request-copilot.sh -R o/r 12
+check "request: event lags to the third read" '[[12,true],3]' "$(printf '[%s,%s]' "$(q '[.[] | [.pr, .accepted]][0]')" "$(calls timelineItems)")"
+
+reset_timeline
+timeline_fixture "$FX/timeline.json" ""
+run request-copilot.sh -R o/r 12
+check "request: no event within the window (declined)" '[[12,false],6]' "$(printf '[%s,%s]' "$(q '[.[] | [.pr, .accepted]][0]')" "$(calls timelineItems)")"
+check "request: requestedAt is an ISO time" true "$(q '.[0].requestedAt | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z$")')"
+
+reset_timeline
+timeline_fixture "$FX/timeline.json" 2000-01-01T00:00:00Z
+run request-copilot.sh -R o/r 12
+check "request: an event from before the request does not count" '[[12,false]]' "$(q '[.[] | [.pr, .accepted]]')"
+
+reset_timeline
+timeline_fixture "$FX/timeline.json" "$NOW"
+run request-copilot.sh -R o/r 12 13
+check "request: two PRs, one entry each" '[[12,true],[13,true]]' "$(q '[.[] | [.pr, .accepted]]')"
+check "request: two PRs, one call each" 2 "$(calls 'pr edit')"
+
+run request-copilot.sh -R o/r 12 x
+check "request: non-number PR exits 2" 2 "$CODE"
+check "request: nothing requested on bad usage" 0 "$(calls 'pr edit')"
+unset CHECK_PR_REQUEST_DELAY
 
 # ----------------------------------------------------------------- reply-thread
 echo '{"data":{"addPullRequestReviewThreadReply":{"comment":{"url":"https://example.test/reply"}}}}' >"$FX/reply.json"
