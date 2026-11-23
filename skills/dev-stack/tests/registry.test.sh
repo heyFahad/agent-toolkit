@@ -11,11 +11,11 @@ valid_service='    repo: svc
     health: tcp'
 
 # --- missing_tools_exit_3: no yq on PATH ---
+# A PATH holding only what devstack needs besides yq (CI runners ship /usr/bin/yq).
 mkdir -p "$TMP/noyq"
-for t in jq process-compose; do
-  p=$(command -v "$t") && ln -s "$p" "$TMP/noyq/$t"
-done
-out=$(PATH="$TMP/noyq:/usr/bin:/bin" bash "$DEVSTACK" status 2>&1); code=$?
+for t in jq dirname readlink; do ln -s "$(command -v "$t")" "$TMP/noyq/$t"; done
+printf '#!/bin/sh\nexit 0\n' > "$TMP/noyq/process-compose" && chmod +x "$TMP/noyq/process-compose"
+out=$(PATH="$TMP/noyq" "$BASH" "$DEVSTACK" status 2>&1); code=$?
 check "missing yq exits 3 (got $code)" [ "$code" -eq 3 ]
 check "missing yq prints the install line" grep -q "brew install yq" <<<"$out"
 
@@ -62,6 +62,13 @@ check "conflicts_with must be a list (got $code)" [ "$code" -eq 2 ]
 printf 'services:\n  bad-url:\n%s\ntargets: {}\n' "${valid_service/health: tcp/health: http://[::1]:3010/health}" > "$TMP/badurl.yaml"
 out=$(. "$LIB/registry.sh" && ds_registry_json "$TMP/badurl.yaml" 2>&1); code=$?
 check "unusable health URL exits 2 (got $code)" [ "$code" -eq 2 ]
+
+# --- timeout must be a positive whole number of seconds ---
+for bad in 0.5 0 -3; do
+  printf 'services:\n  t:\n%s\n    timeout: %s\ntargets: {}\n' "$valid_service" "$bad" > "$TMP/badtimeout.yaml"
+  out=$(. "$LIB/registry.sh" && ds_registry_json "$TMP/badtimeout.yaml" 2>&1); code=$?
+  check "timeout $bad exits 2 (got $code)" [ "$code" -eq 2 ]
+done
 
 # --- a valid registry loads as JSON ---
 got=$(. "$LIB/registry.sh" && ds_registry_json "$TMP/ws/stack.yaml" | jq -r '.services.s.port')
