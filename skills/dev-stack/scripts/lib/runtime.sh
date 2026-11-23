@@ -94,6 +94,11 @@ _ds_wait() {
       if [ "$running" != true ] && [ "$status" != Pending ] && [ "$status" != Launching ] && [ "$status" != Restarting ]; then
         _ds_line "$svc" "${status:-Stopped}" ""; _ds_error_lines "$svc"; failed=1; break
       fi
+      # nodemon keeps a crashed app's process alive ("waiting for file changes"),
+      # so the process never exits: read the log to fail now, not at the timeout.
+      if grep -qE '\[nodemon\] app crashed' "$(ds_state_dir)/logs/$svc.log" 2>/dev/null; then
+        _ds_line "$svc" Crashed ""; _ds_error_lines "$svc"; failed=1; break
+      fi
       if [ "$now" -ge "$deadline" ]; then
         _ds_line "$svc" "NotReady" ""; _ds_error_lines "$svc"; failed=1; break
       fi
@@ -174,6 +179,7 @@ _ds_up() {
   ds_pc_config "$DS_REG" "$(ds_state_dir)"
   _ds_server_ensure
   for svc in "${todo[@]+"${todo[@]}"}"; do
+    : > "$(ds_state_dir)/logs/$svc.log"   # a fresh log per start: old crashes mustn't count
     _ds_pc process start "$svc" >/dev/null || ds_die 1 "process-compose couldn't start $svc"
   done
   # shellcheck disable=SC2086 # one word per service
@@ -231,6 +237,7 @@ cmd_restart() {
     return
   fi
   _ds_alive || ds_die 1 "$svc isn't running; use devstack up $svc"
+  : > "$(ds_state_dir)/logs/$svc.log"
   _ds_pc process restart "$svc" >/dev/null || ds_die 1 "process-compose couldn't restart $svc"
   _ds_wait "$svc" || exit 1
 }

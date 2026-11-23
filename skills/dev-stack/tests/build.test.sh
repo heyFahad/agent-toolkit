@@ -68,6 +68,11 @@ check "working_dir defaults to the repo" [ "$(jq -r '.processes.bsa.working_dir'
 check "log per service" [ "$(jq -r '.processes.bsa.log_location' <<<"$cfg")" = "$TMP/state/logs/bsa.log" ]
 check "timeout sets failure_threshold" [ "$(jq -r '.processes."ti-api".readiness_probe.failure_threshold' <<<"$cfg")" = 30 ]
 
+# --- logs are plain text, flushed per line (a short crash must reach the log) ---
+check "log flushes each line" [ "$(jq -r '.processes.bsa.log_configuration.flush_each_line' <<<"$cfg")" = true ]
+check "log is plain text" [ "$(jq -r '.processes.bsa.log_configuration.disable_json' <<<"$cfg")" = true ]
+check "log has no colour codes" [ "$(jq -r '.processes.bsa.log_configuration.no_color' <<<"$cfg")" = true ]
+
 # --- launcher scripts: no shell escaping inside the YAML (process-compose rejects it) ---
 check "command runs a launcher script" [ "$(jq -r '.processes.envy.command' <<<"$cfg")" = "exec bash $TMP/state/run/envy.sh" ]
 check "launcher has no backslash escapes in the config" bash -c '! grep -q "\\\\" "$1"' _ "$TMP/state/process-compose.yaml"

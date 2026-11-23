@@ -23,6 +23,7 @@ case "$args" in
     cat "$PCS"/procs/*.json 2>/dev/null | jq -s . ;;
   *" process start "*|*" process restart "*)
     n=$(sed -E "s/.* process (start|restart) ([^ ]+).*/\2/" <<<"$args")
+    [ -n "${STUB_START_LOG:-}" ] && printf "%b" "$STUB_START_LOG" >> "$DEVSTACK_STATE_DIR/logs/$n.log"
     if [[ " ${STUB_NEVER_READY:-} " == *" $n "* ]]; then set_proc "$n" Running "Not Ready" true
     else set_proc "$n" Running Ready true; fi ;;
   *" process stop "*)
@@ -147,11 +148,25 @@ ds down >/dev/null 2>&1
 
 # --- unhealthy_prints_errors ---
 mkdir -p "$DEVSTACK_STATE_DIR/logs"
-{ seq 1 40 | sed 's/^/ERROR line /'; } > "$DEVSTACK_STATE_DIR/logs/connect-api.log"
-out=$(STUB_NEVER_READY=connect-api ds up connect-api 2>&1); code=$?
+out=$(STUB_NEVER_READY=connect-api STUB_START_LOG="$(seq 1 40 | sed 's/^/ERROR line /' | tr '\n' '|' | sed 's/|/\\n/g')" ds up connect-api 2>&1); code=$?
 check "unhealthy exits 1 (got $code)" [ "$code" -eq 1 ]
 check "unhealthy shows at most 20 log lines" [ "$(grep -c 'ERROR line' <<<"$out")" -le 20 ]
 check "unhealthy shows some log lines" grep -q "ERROR line 40" <<<"$out"
+
+# --- crash_line_fails_fast: nodemon keeps a crashed app "running" ---
+ds down >/dev/null 2>&1
+start=$(date +%s)
+out=$(STUB_NEVER_READY=ti-api STUB_START_LOG='starting\nInvalid environment variables: ITERABLE_API_KEY\n[nodemon] app crashed - waiting for file changes before starting...\n' ds up ti-api 2>&1); code=$?
+check "crashed app exits 1 (got $code)" [ "$code" -eq 1 ]
+check "crashed app fails fast" [ $(( $(date +%s) - start )) -le 5 ]
+check "crashed app shows the cause" grep -q "ITERABLE_API_KEY" <<<"$out"
+ds down >/dev/null 2>&1
+
+# --- an old crash in the log doesn't fail a fresh start ---
+printf '[nodemon] app crashed - waiting for file changes\n' > "$DEVSTACK_STATE_DIR/logs/connect-api.log"
+out=$(STUB_NEVER_READY=connect-api ds up connect-api 2>&1)
+check "old crash line isn't read as a new crash (got: $out)" bash -c '! grep -q Crashed <<<"$1"' _ "$out"
+ds down >/dev/null 2>&1
 
 # --- socket path too long ---
 out=$(DEVSTACK_STATE_DIR="$TMP/$(printf 'x%.0s' {1..110})" ds status 2>&1); code=$?
