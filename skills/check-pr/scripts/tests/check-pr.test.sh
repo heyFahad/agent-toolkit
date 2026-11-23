@@ -829,11 +829,18 @@ run pr-gate.sh -R o/r 12
 check "gate: partial parse detail" '"the Copilot review body lists 1 previously missed issue(s) with no thread: 1 High; the section announces more than could be parsed, so read the review body for the rest"' \
   "$(q '.blocking[0].detail')"
 
-# A fallback review of the head stands in for a stale Copilot review.
+# A fallback review of the head stands in for a stale Copilot review. CI
+# reports the same head, H40.
+# ci_head SHA: point the CI fixture's head at SHA.
+ci_head() {
+  jq --arg h "$1" '.data.repository.pullRequest.headRefOid = $h' "$FX/checks.json" >"$FX/k2.json" && mv "$FX/k2.json" "$FX/checks.json"
+}
+ci_head "$H40"
 fallback_fixture "<!-- check-pr: fallback review by codex of $H40 -->"
 run pr-gate.sh -R o/r 12
 check "gate: stale review but fallback covers the head" '["codex",false]' \
   "$(q '[.reviewer, ([.warnings[].reason] | index("copilot-stale") != null)]')"
+check "gate: a fallback review of the head leaves the gate clean" '[true,[]]' "$(q '[.clean, [.blocking[].reason]]')"
 fallback_fixture "<!-- check-pr: fallback review by codex of $OLD40 -->"
 run pr-gate.sh -R o/r 12
 check "gate: stale, no fallback of the head" '[null,true]' \
@@ -841,10 +848,12 @@ check "gate: stale, no fallback of the head" '[null,true]' \
 
 # A push between the Copilot and CI lookups leaves them describing different
 # heads: the review can't be credited to the head CI reports.
+ci_head head2
 fallback_fixture "<!-- check-pr: fallback review by codex of $H40 -->"
 run pr-gate.sh -R o/r 12
 check "gate: review and CI on different heads block" '[false,true]' \
   "$(q '[.clean, ([.blocking[].reason] | index("head-moved") != null)]')"
+check "gate: heads differ, so nobody is credited with reviewing CI's head" null "$(q .reviewer)"
 
 echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]

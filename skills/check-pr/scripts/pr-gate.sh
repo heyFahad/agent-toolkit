@@ -24,7 +24,8 @@
 #
 # Prints JSON: {repo, pr, headOid, clean, reviewer, blocking: [{reason, detail}], warnings: [{reason, detail}]}
 # reviewer says who reviewed the head commit: "copilot", "codex" or
-# "diff-review" (a fallback review's marker comment), or null for nobody yet.
+# "diff-review" (a fallback review's marker comment), or null for nobody yet,
+# and null when the head moved between lookups.
 # Exit codes: 0 clean, 1 not clean, 2 bad usage or a failed lookup.
 # shellcheck source-path=SCRIPTDIR source=lib.sh
 . "$(dirname "$0")/lib.sh"
@@ -91,7 +92,8 @@ RESULT=$(jq -n --arg repo "$REPO" --argjson pr "$PR" \
         detail: "Copilot suppressed \($copilot.lowConfidence | length) low-confidence comment(s) in its review body"} else empty end),
       (if $p.isDraft then {reason: "draft", detail: "the PR is a draft"} else empty end)
     ] as $warnings
-  | (if $copilot.review != null and ($copilot.stale | not) then "copilot"
+  | (if $copilot.headOid != $ci.headOid then null
+     elif $copilot.review != null and ($copilot.stale | not) then "copilot"
      elif $copilot.fallbackReviewedHead then $copilot.fallbackReviewer
      else null end) as $reviewer
   | {repo: $repo, pr: $pr, headOid: $ci.headOid, clean: (($blocking | length) == 0), reviewer: $reviewer, blocking: $blocking, warnings: $warnings}')
