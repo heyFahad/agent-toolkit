@@ -788,6 +788,7 @@ echo '{"data":{"repository":{"pullRequest":{"isDraft":false,"mergeable":"MERGEAB
 run pr-gate.sh -R o/r 12
 check "gate: clean exits 0" 0 "$CODE"
 check "gate: clean, nothing to report" '[true,[],[]]' "$(q '[.clean, .blocking, .warnings]')"
+check "gate: reviewer copilot" '"copilot"' "$(q .reviewer)"
 
 # A requested Copilot review and a merge conflict each block on their own.
 jq '.data.repository.pullRequest.reviewRequests.nodes = [{"requestedReviewer":{"__typename":"Bot","login":"copilot-pull-request-reviewer"}}]
@@ -827,6 +828,16 @@ jq '.data.repository.pullRequest.headRefOid = "head2" | .data.repository.pullReq
 run pr-gate.sh -R o/r 12
 check "gate: partial parse detail" '"the Copilot review body lists 1 previously missed issue(s) with no thread: 1 High; the section announces more than could be parsed, so read the review body for the rest"' \
   "$(q '.blocking[0].detail')"
+
+# A fallback review of the head stands in for a stale Copilot review.
+fallback_fixture "<!-- check-pr: fallback review by codex of $H40 -->"
+run pr-gate.sh -R o/r 12
+check "gate: stale review but fallback covers the head" '["codex",false]' \
+  "$(q '[.reviewer, ([.warnings[].reason] | index("copilot-stale") != null)]')"
+fallback_fixture "<!-- check-pr: fallback review by codex of $OLD40 -->"
+run pr-gate.sh -R o/r 12
+check "gate: stale, no fallback of the head" '[null,true]' \
+  "$(q '[.reviewer, ([.warnings[].reason] | index("copilot-stale") != null)]')"
 
 echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]
