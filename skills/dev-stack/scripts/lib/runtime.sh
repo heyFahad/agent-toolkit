@@ -270,3 +270,31 @@ cmd_attach() {
   _ds_alive || ds_die 1 "nothing is running; start something with devstack up"
   exec process-compose attach -U -u "$DS_SOCK"
 }
+
+# ports [--markdown | --write <file>]: the registry's port table.
+cmd_ports() {
+  ds_load_registry
+  case ${1:-} in
+    "") jq -r '.services | to_entries | sort_by(.value.port)[] | "\(.value.port)\t\(.key)\t\(.value.repo)"' "$DS_REG" \
+          | while IFS=$'\t' read -r p n r; do printf '%-5s %-16s %s\n' "$p" "$n" "$r"; done ;;
+    --markdown) _ds_ports_md ;;
+    --write)
+      local f=${2:?--write needs a file} table tmp
+      grep -q '<!-- devstack:ports:start -->' "$f" && grep -q '<!-- devstack:ports:end -->' "$f" \
+        || ds_die 2 "$f has no <!-- devstack:ports:start --> / <!-- devstack:ports:end --> markers"
+      table=$(_ds_ports_md); tmp=$(mktemp)
+      DS_TABLE="$table" awk '
+        /<!-- devstack:ports:start -->/ { print; print ""; print ENVIRON["DS_TABLE"]; print ""; skip = 1; next }
+        /<!-- devstack:ports:end -->/ { skip = 0 }
+        !skip { print }' "$f" > "$tmp" && mv "$tmp" "$f"
+      echo "updated the port table in $f" ;;
+    *) ds_die 2 "ports: unknown option $1" ;;
+  esac
+}
+
+_ds_ports_md() {
+  echo '| Port | Service | Repo | Notes |'
+  echo '|---|---|---|---|'
+  jq -r '.services | to_entries | sort_by(.value.port)[]
+    | "| `\(.value.port)` | \(.value.label // .key) | `\(.value.repo)` | \(.value.notes // "") |"' "$DS_REG"
+}
