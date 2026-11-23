@@ -1,6 +1,6 @@
 ---
 name: check-pr
-description: Use when checking your own PR's CI and review feedback, getting a ticket's PRs clean, fixing a failing build, or triaging Copilot or human review comments, across both the main PR and its pre-prod PR. Requests Copilot reviews, assesses every finding, fixes on the feature branch, replies, gives one clean/not-clean answer, then marks the pre-prod PR ready for review and cleans up local branches once every PR is clean. Not for reviewing someone else's PR (see give-pr-review).
+description: Use when checking your own PR's CI and review feedback, getting a ticket's PRs clean, fixing a failing build, or triaging Copilot or human review comments, across both the main PR and its pre-prod PR. Requests Copilot reviews (falling back to Codex or diff-review when Copilot declines), assesses every finding, fixes on the feature branch, replies, gives one clean/not-clean answer, then marks the pre-prod PR ready for review and cleans up local branches once every PR is clean. Not for reviewing someone else's PR (see give-pr-review).
 metadata:
   category: github-tooling
 ---
@@ -23,7 +23,9 @@ All in this skill's `scripts/` directory, all print JSON. Run each one as `bash 
 | `ci-status.sh PR` | Checks on the head commit: `failing[]`, `pending[]`, with `jobId` for Actions jobs |
 | `job-log.sh JOB_ID [LINES]` | The tail of a GitHub Actions job's log |
 | `reply-thread.sh THREAD_ID --body TEXT [--resolve]` | Posts a reply, and resolves a bot's thread. Refuses to resolve a human's (exit 3) |
-| `pr-gate.sh PR` | `clean`, `blocking[]`, `warnings[]`; exit 0 only when clean |
+| `request-copilot.sh PR...` | Requests Copilot on each PR, then `accepted` per PR: false when Copilot declined |
+| `fallback-review.sh PR` | For a PR Copilot declined: `reviewer` (`codex` or `diff-review`), the `base..head` range, and Codex's review in `output` |
+| `pr-gate.sh PR` | `clean`, `reviewer` (who reviewed the head), `blocking[]`, `warnings[]`; exit 0 only when clean |
 
 ## 1. Find the PRs
 
@@ -36,19 +38,32 @@ If `preprod` has more than one entry, don't guess. If git-workflow's `resolve-pr
 
 ## 2. Request Copilot on every PR that needs it
 
-Copilot reviews the `main` PR and the pre-prod PR separately, and the two can bring different findings, so check each PR on its own. Request a review on a PR only when all three hold:
+Copilot reviews the `main` PR and the pre-prod PR separately, and the two can bring different findings, so check each PR on its own. Request a review on a PR only when all four hold:
 
 - **Nothing is pending**: `copilot-review.sh` shows `requested: false`.
+- **Copilot hasn't declined in this run**: once it declines, step 2a reviews instead.
 - **Its last review is dealt with**: `review-threads.sh` lists no unresolved thread with `isCopilot: true`, every `missedIssues` finding of its latest review is assessed and answered (when `missedIssues` is non-empty or `missedIssuesUnparsed` is true, that means `missedIssuesAnswered: true`; with neither, there is nothing to answer), and so is every `lowConfidence` comment. A new review on top of open findings only repeats them.
 - **There's something new to review**: the latest review is `stale` (made on an older commit), or there's no review yet.
 
 If any one fails, don't request on that PR. Deal with what's already there first; step 7 asks again once the fixes are pushed. Request on every PR that passes in a single command:
 
 ```bash
-gh pr edit 101 --add-reviewer @copilot && gh pr edit 102 --add-reviewer @copilot
+bash scripts/request-copilot.sh 101 102
 ```
 
 Drafts are fine. Copilot usually answers within about five minutes, so read CI while you wait instead of polling.
+
+A PR with `accepted: false` means Copilot declined, almost always because its monthly credits ran out: GitHub takes the request, but no request event reaches the PR's timeline and no review comes. Don't request Copilot again in this run; go to step 2a for that PR.
+
+## 2a. Review with Codex or diff-review when Copilot declines
+
+From a checkout at that PR's head with no uncommitted changes, run `fallback-review.sh <PR>`. Codex can take several minutes, so in Claude Code run it in the background. It picks the reviewer and the range:
+
+- **Codex** when it's installed and logged in. Its review is in the file `output` names.
+- **`diff-review`** (`pr-conventions` plugin) otherwise, or when the Codex run fails. Run that skill on `base..head`. `reason` says why Codex wasn't used. If that plugin isn't installed either, the PR has no reviewer: say so in step 8, and post no fallback marker.
+- **Nothing** (`reviewer: null`) when a fallback review already covers this head.
+
+The range starts where the last review left off, so findings already answered don't come back. The main PR and a pre-prod PR from the feature branch share a head: review once and answer on both. A pre-prod PR from a `conflicts/...` branch has its own head and gets its own run.
 
 ## 3. Gather everything from both PRs
 
@@ -56,6 +71,7 @@ For each PR run `pr-gate.sh` for the overview, then `review-threads.sh`, `copilo
 
 - **CI failures.** For a failing check with a `jobId`, run `job-log.sh` and find the first real error, not the last line. A check without one (Socket Security, any other app) has no log here: open its `url`, or read that app's PR comment.
 - **Copilot's previously missed issues** live only in its review body, under "N previously missed issues", so they have no thread and `review-threads.sh` never lists them. Each has a `severity` (`High`, `Medium`, `Low`), `path`, `line`, `title`, `body` and `url`, a permalink to that line in the commit Copilot reviewed; assess them exactly like threads, High ones first. A review that says "No open issues" is not clean while these remain: `pr-gate.sh` blocks with `missed-issues` until step 6 answers them. If `missedIssuesUnparsed` is true, GitHub changed the format: read `review.body` yourself.
+- **Fallback findings** (step 2a) have no thread either. Assess them like missed issues.
 - **Copilot's low-confidence comments** (an older body format) also live only in its review body. Assess them like the rest. If `lowConfidenceUnparsed` is true, read `review.body` yourself.
 - **A stale Copilot review** (`stale: true`) covers an older commit. That is a warning, not a blocker.
 - **Human reviews.** A human's `CHANGES_REQUESTED` blocks the PR until they change it. Their threads are in `review-threads.sh` with `authorType: "User"`.
@@ -108,19 +124,27 @@ Copilot's previously missed issues from https://github.com/o/r/pull/101#pullrequ
 EOF
 ```
 
+Answer fallback findings the same way, in one comment per PR, with two differences. Open with which reviewer ran and why ("Copilot declined the review request at 14:52, so Codex reviewed abc1234 to def5678"). Post it even when the review found nothing ("Codex reviewed abc1234 to def5678 and found nothing"): the marker is what records the review. End with the fallback marker instead, copied exactly with the reviewer and the full head SHA `fallback-review.sh` printed:
+
+```text
+<!-- check-pr: fallback review by codex of 0a1b2c3d4e5f60718293a4b5c6d7e8f901234567 -->
+```
+
+The marker is how `copilot-review.sh` and `pr-gate.sh` know the head was reviewed, and where the next fallback's range starts.
+
 Write replies by the `github-native-writing` and `humanize` skills: bare URLs and SHAs, short, no filler.
 
 ## 7. Re-review, at most once
 
-Once step 6's replies are posted, check step 2's three conditions on each PR again, whether or not the round produced fixes: a PR can come into this run with commits Copilot never saw and an older review's findings still open, and answering those as not applicable fixes nothing but unblocks the request. Request on every PR that now passes, once per run of this skill. When the new review arrives, do one more pass. A new review that says "No open issues" but lists previously missed issues is not clean: those are this round's findings, so assess and answer them like any other. Stop as soon as a round brings only false alarms or nitpicks: answer those and finish, without requesting again.
+Once step 6's replies are posted, check step 2's conditions on each PR again, whether or not the round produced fixes: a PR can come into this run with commits Copilot never saw and an older review's findings still open, and answering those as not applicable fixes nothing but unblocks the request. Request on every PR that now passes, once per run of this skill. For a PR Copilot declined, run step 2a on the new head instead, also once per run. When the new review arrives, do one more pass. A new review that says "No open issues" but lists previously missed issues is not clean: those are this round's findings, so assess and answer them like any other. Stop as soon as a round brings only false alarms or nitpicks: answer those and finish, without requesting again.
 
 ## 8. Report
 
-Run `pr-gate.sh` on each PR and tell the user, per PR: clean or not, every `blocking` reason, and any `warnings` worth knowing. Name anything waiting on a human: requested changes, threads only they can resolve, follow-up tickets you offered.
+Run `pr-gate.sh` on each PR and tell the user, per PR: clean or not, who reviewed the head (`reviewer`, and why it isn't Copilot when it isn't), every `blocking` reason, and any `warnings` worth knowing. Name anything waiting on a human: requested changes, threads only they can resolve, follow-up tickets you offered.
 
 ## 9. Mark the pre-prod PR ready
 
-When `pr-gate.sh` reports no `blocking` reason on any PR (a draft is only a warning), and no PR has a Copilot review pending or `stale` (step 7 requests one when it is), the ticket is ready for other developers. If the pre-prod PR is a draft, mark it ready:
+When `pr-gate.sh` reports no `blocking` reason on any PR (a draft is only a warning), every PR's `reviewer` is set (Copilot, or a fallback review, reviewed its current head), and no PR has a Copilot review pending, the ticket is ready for other developers. A head nobody reviewed (a fix pushed after step 7's one re-review) keeps the PR a draft: say so in step 8 and leave it for the next run. If the pre-prod PR is a draft, mark it ready:
 
 ```bash
 gh pr ready <pre-prod-pr>
