@@ -12,12 +12,20 @@
 #                      issues (or has that section and it couldn't be
 #                      parsed), and no PR comment answers them yet
 #   merge-conflict     GitHub reports the PR can't merge cleanly
+#   head-moved         the head changed between the lookups (a push landed),
+#                      so the review and CI results describe different
+#                      commits; run it again
 # These are reported as "warnings" and never block on their own:
-#   copilot-stale      Copilot's latest review predates the head commit
+#   copilot-stale      Copilot's latest review predates the head commit,
+#                      and no fallback review (Codex or diff-review, when
+#                      Copilot declined) covers the head either
 #   low-confidence     Copilot's review body has suppressed comments to read
 #   draft              the PR is still a draft
 #
-# Prints JSON: {repo, pr, headOid, clean, blocking: [{reason, detail}], warnings: [{reason, detail}]}
+# Prints JSON: {repo, pr, headOid, clean, reviewer, blocking: [{reason, detail}], warnings: [{reason, detail}]}
+# reviewer says who reviewed the head commit: "copilot", "codex" or
+# "diff-review" (a fallback review's marker comment), or null for nobody yet,
+# and null when the head moved between lookups.
 # Exit codes: 0 clean, 1 not clean, 2 bad usage or a failed lookup.
 # shellcheck source-path=SCRIPTDIR source=lib.sh
 . "$(dirname "$0")/lib.sh"
@@ -73,16 +81,22 @@ RESULT=$(jq -n --arg repo "$REPO" --argjson pr "$PR" \
             + (if $copilot.missedIssuesUnparsed then "; the section announces more than could be parsed, so read the review body for the rest" else "" end)
           end)} else empty end),
       (if $copilot.requested then {reason: "copilot-pending", detail: "a Copilot review is requested and has not arrived yet"} else empty end),
-      (if $p.mergeable == "CONFLICTING" then {reason: "merge-conflict", detail: "the PR has merge conflicts with its base branch"} else empty end)
+      (if $p.mergeable == "CONFLICTING" then {reason: "merge-conflict", detail: "the PR has merge conflicts with its base branch"} else empty end),
+      (if $copilot.headOid != $ci.headOid then {reason: "head-moved",
+        detail: "the head moved from \($copilot.headOid[0:7]) to \($ci.headOid[0:7]) between lookups; run pr-gate.sh again"} else empty end)
     ] as $blocking
   | [
-      (if $copilot.stale and ($copilot.requested | not) then {reason: "copilot-stale",
+      (if $copilot.stale and ($copilot.requested | not) and ($copilot.fallbackReviewedHead | not) then {reason: "copilot-stale",
         detail: "Copilot last reviewed \($copilot.review.commit[0:7]); head is \($copilot.headOid[0:7])"} else empty end),
       (if ($copilot.lowConfidence | length) > 0 or $copilot.lowConfidenceUnparsed then {reason: "low-confidence",
         detail: "Copilot suppressed \($copilot.lowConfidence | length) low-confidence comment(s) in its review body"} else empty end),
       (if $p.isDraft then {reason: "draft", detail: "the PR is a draft"} else empty end)
     ] as $warnings
-  | {repo: $repo, pr: $pr, headOid: $ci.headOid, clean: (($blocking | length) == 0), blocking: $blocking, warnings: $warnings}')
+  | (if $copilot.headOid != $ci.headOid then null
+     elif $copilot.review != null and ($copilot.stale | not) then "copilot"
+     elif $copilot.fallbackReviewedHead then $copilot.fallbackReviewer
+     else null end) as $reviewer
+  | {repo: $repo, pr: $pr, headOid: $ci.headOid, clean: (($blocking | length) == 0), reviewer: $reviewer, blocking: $blocking, warnings: $warnings}')
 
 printf '%s\n' "$RESULT"
 [ "$(printf '%s' "$RESULT" | jq -r .clean)" = true ]

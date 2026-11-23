@@ -15,6 +15,9 @@ export FX="$TMP/fx" GH_CALLS="$TMP/calls.log"
 mkdir -p "$FX"
 # The scripts must find a token on their own, so start without one.
 unset GH_TOKEN GITHUB_TOKEN
+# `git rebase --exec` and git hooks export GIT_DIR. Left set, the git
+# commands below that build a throwaway repo would write to the real one.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY GIT_PREFIX
 
 # Stub gh. The GraphQL query text picks the fixture; --jq is applied like gh
 # does; every call is logged with the GH_TOKEN it saw.
@@ -23,6 +26,7 @@ cat >"$TMP/bin/gh" <<'EOF'
 # One line per call, so grep -c counts calls.
 echo "GH_TOKEN=${GH_TOKEN:-unset} $*" | tr '\n' ' ' >>"$GH_CALLS"
 echo >>"$GH_CALLS"
+all="$*"
 jqf="" prev=""
 for a in "$@"; do
   [ "$prev" = --jq ] && jqf=$a
@@ -34,9 +38,13 @@ out() {
 }
 case "$1 ${2:-}" in
   "auth token") echo "${GH_TOKEN:-${GITHUB_TOKEN:-stub-token}}"; exit 0 ;;
-  "repo view") echo o/r; exit 0 ;;
+  "repo view")
+    case "$all" in *defaultBranchRef*) echo main ;; *) echo o/r ;; esac
+    exit 0
+    ;;
+  "pr edit") exit 0 ;;
+  "pr view") cat "$FX/base-ref" 2>/dev/null || echo main; exit 0 ;;
 esac
-all="$*"
 case "$all" in
   *addPullRequestReviewThreadReply*) out "$FX/reply.json" ;;
   *resolveReviewThread*) out "$FX/resolve.json" ;;
@@ -46,6 +54,13 @@ case "$all" in
   *latestOpinionatedReviews*) out "$FX/prinfo.json" ;;
   *statusCheckRollup*) out "$FX/checks.json" ;;
   *reviewRequests*) out "$FX/copilot.json" ;;
+  *timelineItems*)
+    # The Nth read answers from timeline-N.json, or timeline.json without one,
+    # so a test can make an event show up late.
+    n=$(($(cat "$FX/timeline.count" 2>/dev/null || echo 0) + 1))
+    echo "$n" >"$FX/timeline.count"
+    if [ -f "$FX/timeline-$n.json" ]; then out "$FX/timeline-$n.json"; else out "$FX/timeline.json"; fi
+    ;;
   *defaultBranchRef*) out "$FX/pulls.json" ;;
   *"/compare/"*)
     range=${all#*/compare/}
@@ -173,6 +188,8 @@ check "threads: bad PR number" 2 "$CODE"
 # --------------------------------------------------------------- copilot-review
 # shellcheck disable=SC2016 # literal backticks: a Markdown code fence
 LOWCONF='Copilot reviewed 3 files.\n\n<details>\n<summary>Comments suppressed due to low confidence (3)</summary>\n\n**src/a.ts:10**\n* First thought.\n```ts\n* not a bullet\n**src/x.ts:1**\n```\n* Second thought on the same line.\n\n**src/b.ts:20-24**\n* Range comment\nspanning two lines.\n</details>\n\n<details><summary>Show a summary per file</summary>\n\n**not/a/finding.ts:1**\n* table text\n</details>'
+# A stale review or none means the comments get read for a fallback marker.
+echo '{"data":{"repository":{"pullRequest":{"comments":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}' >"$FX/comments-1.json"
 cat >"$FX/copilot.json" <<EOF
 {"data":{"repository":{"pullRequest":{"headRefOid":"head2",
  "reviewRequests":{"nodes":[{"requestedReviewer":{"__typename":"User","login":"alice"}}]},
@@ -197,6 +214,7 @@ check "copilot: parsed, so not unparsed" false "$(q .lowConfidenceUnparsed)"
 
 jq '.data.repository.pullRequest.headRefOid = "head1"
   | .data.repository.pullRequest.reviewRequests.nodes += [{"requestedReviewer":{"__typename":"Bot","login":"Copilot"}}]
+  | .data.repository.pullRequest.timelineItems.nodes = [{"createdAt":"2026-01-03T00:00:00Z","requestedReviewer":{"__typename":"Bot","login":"copilot-pull-request-reviewer"}}]
   | .data.repository.pullRequest.reviews.nodes[1].body = "<details>\n<summary>Comments suppressed due to low confidence (1)</summary>\nsomething new\n</details>"' \
   "$FX/copilot.json" >"$FX/c2.json" && mv "$FX/c2.json" "$FX/copilot.json"
 run copilot-review.sh -R o/r 12
@@ -222,7 +240,7 @@ check "copilot: no review, no missed issues" '[[],false,null,false]' \
 # every page.
 copilot_fixture() {
   jq -n --rawfile body "$1" '{data: {repository: {pullRequest: {headRefOid: "head1",
-    reviewRequests: {nodes: []},
+    reviewRequests: {nodes: []}, timelineItems: {nodes: []},
     reviews: {nodes: [{id: "R9", state: "COMMENTED", submittedAt: "2026-01-04T00:00:00Z", url: "https://github.com/o/r/pull/12#pullrequestreview-9", body: $body,
       author: {login: "copilot-pull-request-reviewer"}, commit: {oid: "head1"}}]}}}}}' >"$FX/copilot.json"
   echo '{"data":{"repository":{"pullRequest":{"comments":{"pageInfo":{"hasNextPage":true,"endCursor":"c"},"nodes":[
@@ -374,6 +392,287 @@ run copilot-review.sh -R o/r 12
 check "missed: partial parse flagged" '[[null,"a.ts",3,"Only one","Text."],true]' \
   "$(q '[(.missedIssues[0] | [.severity, .path, .line, .title, .body]), .missedIssuesUnparsed]')"
 
+# ------------------------------------------------- copilot-review: requests
+# A request counts as pending only when Copilot is listed AND a request event
+# for it reached the timeline after its latest review. When its credits run
+# out, GitHub accepts the request but no event appears.
+# copilot_request LISTED EVENT_AT: Copilot listed in reviewRequests or not
+# (true/false), and one request event at EVENT_AT ("" for none). The fixture
+# review was submitted 2026-01-04.
+copilot_request() {
+  jq --argjson listed "$1" --arg at "$2" '
+    .data.repository.pullRequest.reviewRequests.nodes = (if $listed then [{requestedReviewer: {__typename: "Bot", login: "Copilot"}}] else [] end)
+    | .data.repository.pullRequest.timelineItems.nodes = (if $at == "" then [] else
+        [{createdAt: $at, requestedReviewer: {__typename: "Bot", login: "copilot-pull-request-reviewer"}}] end)' \
+    "$FX/copilot.json" >"$FX/c2.json" && mv "$FX/c2.json" "$FX/copilot.json"
+}
+: >"$FX/empty.txt"
+copilot_fixture "$FX/empty.txt"
+copilot_request true 2026-01-05T00:00:00Z
+run copilot-review.sh -R o/r 12
+check "requested: listed and an event after the last review" true "$(q .requested)"
+copilot_request true 2026-01-03T00:00:00Z
+run copilot-review.sh -R o/r 12
+check "requested: listed but no event since the last review (declined)" false "$(q .requested)"
+copilot_request false 2026-01-05T00:00:00Z
+run copilot-review.sh -R o/r 12
+check "requested: event but not listed" false "$(q .requested)"
+jq '.data.repository.pullRequest.reviews.nodes = []' "$FX/copilot.json" >"$FX/c2.json" && mv "$FX/c2.json" "$FX/copilot.json"
+copilot_request true 2000-01-01T00:00:00Z
+run copilot-review.sh -R o/r 12
+check "requested: no review yet, any event counts" true "$(q .requested)"
+
+# ------------------------------------------ copilot-review: fallback markers
+# When Copilot declines, check-pr reviews with Codex or diff-review and
+# answers in a PR comment whose last line names the head it reviewed.
+H40=0123456789abcdef0123456789abcdef01234567
+OLD40=fedcba9876543210fedcba9876543210fedcba98
+# fallback_fixture COMMENT [ASSOCIATION]: a Copilot review of an older commit
+# (so stale), no missed issues, head H40, and COMMENT on page 2.
+fallback_fixture() {
+  copilot_fixture "$FX/empty.txt" "$1" "${2:-COLLABORATOR}"
+  jq --arg h "$H40" '.data.repository.pullRequest.headRefOid = $h' "$FX/copilot.json" >"$FX/c2.json" && mv "$FX/c2.json" "$FX/copilot.json"
+}
+fallback_fixture "$(printf 'Reviewed.\n<!-- check-pr: fallback review by codex of %s -->' "$H40")"
+run copilot-review.sh -R o/r 12
+check "fallback: marker for the head counts" "[true,\"$H40\",\"codex\"]" \
+  "$(q '[.fallbackReviewedHead, .fallbackLastHead, .fallbackReviewer]')"
+check "fallback: comments read when the review is stale even with no missed issues" 1 "$(calls 'graphql --paginate')"
+fallback_fixture "$(printf 'Reviewed.\n<!-- check-pr: fallback review by diff-review of %s -->' "$OLD40")"
+run copilot-review.sh -R o/r 12
+check "fallback: marker for an older head" "[false,\"$OLD40\",\"diff-review\"]" \
+  "$(q '[.fallbackReviewedHead, .fallbackLastHead, .fallbackReviewer]')"
+fallback_fixture "<!-- check-pr: fallback review by codex of $H40 -->" NONE
+run copilot-review.sh -R o/r 12
+check "fallback: an outsider's marker does not count" '[false,null,null]' \
+  "$(q '[.fallbackReviewedHead, .fallbackLastHead, .fallbackReviewer]')"
+fallback_fixture "Run the fallback, then end with <!-- check-pr: fallback review by codex of $H40 --> please."
+run copilot-review.sh -R o/r 12
+check "fallback: a quoted marker does not count" '[false,null,null]' \
+  "$(q '[.fallbackReviewedHead, .fallbackLastHead, .fallbackReviewer]')"
+copilot_fixture "$FX/empty.txt"
+run copilot-review.sh -R o/r 12
+check "fallback: current review, nothing to answer, comments not read" 0 "$(calls 'graphql --paginate')"
+check "fallback: no comments read, no marker" '[false,null,null]' \
+  "$(q '[.fallbackReviewedHead, .fallbackLastHead, .fallbackReviewer]')"
+
+# -------------------------------------------------------------- request-copilot
+# request-copilot.sh notes the Copilot request events already on each PR's
+# timeline, requests Copilot, then reads the timeline until a new one shows
+# up, or gives up: Copilot declined. The first read of each PR is the
+# snapshot.
+export CHECK_PR_REQUEST_DELAY=0
+# timeline_fixture FILE [EVENT_ID]: a timeline with one Copilot request event
+# with that id, or none.
+timeline_fixture() {
+  jq -n --arg id "${2:-}" '{data: {repository: {pullRequest: {timelineItems: {nodes:
+    (if $id == "" then [] else [{id: $id, createdAt: "2026-01-05T00:00:00Z", requestedReviewer: {__typename: "Bot", login: "copilot-pull-request-reviewer"}}] end)}}}}}' >"$1"
+}
+reset_timeline() { rm -f "$FX"/timeline*.json "$FX/timeline.count"; }
+
+reset_timeline
+timeline_fixture "$FX/timeline-1.json"
+timeline_fixture "$FX/timeline.json" E1
+run request-copilot.sh -R o/r 12
+check "request: new event on the first read after the request" '[[12,true]]' "$(q '[.[] | [.pr, .accepted]]')"
+check "request: one request with @copilot" 1 "$(calls 'pr edit -R o/r 12 --add-reviewer @copilot')"
+check "request: snapshot plus one read" 2 "$(calls timelineItems)"
+
+reset_timeline
+for n in 1 2 3; do timeline_fixture "$FX/timeline-$n.json"; done
+timeline_fixture "$FX/timeline.json" E1
+run request-copilot.sh -R o/r 12
+check "request: event lags to the third read" '[[12,true],4]' "$(printf '[%s,%s]' "$(q '[.[] | [.pr, .accepted]][0]')" "$(calls timelineItems)")"
+
+reset_timeline
+timeline_fixture "$FX/timeline.json"
+run request-copilot.sh -R o/r 12
+check "request: no new event within the window (declined)" '[[12,false],7]' "$(printf '[%s,%s]' "$(q '[.[] | [.pr, .accepted]][0]')" "$(calls timelineItems)")"
+check "request: requestedAt is an ISO time" true "$(q '.[0].requestedAt | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z$")')"
+
+# An event from an earlier request, however recent, is not this one.
+reset_timeline
+timeline_fixture "$FX/timeline.json" E0
+run request-copilot.sh -R o/r 12
+check "request: an event already there before the request does not count" '[[12,false]]' "$(q '[.[] | [.pr, .accepted]]')"
+
+reset_timeline
+timeline_fixture "$FX/timeline-1.json"
+timeline_fixture "$FX/timeline-2.json"
+timeline_fixture "$FX/timeline.json" E1
+run request-copilot.sh -R o/r 12 13
+check "request: two PRs, one entry each" '[[12,true],[13,true]]' "$(q '[.[] | [.pr, .accepted]]')"
+check "request: two PRs, one call each" 2 "$(calls 'pr edit')"
+
+reset_timeline
+run request-copilot.sh -R o/r 12
+check "request: a failed timeline lookup exits 2, not declined" 2 "$CODE"
+reset_timeline
+timeline_fixture "$FX/timeline-1.json"
+run request-copilot.sh -R o/r 12
+check "request: a lookup failing after the snapshot exits 2, not declined" 2 "$CODE"
+
+run request-copilot.sh -R o/r 12 x
+check "request: non-number PR exits 2" 2 "$CODE"
+check "request: nothing requested on bad usage" 0 "$(calls 'pr edit')"
+unset CHECK_PR_REQUEST_DELAY
+
+# -------------------------------------------------------------- fallback-review
+# fallback-review.sh picks the reviewer (Codex when usable, else diff-review)
+# and the range, and runs Codex. It runs in a checkout at the PR's head.
+REPO_DIR="$TMP/repo"
+git init -q "$REPO_DIR"
+for c in c0 c1 c2; do
+  git -C "$REPO_DIR" -c user.email=t@t -c user.name=t commit -q --allow-empty -m "$c"
+done
+C0=$(git -C "$REPO_DIR" rev-parse HEAD~2) C1=$(git -C "$REPO_DIR" rev-parse HEAD~1) C2=$(git -C "$REPO_DIR" rev-parse HEAD)
+git -C "$REPO_DIR" update-ref refs/remotes/origin/main "$C1"
+
+mkdir -p "$TMP/codexbin"
+export CODEX_LOG="$TMP/codex.log"
+cat >"$TMP/codexbin/codex" <<'EOF'
+#!/bin/bash
+echo "$*" >>"$CODEX_LOG"
+if [ "$1 ${2:-}" = "login status" ]; then exit "$(cat "$FX/codex-login" 2>/dev/null || echo 0)"; fi
+if [ "$1" = review ]; then
+  echo "GIT_DIR=${GIT_DIR:-unset} GIT_WORK_TREE=${GIT_WORK_TREE:-unset}" >>"$CODEX_LOG"
+  # Real codex, after an error, prints it and then hangs instead of exiting.
+  if [ -f "$FX/codex-error" ]; then echo "ERROR: $(cat "$FX/codex-error")"; sleep 30; fi
+  [ -f "$FX/codex-hang" ] && sleep 30
+  echo "codex review text"
+  exit "$(cat "$FX/codex-review" 2>/dev/null || echo 0)"
+fi
+exit 0
+EOF
+chmod +x "$TMP/codexbin/codex"
+export XDG_CONFIG_HOME="$TMP/config"
+
+# review_fixture REVIEW_COMMIT [MARKER_SHA]: head C2, a Copilot review of
+# REVIEW_COMMIT ("" for no review), and a fallback marker naming MARKER_SHA.
+review_fixture() {
+  jq -n --arg h "$C2" --arg rc "$1" '{data: {repository: {pullRequest: {headRefOid: $h,
+    reviewRequests: {nodes: []}, timelineItems: {nodes: []},
+    reviews: {nodes: (if $rc == "" then [] else [{id: "R9", state: "COMMENTED", submittedAt: "2026-01-04T00:00:00Z",
+      url: "https://github.com/o/r/pull/12#pullrequestreview-9", body: "", author: {login: "copilot-pull-request-reviewer"}, commit: {oid: $rc}}] end)}}}}}' >"$FX/copilot.json"
+  echo '{"data":{"repository":{"pullRequest":{"comments":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}' >"$FX/comments-1.json"
+  if [ -n "${2:-}" ]; then
+    comments_page2 "<!-- check-pr: fallback review by codex of $2 -->" OWNER true
+  else
+    comments_page2 "" OWNER true
+  fi
+  : >"$CODEX_LOG"
+  rm -f "$FX/codex-login" "$FX/codex-review" "$FX/codex-error" "$FX/codex-hang"
+}
+# PATH without any directory that holds a real codex, so tests never run it.
+NOCODEX_PATH=$(printf '%s' "$PATH" | tr ':' '\n' | while IFS= read -r d; do
+  [ -x "$d/codex" ] || printf '%s:' "$d"
+done)
+NOCODEX_PATH=${NOCODEX_PATH%:}
+# fallback: run fallback-review.sh from the repo, with or without the codex
+# stub on PATH.
+fallback() {
+  local path=$NOCODEX_PATH
+  [ "${NO_CODEX:-}" = 1 ] || path="$TMP/codexbin:$NOCODEX_PATH"
+  cd "$REPO_DIR" || exit 1
+  PATH=$path run fallback-review.sh -R o/r 12
+  cd - >/dev/null || exit 1
+}
+
+review_fixture ""
+fallback
+check "fallback: codex when logged in" "[\"codex\",\"$C1\",\"$C2\"]" "$(q '[.reviewer, .base, .head]')"
+check "fallback: codex output saved" "codex review text" "$(cat "$(printf '%s' "$OUT" | jq -r .output)" 2>/dev/null)"
+check "fallback: codex reviews against the base" "review --base $C1" "$(grep '^review' "$CODEX_LOG")"
+
+check "fallback: codex is pointed at the repo explicitly (it can't read a worktree on its own)" \
+  "GIT_DIR=$(git -C "$REPO_DIR" rev-parse --absolute-git-dir) GIT_WORK_TREE=$(cd "$REPO_DIR" && pwd -P)" \
+  "$(grep '^GIT_DIR' "$CODEX_LOG")"
+
+export CHECK_PR_CODEX_POLL=0.2
+review_fixture ""
+echo '"/x" is not a git repository' >"$FX/codex-error"
+SECONDS=0
+fallback
+check "fallback: codex prints an error and hangs, stopped at once" '["diff-review",true]' \
+  "$(q '[.reviewer, (.reason | test("is not a git repository"))]')"
+check "fallback: the error is caught without waiting out the hang" true "$([ "$SECONDS" -lt 10 ] && echo true || echo false)"
+
+review_fixture ""
+touch "$FX/codex-hang"
+SECONDS=0
+CHECK_PR_CODEX_TIMEOUT=1 fallback
+check "fallback: codex past its time limit" '["diff-review",true]' "$(q '[.reviewer, (.reason | test("time limit"))]')"
+check "fallback: the time limit is kept" true "$([ "$SECONDS" -lt 10 ] && echo true || echo false)"
+unset CHECK_PR_CODEX_POLL
+
+review_fixture "$C0"
+fallback
+check "fallback: base is Copilot's last reviewed commit" "\"$C0\"" "$(q .base)"
+
+review_fixture "$C0" "$C1"
+fallback
+check "fallback: base is the last fallback-reviewed head first" "\"$C1\"" "$(q .base)"
+
+review_fixture "$C0" "$C2"
+fallback
+check "fallback: head already reviewed, nothing to do" '[null,0]' "$(printf '[%s,%s]' "$(q .reviewer)" "$(grep -c '^review' "$CODEX_LOG")")"
+
+# After a rebase and force-push, the old reviewed commit is still in this
+# checkout but no longer an ancestor of the head: it must not be the base.
+git -C "$REPO_DIR" -c user.email=t@t -c user.name=t commit-tree "$C1^{tree}" -p "$C0" -m orphan >"$TMP/orphan"
+ORPHAN=$(cat "$TMP/orphan")
+review_fixture "$ORPHAN" "$ORPHAN"
+fallback
+check "fallback: a commit that isn't an ancestor of the head is skipped" "\"$C1\"" "$(q .base)"
+
+# The first fallback review of a pre-prod PR starts from its own base
+# branch, not the default branch.
+review_fixture ""
+echo staging >"$FX/base-ref"
+git -C "$REPO_DIR" update-ref refs/remotes/origin/staging "$C0"
+fallback
+check "fallback: merge base with the PR's own base branch" "\"$C0\"" "$(q .base)"
+rm -f "$FX/base-ref"
+
+review_fixture ""
+mkdir -p "$XDG_CONFIG_HOME/agent-toolkit"
+echo '{"codexModel":"m-1"}' >"$XDG_CONFIG_HOME/agent-toolkit/verify.local.json"
+fallback
+check "fallback: model from config" "review --base $C1 -c model=\"m-1\"" "$(grep '^review' "$CODEX_LOG")"
+rm "$XDG_CONFIG_HOME/agent-toolkit/verify.local.json"
+
+review_fixture ""
+echo 1 >"$FX/codex-login"
+fallback
+check "fallback: codex logged out" '["diff-review",true,null]' "$(q '[.reviewer, (.reason | test("codex login status")), .output]')"
+check "fallback: logged out, codex review never runs" 0 "$(grep -c '^review' "$CODEX_LOG")"
+
+review_fixture ""
+NO_CODEX=1 fallback
+check "fallback: codex not installed" '["diff-review",true]' "$(q '[.reviewer, (.reason | test("not on PATH"))]')"
+
+review_fixture ""
+echo 1 >"$FX/codex-review"
+fallback
+check "fallback: codex review fails, still exits 0" 0 "$CODE"
+check "fallback: codex review fails" '["diff-review",true,null]' "$(q '[.reviewer, (.reason | test("exited 1")), .output]')"
+
+# Codex's --base review diffs the working tree, so local edits would be
+# reviewed instead of the PR.
+review_fixture ""
+echo edit >"$REPO_DIR/tracked.txt"
+git -C "$REPO_DIR" add tracked.txt
+fallback
+check "fallback: uncommitted changes exit 2" 2 "$CODE"
+check "fallback: uncommitted changes, codex never runs" 0 "$(grep -c '^review' "$CODEX_LOG")"
+git -C "$REPO_DIR" rm -q --cached tracked.txt && rm "$REPO_DIR/tracked.txt"
+
+review_fixture ""
+jq '.data.repository.pullRequest.headRefOid = "1111111111111111111111111111111111111111"' "$FX/copilot.json" >"$FX/c2.json" && mv "$FX/c2.json" "$FX/copilot.json"
+fallback
+check "fallback: wrong checkout exits 2" 2 "$CODE"
+check "fallback: wrong checkout names the expected head" true "$(grep -q 1111111111111111111111111111111111111111 "$TMP/stderr" && echo true || echo false)"
+
 # ----------------------------------------------------------------- reply-thread
 echo '{"data":{"addPullRequestReviewThreadReply":{"comment":{"url":"https://example.test/reply"}}}}' >"$FX/reply.json"
 echo '{"data":{"resolveReviewThread":{"thread":{"isResolved":true}}}}' >"$FX/resolve.json"
@@ -489,9 +788,11 @@ echo '{"data":{"repository":{"pullRequest":{"isDraft":false,"mergeable":"MERGEAB
 run pr-gate.sh -R o/r 12
 check "gate: clean exits 0" 0 "$CODE"
 check "gate: clean, nothing to report" '[true,[],[]]' "$(q '[.clean, .blocking, .warnings]')"
+check "gate: reviewer copilot" '"copilot"' "$(q .reviewer)"
 
 # A requested Copilot review and a merge conflict each block on their own.
-jq '.data.repository.pullRequest.reviewRequests.nodes = [{"requestedReviewer":{"__typename":"Bot","login":"copilot-pull-request-reviewer"}}]' "$FX/copilot.json" >"$FX/c2.json" && mv "$FX/c2.json" "$FX/copilot.json"
+jq '.data.repository.pullRequest.reviewRequests.nodes = [{"requestedReviewer":{"__typename":"Bot","login":"copilot-pull-request-reviewer"}}]
+  | .data.repository.pullRequest.timelineItems.nodes = [{"createdAt":"2026-01-03T00:00:00Z","requestedReviewer":{"__typename":"Bot","login":"copilot-pull-request-reviewer"}}]' "$FX/copilot.json" >"$FX/c2.json" && mv "$FX/c2.json" "$FX/copilot.json"
 jq '.data.repository.pullRequest.mergeable = "CONFLICTING"' "$FX/prinfo.json" >"$FX/p2.json" && mv "$FX/p2.json" "$FX/prinfo.json"
 run pr-gate.sh -R o/r 12
 check "gate: copilot pending and conflicts block" '["copilot-pending","merge-conflict"]' "$(q '[.blocking[].reason]')"
@@ -527,6 +828,32 @@ jq '.data.repository.pullRequest.headRefOid = "head2" | .data.repository.pullReq
 run pr-gate.sh -R o/r 12
 check "gate: partial parse detail" '"the Copilot review body lists 1 previously missed issue(s) with no thread: 1 High; the section announces more than could be parsed, so read the review body for the rest"' \
   "$(q '.blocking[0].detail')"
+
+# A fallback review of the head stands in for a stale Copilot review. CI
+# reports the same head, H40.
+# ci_head SHA: point the CI fixture's head at SHA.
+ci_head() {
+  jq --arg h "$1" '.data.repository.pullRequest.headRefOid = $h' "$FX/checks.json" >"$FX/k2.json" && mv "$FX/k2.json" "$FX/checks.json"
+}
+ci_head "$H40"
+fallback_fixture "<!-- check-pr: fallback review by codex of $H40 -->"
+run pr-gate.sh -R o/r 12
+check "gate: stale review but fallback covers the head" '["codex",false]' \
+  "$(q '[.reviewer, ([.warnings[].reason] | index("copilot-stale") != null)]')"
+check "gate: a fallback review of the head leaves the gate clean" '[true,[]]' "$(q '[.clean, [.blocking[].reason]]')"
+fallback_fixture "<!-- check-pr: fallback review by codex of $OLD40 -->"
+run pr-gate.sh -R o/r 12
+check "gate: stale, no fallback of the head" '[null,true]' \
+  "$(q '[.reviewer, ([.warnings[].reason] | index("copilot-stale") != null)]')"
+
+# A push between the Copilot and CI lookups leaves them describing different
+# heads: the review can't be credited to the head CI reports.
+ci_head head2
+fallback_fixture "<!-- check-pr: fallback review by codex of $H40 -->"
+run pr-gate.sh -R o/r 12
+check "gate: review and CI on different heads block" '[false,true]' \
+  "$(q '[.clean, ([.blocking[].reason] | index("head-moved") != null)]')"
+check "gate: heads differ, so nobody is credited with reviewing CI's head" null "$(q .reviewer)"
 
 echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]

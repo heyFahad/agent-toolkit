@@ -2,7 +2,11 @@
 # Usage: copilot-review.sh [-R OWNER/REPO] PR_NUMBER
 #
 # Reports on Copilot's latest review of a PR:
-#   - whether a Copilot review is currently requested (still to come)
+#   - whether a Copilot review is currently requested (still to come): Copilot
+#     is in the PR's review requests AND a request event for it reached the
+#     timeline after its latest review (any request event, without a review).
+#     When Copilot's monthly credits run out, GitHub accepts the request but
+#     no event appears, so a declined request never counts as pending.
 #   - whether the latest review is stale: made on a commit older than the
 #     PR's head, so pushes since then have not been reviewed
 #   - the findings Copilot put only in the review body, which have no review
@@ -23,6 +27,12 @@
 #     members and collaborators, count: on a public repo anyone else could
 #     post the marker. All of the PR's comments are searched, and only when
 #     there is something to answer.
+#   - whether a fallback review covered the head: when Copilot declines,
+#     check-pr reviews with Codex or diff-review and answers in a PR comment
+#     whose last line is "<!-- check-pr: fallback review by <codex|diff-review>
+#     of <40-hex head sha> -->", trusted on the same terms as the missed-issues
+#     marker. Comments are read for this when there is no Copilot review or
+#     it is stale.
 #
 # Prints JSON:
 #   {headOid, requested,
@@ -30,7 +40,11 @@
 #    stale,
 #    missedIssues: [{severity, path, line, title, body, url}], missedIssuesUnparsed,
 #    missedIssuesMarker, missedIssuesAnswered,
-#    lowConfidence: [{path, line, body}], lowConfidenceUnparsed}
+#    lowConfidence: [{path, line, body}], lowConfidenceUnparsed,
+#    fallbackReviewedHead, fallbackLastHead, fallbackReviewer}
+# fallbackLastHead and fallbackReviewer come from the latest trusted fallback
+# marker (null without one); fallbackReviewedHead is true when it names
+# headOid. All three are false/null when the comments weren't read.
 # severity is "High", "Medium" or "Low" as Copilot wrote it, or null. url is
 # a permalink to path at line, pinned to the commit Copilot reviewed (the
 # version its line numbers refer to), or null without a path.
@@ -56,6 +70,9 @@ QUERY='query($owner: String!, $name: String!, $number: Int!) {
       headRefOid
       reviewRequests(first: 50) {
         nodes { requestedReviewer { __typename ... on Bot { login } ... on User { login } } }
+      }
+      timelineItems(last: 100, itemTypes: [REVIEW_REQUESTED_EVENT]) {
+        nodes { ... on ReviewRequestedEvent { createdAt requestedReviewer { __typename ... on Bot { login } ... on User { login } } } }
       }
       reviews(last: 100) {
         nodes { id state submittedAt url body author { login } commit { oid } }
@@ -170,7 +187,9 @@ RESULT=$(gh api graphql -f query="$QUERY" -f owner="$OWNER" -f name="$NAME" -F n
     | (if $r == null then null else "<!-- check-pr: answered missed issues of review \($r.id) -->" end) as $marker
     | {
         headOid: $pr.headRefOid,
-        requested: any($pr.reviewRequests.nodes[]; (.requestedReviewer.login // "") | test($copilot)),
+        requested: (any($pr.reviewRequests.nodes[]; (.requestedReviewer.login // "") | test($copilot))
+          and any(($pr.timelineItems.nodes // [])[];
+            ((.requestedReviewer.login // "") | test($copilot)) and (.createdAt // "") > ($r.submittedAt // ""))),
         review: (if $r == null then null else {id: $r.id, state: $r.state, submittedAt: $r.submittedAt, commit: $r.commit.oid, url: $r.url, body: $body} end),
         stale: ($r != null and $r.commit.oid != $pr.headRefOid),
         missedIssues: [($r.url // "" | capture("^(?<b>https?://[^/]+/[^/]+/[^/]+)/pull/").b) as $base
@@ -188,17 +207,27 @@ RESULT=$(gh api graphql -f query="$QUERY" -f owner="$OWNER" -f name="$NAME" -F n
         missedIssuesMarker: $marker,
         missedIssuesAnswered: false,
         lowConfidence: $items,
-        lowConfidenceUnparsed: (($items | length) == 0 and ($body | test("<summary>[^\n]*low confidence|suppressed due to low confidence"; "i")))
+        lowConfidenceUnparsed: (($items | length) == 0 and ($body | test("<summary>[^\n]*low confidence|suppressed due to low confidence"; "i"))),
+        fallbackReviewedHead: false,
+        fallbackLastHead: null,
+        fallbackReviewer: null
       }')
 
-# Only look for an answer when there is something to answer.
-if printf '%s' "$RESULT" | jq -e '.missedIssuesMarker != null and ((.missedIssues | length) > 0 or .missedIssuesUnparsed)' >/dev/null; then
+# Only read the comments when there is something to answer, or when Copilot
+# hasn't reviewed the head and a fallback review may have.
+if printf '%s' "$RESULT" | jq -e '(.missedIssuesMarker != null and ((.missedIssues | length) > 0 or .missedIssuesUnparsed))
+    or .review == null or .stale' >/dev/null; then
   RESULT=$(gh api graphql --paginate -f query="$COMMENTS_QUERY" -f owner="$OWNER" -f name="$NAME" -F number="$PR" |
     jq -s --argjson result "$RESULT" '
       ($result.missedIssuesMarker) as $marker
       | [.[].data.repository.pullRequest.comments.nodes[]
           | select(.viewerDidAuthor or (.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR")))
           | (.body // "") | sub("\\s+$"; "") | split("\n") | last // "" | sub("^\\s+"; "")] as $lasts
-      | $result | .missedIssuesAnswered = any($lasts[]; . == $marker)')
+      | ([$lasts[] | capture("^<!-- check-pr: fallback review by (?<by>codex|diff-review) of (?<sha>[0-9a-f]{40}) -->$")] | last) as $fb
+      | $result
+      | .missedIssuesAnswered = ($marker != null and any($lasts[]; . == $marker))
+      | .fallbackLastHead = ($fb.sha // null)
+      | .fallbackReviewer = ($fb.by // null)
+      | .fallbackReviewedHead = ($fb != null and $fb.sha == $result.headOid)')
 fi
 printf '%s\n' "$RESULT"
