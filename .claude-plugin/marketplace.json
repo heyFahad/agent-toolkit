@@ -53,6 +53,12 @@
       "description": "JavaScript/TypeScript coding style enforcement",
       "category": "coding",
       "source": "./plugins/coding-style"
+    },
+    {
+      "name": "dev-stack",
+      "description": "Start, check and stop the local services a change needs, each on its own Node version, Doppler config and port",
+      "category": "development",
+      "source": "./plugins/dev-stack"
     }
   ]
 }

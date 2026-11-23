@@ -1,0 +1,40 @@
+#!/bin/bash
+# devstack: start, check and stop the local services a change needs.
+# See ../SKILL.md. Registry: $DEVSTACK_REGISTRY or the nearest stack.yaml.
+set -uo pipefail
+
+# Resolve this script's real location, following symlinks (~/.local/bin/devstack).
+src=${BASH_SOURCE[0]}
+while [ -L "$src" ]; do
+  dir=$(cd "$(dirname "$src")" && pwd)
+  src=$(readlink "$src")
+  [[ $src == /* ]] || src="$dir/$src"
+done
+DS_LIB="$(cd "$(dirname "$src")" && pwd)/lib"
+export DS_LIB
+# shellcheck source=lib/registry.sh
+. "$DS_LIB/registry.sh"
+
+usage() {
+  cat <<'USAGE'
+usage: devstack <command> [args]
+  up <target|service>... [--from <svc>=<path>]... [--with <svc>[,<svc>]] [--takeover]
+  status [--json]          logs <svc> [--errors] [--tail N]
+  restart <svc> [--from <path>] [--takeover]
+  down [svc...]            urls            attach
+  ports [--markdown | --write <file>]
+USAGE
+}
+
+cmd=${1:-}
+[ -n "$cmd" ] || { usage >&2; exit 2; }
+shift
+case $cmd in
+  up|status|logs|restart|down|urls|attach|ports)
+    ds_require_tools
+    fn="cmd_$cmd"
+    if declare -F "$fn" >/dev/null; then "$fn" "$@"; else ds_die 2 "$cmd: not implemented yet"; fi
+    ;;
+  -h|--help|help) usage ;;
+  *) usage >&2; exit 2 ;;
+esac

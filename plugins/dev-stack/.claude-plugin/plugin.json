@@ -1,0 +1,20 @@
+{
+  "$schema": "https://www.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "dev-stack",
+  "description": "Start, check and stop the local services a change needs, each on its own Node version, Doppler config and port",
+  "version": "0.1.0",
+  "author": {
+    "name": "Fahad Javed",
+    "email": "fahad@heyfahad.dev",
+    "url": "https://heyfahad.dev"
+  },
+  "license": "MIT",
+  "keywords": [
+    "dev-server",
+    "local-development",
+    "process-compose",
+    "doppler",
+    "nvm",
+    "verification"
+  ]
+}
