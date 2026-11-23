@@ -13,6 +13,9 @@ LIB="$SCRIPTS/lib"
 TMP=$(mktemp -d)
 TMP=$(cd "$TMP" && pwd -P)
 trap 'rm -rf "$TMP"' EXIT
+# `git rebase --exec` and git hooks export GIT_DIR. Left set, the git
+# commands in these tests that build a throwaway repo would write to the real one.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY GIT_PREFIX
 mkdir -p "$TMP/bin"
 : > "$TMP/calls.log"
 export PATH="$TMP/bin:$PATH"
