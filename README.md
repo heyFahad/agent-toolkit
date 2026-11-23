@@ -9,6 +9,7 @@ A personal git/PR workflow, Jira lifecycle, coding style, and writing-convention
 - [`atlassian-workflow`](plugins/atlassian-workflow): `twg` CLI over the Atlassian MCP (with a gate hook), reading a Jira ticket in full before starting, Jira ticket lifecycle
 - [`writing-conventions`](plugins/writing-conventions): per-surface hyperlink/formatting rules, an anti-AI-slop humanizing pass
 - [`coding-style`](plugins/coding-style): a shareable ESLint config plus an auto-fix hook
+- [`dev-stack`](plugins/dev-stack): a `devstack` command that starts only the local services a change needs, on their own Node version, Doppler config and port, gated on health checks
 
 Everything mandatory gets a hook, not just a paragraph asking an agent to remember it. See [AGENTS.md](AGENTS.md) for the handful of rules that stay as prose because no hook mechanism covers them everywhere yet.
 
@@ -35,6 +36,7 @@ claude plugin install pr-conventions@agent-toolkit
 claude plugin install atlassian-workflow@agent-toolkit
 claude plugin install writing-conventions@agent-toolkit
 claude plugin install coding-style@agent-toolkit
+claude plugin install dev-stack@agent-toolkit
 ```
 
 Or from inside a session: `/plugin marketplace add heyFahad/agent-toolkit`, then `/plugin install <name>@agent-toolkit` for each one you want. There's no requirement to install all of them; they're independent. Run `/reload-plugins` to pick up changes without restarting.

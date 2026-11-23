@@ -1,0 +1,124 @@
+#!/bin/bash
+# Tests for Node version lookup, service commands and the process-compose config.
+# Run: bash skills/dev-stack/tests/build.test.sh
+. "$(dirname "$0")/helpers.sh"
+# shellcheck source=../scripts/lib/build.sh
+. "$LIB/build.sh"
+
+export NVM_DIR="$TMP/nvm"
+mkdir -p "$NVM_DIR/versions/node/v22.16.0/bin" "$NVM_DIR/versions/node/v16.20.2/bin"
+mkdir -p "$TMP/ws/bsa" "$TMP/ws/ti" "$TMP/ws/env"
+echo 22.16.0 > "$TMP/ws/bsa/.nvmrc"
+echo v16.20.2 > "$TMP/ws/ti/.nvmrc"
+echo 22.16.0 > "$TMP/ws/env/.nvmrc"
+
+cat > "$TMP/reg.json" <<JSON
+{"_root": "$TMP/ws",
+ "services": {
+  "bsa": {"repo": "bsa", "node": "nvmrc", "doppler": {"project": "blavity-service-api", "config": "dev"},
+          "command": "pnpm start:dev", "port": 3010, "health": "http://localhost:3010/health"},
+  "ti-api": {"repo": "ti", "node": "16.20.2", "doppler": "none", "command": "npm run start:dev",
+             "port": 3100, "health": "tcp", "timeout": 60},
+  "connect-api": {"repo": "bsa", "node": "nvmrc", "doppler": "none", "command": "true",
+                  "port": 3200, "health": "tcp", "depends_on": ["bsa", "ti-api"]},
+  "envy": {"repo": "env", "node": "nvmrc", "doppler": "none", "command": "printenv X",
+           "port": 3300, "health": "tcp", "env": {"X": "a b \$c 'q'"}}
+ }, "targets": {}}
+JSON
+
+# --- nvmrc_resolves / pinned_version_resolves ---
+got=$(ds_node_bin "$TMP/ws/bsa" nvmrc)
+check "nvmrc resolves (got '$got')" [ "$got" = "$NVM_DIR/versions/node/v22.16.0/bin" ]
+got=$(ds_node_bin "$TMP/ws/ti" nvmrc)
+check "nvmrc with a leading v resolves" [ "$got" = "$NVM_DIR/versions/node/v16.20.2/bin" ]
+got=$(ds_node_bin "$TMP/ws/bsa" 16.20.2)
+check "pinned version resolves" [ "$got" = "$NVM_DIR/versions/node/v16.20.2/bin" ]
+
+# --- partial versions and nvm aliases resolve to an installed version ---
+mkdir -p "$NVM_DIR/versions/node/v22.20.0/bin" "$NVM_DIR/alias/lts"
+got=$(ds_node_bin "$TMP/ws/bsa" 22)
+check "partial version picks the newest installed match (got '$got')" [ "$got" = "$NVM_DIR/versions/node/v22.20.0/bin" ]
+echo v16.20.2 > "$NVM_DIR/alias/lts/gallium"
+mkdir -p "$TMP/ws/lts" && echo lts/gallium > "$TMP/ws/lts/.nvmrc"
+got=$(ds_node_bin "$TMP/ws/lts" nvmrc)
+check "an nvm alias in .nvmrc resolves (got '$got')" [ "$got" = "$NVM_DIR/versions/node/v16.20.2/bin" ]
+out=$(ds_node_bin "$TMP/ws/bsa" 19 2>&1); code=$?
+check "unmatched partial version exits 3 (got $code)" [ "$code" -eq 3 ]
+
+# --- missing_version_exit_3 (Review Focus) ---
+mkdir -p "$TMP/ws/new" && echo 24.99.0 > "$TMP/ws/new/.nvmrc"
+out=$(ds_node_bin "$TMP/ws/new" nvmrc 2>&1); code=$?
+check "missing Node exits 3 (got $code)" [ "$code" -eq 3 ]
+check "missing Node says nvm install" grep -q "nvm install 24.99.0" <<<"$out"
+out=$(ds_node_bin "$TMP/ws/none" nvmrc 2>&1); code=$?
+check "missing .nvmrc exits 2 (got $code)" [ "$code" -eq 2 ]
+
+# --- doppler_wrapped / doppler_none_not_wrapped ---
+cmd=$(ds_command "$TMP/reg.json" bsa "$TMP/ws/bsa")
+check "doppler run wraps it" grep -q -- "doppler run --project blavity-service-api --config dev --" <<<"$cmd"
+check "DOPPLER_PROJECT exported" grep -q "DOPPLER_PROJECT=blavity-service-api" <<<"$cmd"
+check "Node bin first on PATH" grep -q "$NVM_DIR/versions/node/v22.16.0/bin" <<<"$cmd"
+cmd=$(ds_command "$TMP/reg.json" ti-api "$TMP/ws/ti")
+check "doppler none isn't wrapped" bash -c '! grep -q doppler <<<"$1"' _ "$cmd"
+
+# --- env_applied: quoting survives a shell ---
+cmd=$(ds_command "$TMP/reg.json" envy "$TMP/ws/env")
+got=$(bash -c "$cmd")
+check "env value survives quoting (got '$got')" [ "$got" = "a b \$c 'q'" ]
+
+# --- pc_config_shape ---
+mkdir -p "$TMP/state"
+ds_pc_config "$TMP/reg.json" "$TMP/state"
+cfg=$(yq -o=json '.' "$TMP/state/process-compose.yaml")
+check "processes are disabled" [ "$(jq -r '.processes.bsa.disabled' <<<"$cfg")" = true ]
+check "depends_on waits for healthy" [ "$(jq -r '.processes."connect-api".depends_on.bsa.condition' <<<"$cfg")" = process_healthy ]
+check "http probe path" [ "$(jq -r '.processes.bsa.readiness_probe.http_get.path' <<<"$cfg")" = /health ]
+check "http probe port" [ "$(jq -r '.processes.bsa.readiness_probe.http_get.port' <<<"$cfg")" = 3010 ]
+check "tcp probe uses nc" grep -q "nc -z localhost 3100" <<<"$(jq -r '.processes."ti-api".readiness_probe.exec.command' <<<"$cfg")"
+check "working_dir defaults to the repo" [ "$(jq -r '.processes.bsa.working_dir' <<<"$cfg")" = "$TMP/ws/bsa" ]
+check "log per service" [ "$(jq -r '.processes.bsa.log_location' <<<"$cfg")" = "$TMP/state/logs/bsa.log" ]
+check "timeout sets failure_threshold" [ "$(jq -r '.processes."ti-api".readiness_probe.failure_threshold' <<<"$cfg")" = 30 ]
+
+# --- logs are plain text, flushed per line (a short crash must reach the log) ---
+check "log flushes each line" [ "$(jq -r '.processes.bsa.log_configuration.flush_each_line' <<<"$cfg")" = true ]
+check "log is plain text" [ "$(jq -r '.processes.bsa.log_configuration.disable_json' <<<"$cfg")" = true ]
+check "log lines are the message only" [ "$(jq -c '.processes.bsa.log_configuration.fields_order' <<<"$cfg")" = '["message"]' ]
+check "log has no colour codes" [ "$(jq -r '.processes.bsa.log_configuration.no_color' <<<"$cfg")" = true ]
+
+# --- launcher scripts: no shell escaping inside the YAML (process-compose rejects it) ---
+check "command runs a launcher script" [ "$(jq -r '.processes.envy.command' <<<"$cfg")" = "exec bash $TMP/state/run/envy.sh" ]
+check "launcher has no backslash escapes in the config" bash -c '! grep -q "\\\\" "$1"' _ "$TMP/state/process-compose.yaml"
+got=$(bash "$TMP/state/run/envy.sh")
+check "launcher runs the service command (got '$got')" [ "$got" = "a b \$c 'q'" ]
+
+# --- F3: the definition changes when the launcher's contents change ---
+rev1=$(jq -r '.processes.envy.environment[0]' <<<"$cfg")
+check "definition carries a revision" grep -q "^DEVSTACK_REV=" <<<"$rev1"
+jq '.services.envy.env.X = "changed"' "$TMP/reg.json" > "$TMP/reg2.json"
+ds_pc_config "$TMP/reg2.json" "$TMP/state"
+rev2=$(yq -r '.processes.envy.environment[0]' "$TMP/state/process-compose.yaml")
+check "revision changes with the command (got $rev1 / $rev2)" [ "$rev1" != "$rev2" ]
+ds_pc_config "$TMP/reg.json" "$TMP/state"
+
+# --- F4: a service whose command can't be built stays in the config ---
+echo 99.0.0 > "$TMP/ws/env/.nvmrc"
+ds_pc_config "$TMP/reg.json" "$TMP/state"
+check "unbuildable service stays in the config" [ "$(yq -r '.processes.envy.disabled' "$TMP/state/process-compose.yaml")" = true ]
+out=$(bash "$TMP/state/run/envy.sh" 2>&1); code=$?
+check "its launcher fails with the reason (got $code: $out)" bash -c '[ "$1" -ne 0 ] && grep -q "nvm install 99.0.0" <<<"$2"' _ "$code" "$out"
+echo 22.16.0 > "$TMP/ws/env/.nvmrc"
+ds_pc_config "$TMP/reg.json" "$TMP/state"
+
+# --- a health URL with a query string keeps its service and its query ---
+jq '.services.bsa.health = "http://localhost:3010?ready=1"' "$TMP/reg.json" > "$TMP/reg3.json"
+ds_pc_config "$TMP/reg3.json" "$TMP/state"
+check "query-string health keeps the service" [ "$(yq -r '.processes.bsa.readiness_probe.http_get.path' "$TMP/state/process-compose.yaml")" = "/?ready=1" ]
+ds_pc_config "$TMP/reg.json" "$TMP/state"
+
+# --- an owner overrides working_dir ---
+echo "{\"bsa\": \"$TMP/wt\"}" > "$TMP/state/owners.json"
+mkdir -p "$TMP/wt" && echo 22.16.0 > "$TMP/wt/.nvmrc"
+ds_pc_config "$TMP/reg.json" "$TMP/state"
+check "owner dir wins" [ "$(yq -r '.processes.bsa.working_dir' "$TMP/state/process-compose.yaml")" = "$TMP/wt" ]
+
+finish
