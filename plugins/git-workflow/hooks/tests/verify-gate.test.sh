@@ -163,6 +163,123 @@ git -C "$R" checkout -q -- . && rm -f "$R/e.txt"
 gate "$(printf 'git commit -F - <<%sEOF%s\nfix\ngit push origin other\nEOF' "'" "'")"
 check "heredoc body isn't a command" 0 "$CODE"
 
+# --------------------------------------------------------------- gh stack
+# Every open branch in the stack needs a full record; merged ones are skipped.
+git -C "$R" switch -q -c sub-0 main
+git -C "$R" switch -q -c sub-a main
+echo sa >"$R/sa.txt"
+verify --full
+commit "sub-a"
+git -C "$R" switch -q -c sub-b
+echo sb >"$R/sb.txt"
+commit "sub-b"
+jq -n '{trunk: "main", currentBranch: "sub-b", branches: [
+  {name: "sub-0", isMerged: true, isQueued: false},
+  {name: "sub-a", isMerged: false, isQueued: false},
+  {name: "sub-b", isMerged: false, isQueued: false}]}' >"$FX/stack.json"
+gate 'gh stack push'
+check "stack push: an unverified open branch blocks" 2 "$CODE"
+check "stack push: names that branch" true "$(said 'gh stack push of sub-b')"
+check "stack push: the verified branch isn't named" false "$(said 'of sub-a')"
+check "stack push: merged branches are skipped" false "$(said 'sub-0')"
+gate 'gh stack submit'
+check "stack submit: same rule" 2 "$CODE"
+verify --full
+gate 'gh stack push'
+check "stack push: every open branch verified allows" 0 "$CODE"
+gate 'gh stack view'
+check "stack view: not gated" 0 "$CODE"
+rm "$FX/stack.json"
+gate 'gh stack push'
+check "stack: gh stack view failing blocks with its error" '[2,true]' "[$CODE,$(said 'no stack here')]"
+git -C "$R" switch -q feat
+
+# ------------------------------------------------- on an unverified HEAD
+# Branch unv: its HEAD and working tree have no record at all.
+git -C "$R" switch -q -c unv feat
+echo u >"$R/u.txt"
+commit "unverified"
+
+gate "git -C $R commit -m x" "$TMP"
+check "commit: git -C <dir> commit from elsewhere is gated" 2 "$CODE"
+
+# Forms that need no record must pass even here.
+git -C "$R" branch doomed unv
+gate 'git push origin --delete doomed'
+check "push: deleting an existing unverified branch needs no record" 0 "$CODE"
+gate 'git push --tags'
+check "push: --tags on an unverified HEAD needs no record" 0 "$CODE"
+git -C "$R" tag v-unv
+gate 'git push origin v-unv'
+check "push: a tag on an unverified commit needs no record" 0 "$CODE"
+
+# git and gh behind shell keywords and wrappers are still commands.
+for cmd in 'if git push; then :; fi' '! git push' 'time git push' 'env X=1 git push' 'command git push' \
+  '/usr/bin/git push' 'timeout 60 git push' 'nohup git push'; do
+  gate "$cmd"
+  check "wrapped: $cmd" 2 "$CODE"
+done
+gate 'gh pr new --title t'
+check "gh pr new is gh pr create" 2 "$CODE"
+
+# A command split over lines with backslashes is one command.
+git -C "$R" switch -q feat
+gate "$(printf 'git push -u \\\n  origin unv')"
+check "continuation: git push -u \\ origin unv is checked" 2 "$CODE"
+gate "$(printf 'gh pr create --title t \\\n  --head unv')"
+check "continuation: gh pr create ... \\ --head unv is checked" 2 "$CODE"
+
+# The message says how to verify a branch that isn't checked out.
+gate 'git push origin unv'
+check "push: names the branch to check out" true "$(said 'check out unv')"
+
+# Matching pushes send every branch: blocked like --all.
+gate 'git push origin :'
+check "push: the : refspec pushes every matching branch" 2 "$CODE"
+git -C "$R" config push.default matching
+gate 'git push'
+check "push: push.default=matching pushes every matching branch" 2 "$CODE"
+git -C "$R" config --unset push.default
+
+# A commit and a push in one call: the push would send a commit the hook
+# never saw.
+gate 'git commit -m x && git push'
+check "same call: git commit then git push is blocked" 2 "$CODE"
+check "same call: says to push in its own call" true "$(said 'own Bash call')"
+
+# gh pr create uses the branch on GitHub: origin's copy counts, not a local
+# one of the same name.
+git -C "$R" update-ref refs/remotes/origin/feat "$(git -C "$R" rev-parse unv)"
+gate 'gh pr create --head feat'
+check "pr create: origin's copy of the head is what's checked" 2 "$CODE"
+git -C "$R" update-ref -d refs/remotes/origin/feat
+gate 'gh pr create --head nosuch'
+check "pr create: a head that can't be found blocks" 2 "$CODE"
+
+# gh stack sync rebases and pushes in one go: blocked in favour of
+# rebase, verify, push.
+jq -n '{branches: [{name: "feat", isMerged: false, isQueued: false}]}' >"$FX/stack.json"
+gate 'gh stack sync'
+check "stack sync: blocked" 2 "$CODE"
+check "stack sync: says to rebase, verify, then push" true "$(said 'gh stack rebase')"
+# A warning on stderr doesn't hide the branches; output that isn't the
+# expected JSON blocks.
+printf '#!/bin/bash\necho "warning: something" >&2\ncat "$FX/stack.json"\n' >"$TMP/bin/gh-warn"
+cp "$TMP/bin/gh" "$TMP/gh.orig"
+cat >"$TMP/bin/gh" <<'EOF'
+#!/bin/bash
+echo "warning: update available" >&2
+case "$*" in "stack view --json") cat "$FX/stack.json" ;; *) exit 1 ;; esac
+EOF
+jq -n '{branches: [{name: "unv", isMerged: false, isQueued: false}]}' >"$FX/stack.json"
+gate 'gh stack push'
+check "stack: a warning on stderr doesn't hide unverified branches" 2 "$CODE"
+echo '{"stack": {}}' >"$FX/stack.json"
+gate 'gh stack push'
+check "stack: output without a branch list blocks" 2 "$CODE"
+mv "$TMP/gh.orig" "$TMP/bin/gh"
+rm -f "$FX/stack.json" "$TMP/bin/gh-warn"
+
 # ----------------------------------------------------------------- gate off
 OFF="$TMP/off"
 git init -q -b main "$OFF"
