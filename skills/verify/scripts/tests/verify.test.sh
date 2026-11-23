@@ -7,6 +7,8 @@ set -uo pipefail
 # `git rebase --exec` and git hooks export GIT_DIR. Left set, the git
 # commands below that build a throwaway repo would write to the real one.
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY GIT_PREFIX
+# Keep the user's own git config (signing, hooks, default branch) out of it.
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
 
 HERE=$(cd "$(dirname "$0")" && pwd)
 S="$HERE/.."
@@ -95,6 +97,18 @@ check "list: install-time scripts skipped" '["lint"]' "$(q '[.[].name]')"
 R=$(mkrepo nowf '{"lint":"l","test":"t"}' pnpm-lock.yaml "")
 run_verify "$R" --list
 check "list: no workflow runs any script" '[]' "$OUT"
+
+# `npm ci` is npm's install command, not the "ci" script; only `npm run ci`
+# runs that.
+R=$(mkrepo builtin '{"ci":"npm run lint","lint":"l"}' "" "$(printf 'npm ci\nnpm run lint')")
+run_verify "$R" --list
+check "list: npm ci isn't the ci script" '["lint"]' "$(q '[.[].name]')"
+
+# CI's own arguments come along; a step CI ignores (|| true) isn't a check.
+R=$(mkrepo args '{"lint":"l","test":"t","audit:deps":"a"}' "" \
+  "$(printf 'npm run lint -- --max-warnings=0\nnpm run test -- --run\nnpm run audit:deps || true')")
+run_verify "$R" --list
+check "list: CI's arguments are kept" '["CI=true npm run lint -- --max-warnings=0","CI=true npm run test -- --run"]' "$(q '[.[].run]')"
 
 for pair in "yarn.lock:yarn" ":npm" "bun.lock:bun" "package-lock.json:npm"; do
   lock=${pair%%:*} pm=${pair#*:}
@@ -208,12 +222,15 @@ check "run: the real index is untouched" true \
   "$([ "$before_idx" = "$(shasum "$R/.git/index")" ] && [ "$before_cached" = "$(git -C "$R" diff --cached)" ] && echo true || echo false)"
 git -C "$R" reset -q --hard && rm -f "$R/other.txt"
 
+# A tree nothing has verified yet (the ones above already have records).
+echo r >"$R/r.txt"
 run_verify "$R" --related
 TREE=$(lib vf_tree "$R")
 check "run: related record does not satisfy full" 1 "$(lib vf_record_ok "$TREE" full; echo $?)"
 check "run: related record satisfies related" 0 "$(lib vf_record_ok "$TREE" related; echo $?)"
 run_verify "$R" --full
 check "run: full record satisfies related" 0 "$(lib vf_record_ok "$TREE" related; echo $?)"
+rm "$R/r.txt"
 
 R=$(mkrepo runfail '{"lint":"echo bad lint; exit 1","test":"touch ran-test"}' "" "$(printf 'npm run lint\nnpm test')")
 run_verify "$R" --full
@@ -234,6 +251,53 @@ R=$(mkrepo runbuild '{"build":"mkdir -p out && echo x > out/b.js"}' "" 'npm run 
 run_verify "$R" --full
 check "run: untracked build output doesn't fail the run" 0 "$CODE"
 check "run: and the record matches the tree after the run" 0 "$(lib vf_record_ok "$(lib vf_tree "$R")" full; echo $?)"
+
+# CI runs only a test script and there's no jest or vitest: nothing is quick
+# enough for --related, but the repo's gate is on, so the run still counts.
+R=$(mkrepo runrelnone '{"test":"echo t"}' "" 'npm test')
+echo x >"$R/x.ts"
+run_verify "$R" --related
+check "run: related with nothing to run still records a pass" 0 "$(lib vf_record_ok "$(lib vf_tree "$R")" related; echo $?)"
+check "run: and doesn't call the gate off" false "$(printf '%s' "$OUT" | grep -q 'gate off' && echo true || echo false)"
+
+# A passing --related run on the same tree keeps an earlier --full pass.
+R=$(mkrepo keepfull '{"lint":"echo l","test":"echo t"}' "" "$(printf 'npm run lint\nnpm test')")
+run_verify "$R" --full
+run_verify "$R" --related
+check "run: a later --related pass keeps the --full record" 0 "$(lib vf_record_ok "$(lib vf_tree "$R")" full; echo $?)"
+
+# Untracked files the run saw are listed, and kept in the record.
+echo n >"$R/new.ts"
+run_verify "$R" --full
+check "run: untracked files are listed" true "$(printf '%s' "$OUT" | grep -q 'new.ts' && echo true || echo false)"
+run_verify "$R" --status
+check "run: and kept in the record" '["new.ts"]' "$(q .untracked)"
+rm "$R/new.ts"
+
+# Naming files checks only those: useful while working, but no record.
+echo x >>"$R/package.json"
+run_verify "$R" --related package.json
+check "run: --related with named files runs" 0 "$CODE"
+check "run: but records nothing" 1 "$(lib vf_record_ok "$(lib vf_tree "$R")" related; echo $?)"
+check "run: and says so" true "$(printf '%s' "$OUT" | grep -q 'no record' && echo true || echo false)"
+git -C "$R" checkout -q package.json
+
+# --list wins over --full whichever comes first.
+run_verify "$R" --list --full
+check "run: --list --full only lists" '["lint","test"]' "$(q '[.[].name]')"
+
+# Old logs and records are pruned.
+mkdir -p "$AGENT_TOOLKIT_STATE_DIR/verify/logs"
+touch -t 202001010000 "$AGENT_TOOLKIT_STATE_DIR/verify/old.json" "$AGENT_TOOLKIT_STATE_DIR/verify/logs/old.log"
+run_verify "$R" --full
+check "run: records and logs older than 14 days are pruned" false \
+  "$([ -e "$AGENT_TOOLKIT_STATE_DIR/verify/old.json" ] || [ -e "$AGENT_TOOLKIT_STATE_DIR/verify/logs/old.log" ] && echo true || echo false)"
+
+# CI with PR workflows that verify can't read isn't the same as no CI.
+R=$(mkrepo shellci '{}' "" 'bash run-tests.sh')
+rm "$R/package.json"
+run_verify "$R" --full
+check "run: CI it can't read says to set an override" true "$(printf '%s' "$OUT" | grep -q 'verify.local.json' && echo true || echo false)"
 
 R=$(mkrepo runoff '{"lint":"l"}' "" "")
 rm -rf "$AGENT_TOOLKIT_STATE_DIR"

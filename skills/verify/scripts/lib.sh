@@ -10,12 +10,16 @@
 #      becomes the changed files, shell-quoted; without it, the related level
 #      runs the full list.
 #   2. What CI runs: the root package.json scripts that a workflow triggered
-#      by pull_request invokes. CI is green on the default branch, so these
-#      pass before a change and a failure is the change's fault; a script CI
-#      doesn't run may already be failing. No such script: the gate is off.
+#      by pull_request invokes, with the arguments CI passes after `--`. CI
+#      is green on the default branch, so these pass before a change and a
+#      failure is the change's fault; a script CI doesn't run, or runs with
+#      `|| true`, may already be failing. No such script: the gate is off.
 
 # Install-time scripts are build steps, not checks.
 VF_SKIP_SCRIPTS=" prepare preinstall install postinstall prepublishOnly "
+# Package-manager commands that share a name with a script: `npm ci` installs,
+# it doesn't run a "ci" script. Those count only through `<pm> run <name>`.
+VF_PM_BUILTINS=" ci install i add audit update upgrade outdated exec dlx init publish pack link rebuild prune dedupe version create remove rm uninstall why list ls config "
 
 vf_die() { # code message
   local code=$1
@@ -57,28 +61,51 @@ vf_pm() {
   fi
 }
 
-# vf_ci_scripts ROOT: the package.json scripts a pull_request workflow runs,
-# one per line, ordered: format/lint, type, the rest, test, build.
-vf_ci_scripts() {
-  local root=$1 text="" f n re
-  [ -f "$root/package.json" ] || return 0
-  for f in "$root"/.github/workflows/*.yml "$root"/.github/workflows/*.yaml; do
-    [ -f "$f" ] && grep -q 'pull_request' "$f" && text="$text$(cat "$f")"$'\n'
+# vf_pr_workflows ROOT: the text of every workflow triggered by pull_request.
+vf_pr_workflows() {
+  local f
+  for f in "$1"/.github/workflows/*.yml "$1"/.github/workflows/*.yaml; do
+    [ -f "$f" ] && grep -q 'pull_request' "$f" && cat "$f" && echo
   done
+  return 0
+}
+
+# vf_ci_scripts ROOT: the package.json scripts a pull_request workflow runs,
+# one per line as "name<TAB>args", where args is what CI passes after `--`
+# (empty without). Ordered: format/lint, type, the rest, test, build.
+vf_ci_scripts() {
+  local root=$1 text n re runre line rest seg args found cat
+  [ -f "$root/package.json" ] || return 0
+  text=$(vf_pr_workflows "$root")
   [ -n "$text" ] || return 0
   jq -r '.scripts // {} | keys[]' "$root/package.json" | while IFS= read -r n; do
     case "$VF_SKIP_SCRIPTS" in *" $n "*) continue ;; esac
     re=$(printf '%s' "$n" | sed 's/[][\.*^$+?(){}|/]/\\&/g')
-    if printf '%s' "$text" | grep -qE "(pnpm|npm|yarn|bun)( run)? $re([[:space:]\"']|$)"; then
-      case "$n" in
-        format* | lint*) printf '0\t%s\n' "$n" ;;
-        type*) printf '1\t%s\n' "$n" ;;
-        test*) printf '3\t%s\n' "$n" ;;
-        build*) printf '4\t%s\n' "$n" ;;
-        *) printf '2\t%s\n' "$n" ;;
-      esac
-    fi
-  done | sort -t "$(printf '\t')" -k1,1n -k2,2 | cut -f2
+    case "$VF_PM_BUILTINS" in *" $n "*) runre=" run" ;; *) runre="( run)?" ;; esac
+    found="" args=""
+    while IFS= read -r line; do
+      rest=$(printf '%s' "$line" | sed -E "s/.*(pnpm|npm|yarn|bun)$runre $re//")
+      seg=$(printf '%s' "$rest" | sed -E 's/(&&|;).*//')
+      # CI ignores this step's result: not a check.
+      printf '%s' "$seg" | grep -qE '\|\|[[:space:]]*(true|:|exit 0)' && continue
+      args=$(printf '%s' "$seg" | sed -nE 's/^[[:space:]]+--[[:space:]]+(.*)$/\1/p' |
+        sed -E "s/[[:space:]]*(\|.*|[\"'].*)$//")
+      # A GitHub expression can't be reproduced locally.
+      # shellcheck disable=SC2016 # a literal ${{, not a shell expansion
+      case "$args" in *'${{'*) args="" ;; esac
+      found=1
+      break
+    done < <(printf '%s\n' "$text" | grep -E "(pnpm|npm|yarn|bun)$runre $re([[:space:]\"']|$)")
+    [ -n "$found" ] || continue
+    case "$n" in
+      format* | lint*) cat=0 ;;
+      type*) cat=1 ;;
+      test*) cat=3 ;;
+      build*) cat=4 ;;
+      *) cat=2 ;;
+    esac
+    printf '%s\t%s\t%s\n' "$cat" "$n" "$args"
+  done | sort -t "$(printf '\t')" -k1,1n -k2,2 | cut -f2-
 }
 
 # vf_quote FILES...: the files shell-quoted, space-separated.
@@ -116,8 +143,8 @@ vf_checks() {
     names=$(printf '%s\n' "$names" | grep -E '^(format|lint)' || true)
   fi
   {
-    [ -z "$names" ] || printf '%s\n' "$names" | while IFS= read -r n; do
-      jq -n --arg n "$n" --arg r "CI=true $pm run $n" '{name: $n, run: $r}'
+    [ -z "$names" ] || printf '%s\n' "$names" | while IFS=$(printf '\t') read -r n a; do
+      jq -n --arg n "$n" --arg r "CI=true $pm run $n${a:+ -- $a}" '{name: $n, run: $r}'
     done
     if [ "$level" = related ] && [ -n "${tests_ci:-}" ] && [ "$#" -gt 0 ]; then
       case "$pm" in
