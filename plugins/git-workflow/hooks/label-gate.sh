@@ -37,40 +37,39 @@ printf '%s' "$COMMAND" | grep -qi "$LABEL" || exit 0
 
 lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
 
-# has_label LIST: LIST, comma-separated, holds the label.
+# has_label LIST: LIST, comma-separated (quotes and spaces around each name
+# allowed), holds the label.
 has_label() {
   local IFS=,
   local l
-  for l in $1; do
+  for l in $(printf '%s' "$1" | tr -d "\"'"); do
+    l=$(printf '%s' "$l" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')
     [ "$(lower "$l")" = "$LABEL" ] && return 0
   done
   return 1
 }
 
-# unquote VALUE: VALUE without quote characters. A token like
-# --add-label="manually-verified" keeps the quotes after the = sign.
+# unquote VALUE: VALUE without quote characters.
 unquote() { printf '%s' "$1" | tr -d "\"'"; }
 
-# flag_adds FLAG... : the command's arguments carry one of the flags with the
-# label, as `--flag X`, `--flag=X` or, for a short flag, `-fX`.
+# flag_adds SEGMENT FLAG... : SEGMENT passes one of the flags a list holding
+# the label, as `--flag X`, `--flag=X` or, for a short flag, `-fX`. Read from
+# the segment's text rather than its words, so a quoted list with a space in
+# it ("help wanted,manually-verified") stays one value.
 flag_adds() {
-  local j=$gh_args w f
-  while [ "$j" -lt "${#words[@]}" ]; do
-    w=${words[$j]}
-    for f in "$@"; do
-      case "$w" in
-        "$f")
-          has_label "$(unquote "${words[$((j + 1))]:-}")" && return 0
-          ;;
-        "$f"=*)
-          has_label "$(unquote "${w#"$f"=}")" && return 0
-          ;;
-        "$f"?*)
-          case "$f" in --*) ;; *) has_label "$(unquote "${w#"$f"}")" && return 0 ;; esac
-          ;;
-      esac
-    done
-    j=$((j + 1))
+  local seg=$1 f v pre
+  shift
+  local value='("[^"]*"|'"'"'[^'"'"']*'"'"'|[^[:space:]"'"'"']+)'
+  for f in "$@"; do
+    case "$f" in
+      --*) pre="$f(=|[[:space:]]+)" ;;
+      *) pre="(^|[[:space:]])$f(=|[[:space:]]*)" ;;
+    esac
+    while IFS= read -r v; do
+      [ -n "$v" ] || continue
+      v=$(printf '%s' "$v" | sed -E "s/^[[:space:]]*$f(=|[[:space:]]*)//")
+      has_label "$v" && return 0
+    done < <(printf '%s' "$seg" | grep -oE -- "$pre$value" || true)
   done
   return 1
 }
@@ -81,8 +80,8 @@ gated() { # segment
   [ "${words[$i]##*/}" = gh ] || return 1
   hc_gh_command
   case "$gh_sub" in
-    "pr edit" | "issue edit") flag_adds --add-label ;;
-    "pr create" | "pr new" | "issue create") flag_adds --label -l ;;
+    "pr edit" | "issue edit") flag_adds "$1" --add-label ;;
+    "pr create" | "pr new" | "issue create") flag_adds "$1" --label -l ;;
     "label create") [ "$(lower "$(unquote "${words[$gh_args]:-}")")" = "$LABEL" ] ;;
     api*)
       # The request body may be in a heredoc, which the segments leave out,

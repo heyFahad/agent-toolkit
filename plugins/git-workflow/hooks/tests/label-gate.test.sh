@@ -65,6 +65,12 @@ check "-R before the verb asks" ask "$(decision 'gh pr -R o/r edit 5 --add-label
 check "--repo= before the verb asks" ask "$(decision 'gh issue --repo=o/r edit 5 --add-label manually-verified')"
 check "gh api body in a heredoc asks" ask "$(decision $'gh api repos/o/r/issues/5/labels --input - <<EOF\n{"labels":["manually-verified"]}\nEOF')"
 
+check "quoted list with a space asks" ask "$(decision 'gh pr edit 5 --add-label "help wanted,manually-verified"')"
+check "single-quoted list, space after comma, asks" ask "$(decision "gh pr edit 5 --add-label 'help wanted, Manually-Verified'")"
+check "--label= quoted list asks" ask "$(decision 'gh pr create --label="needs review,manually-verified"')"
+check "-l quoted list asks" ask "$(decision 'gh pr create -l "a b,manually-verified" --fill')"
+check "quoted other label, then remove passes" none "$(decision 'gh pr edit 5 --add-label "help wanted" --remove-label manually-verified')"
+
 check "remove-label passes" none "$(decision 'gh pr edit 12 --remove-label manually-verified')"
 check "another label passes" none "$(decision 'gh pr edit 12 --add-label bug')"
 check "echo passes" none "$(decision "echo \"$ADD\"")"
