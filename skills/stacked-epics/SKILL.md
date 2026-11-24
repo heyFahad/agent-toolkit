@@ -27,9 +27,14 @@ Use the `gh-stack` CLI extension, rooted at the parent branch as the stack's tru
 
 - **Stack a subtask branch on top of another only when it has a genuine code dependency on that branch's not-yet-merged work.** `gh-stack` is strictly linear (one parent, one child per branch). Don't chain independent subtasks together just because they're part of the same epic: that creates a false dependency where a later one can't cleanly land until an earlier, unrelated one merges.
 - When subtasks are independent of each other, give each its own branch off the trunk (its own single-link stack) rather than linking them in a chain.
-- Before starting a new subtask, run `gh stack sync`. It fetches, detects any subtask PRs merged since the last sync, fast-forwards the trunk, and cascades a rebase through every branch above the merge point (handles both regular and squash merges). This replaces manually checking whether the parent has gone stale.
+- Before starting a new subtask, bring the stack up to date in three steps:
+  1. `gh stack rebase`: it fetches, fast-forwards the trunk, and cascades a rebase through every branch above it, without pushing. This replaces manually checking whether the parent has gone stale.
+  2. `verify --full` (the `verify` skill) on each branch the rebase changed: a rebase changes the code each one holds.
+  3. `gh stack push`.
+
+  Don't use `gh stack sync` for this: it does the same rebase and pushes the branches at once, before anything can verify them, so `git-workflow`'s `verify-gate` hook blocks it. One thing only `sync` does is pull down layers someone else added to the stack on GitHub. If the stack's PRs on GitHub include branches your local stack doesn't have, run `gh stack checkout <one of the stack's PR numbers>` instead: it fetches the stack from GitHub without pushing. Then rebase, verify and push as above.
 - Branch each new subtask off the current top of the relevant stack via `gh stack add`, not a fresh `git checkout -b` off the parent directly. The latter is what silently goes stale the moment an earlier subtask's PR merges.
-- `gh stack sync` keeps subtasks in step with the trunk, not the trunk with `main`. After each release, back-merge `main` into the trunk as the `back-merge` skill describes, then sync the stacks onto it.
+- `gh stack rebase` keeps subtasks in step with the trunk, not the trunk with `main`. After each release, back-merge `main` into the trunk as the `back-merge` skill describes, then rebase the stacks onto it the same way.
 
 ## Deploying to the pre-prod branch
 

@@ -75,7 +75,7 @@ The same review applies to a single-PR change that skips the dual-PR process, an
 
 ## Opening PRs
 
-Once local changes are complete, verified (lint, tests, build all passing) and self-reviewed (above), push the branch and open **two PRs**, both as **drafts** unless told otherwise:
+Once local changes are complete, verified (`verify --full` from the `verify` skill passes on the branch) and self-reviewed (above), push the branch and open **two PRs**, both as **drafts** unless told otherwise:
 
 1. One against **`main`**: this is the PR that will eventually ship the change to production. It stays open for the lifetime of the ticket.
 2. One against **the pre-prod branch**: this deploys the change to the pre-prod environment for QA.
