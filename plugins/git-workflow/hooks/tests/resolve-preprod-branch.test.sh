@@ -135,5 +135,12 @@ counts staging 3 dev 1
 expect "nothing was cached: online again, it's found" "staging" 0
 reset_state
 
+# --- a reachable origin with no branches at all is a live answer: none.
+git init -q --bare -b main "$TMP/empty.git"
+git remote set-url origin "$TMP/empty.git"
+expect "reachable but empty origin has none" "" 3
+git remote set-url origin "$TMP/origin.git"
+reset_state
+
 echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]

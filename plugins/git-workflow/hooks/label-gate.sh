@@ -59,7 +59,9 @@ unquote() { printf '%s' "$1" | tr -d "\"'"; }
 flag_adds() {
   local seg=$1 f v pre
   shift
-  local value='("[^"]*"|'"'"'[^'"'"']*'"'"'|[^[:space:]"'"'"']+)'
+  # One shell word: quoted and bare pieces with no space between them, as in
+  # "help wanted",manually-verified.
+  local value='(("[^"]*"|'"'"'[^'"'"']*'"'"'|[^[:space:]"'"'"'])+)'
   for f in "$@"; do
     case "$f" in
       --*) pre="$f(=|[[:space:]]+)" ;;

@@ -185,7 +185,9 @@ while IFS= read -r seg; do
           case "$w" in --base | --base=* | -B | -B?* | --add-label | --add-label=* | --remove-label | --remove-label=*) EDITED="gh pr edit $w" ;; esac
         done
       fi
-      if [ "$gh_sub" = "pr ready" ] && [ -n "$EDITED" ]; then
+      undo=false
+      for w in "${words[@]:$gh_args}"; do [ "$w" != --undo ] || undo=true; done
+      if [ "$gh_sub" = "pr ready" ] && [ -n "$EDITED" ] && [ "$undo" = false ]; then
         block "gh pr ready runs in the same Bash call as $EDITED, which changes what this hook checks, so it can't see the PR as it will be. Run gh pr ready in its own Bash call."
         continue
       fi

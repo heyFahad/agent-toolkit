@@ -154,6 +154,7 @@ check "base change, then ready" block "$(gate 'gh pr edit 5 --base staging && gh
 check "  says to run it on its own" true "$(said 'its own Bash call')"
 check "-B change, then ready" block "$(gate 'gh pr edit 5 -B staging; gh pr ready 5')"
 check "label change, then ready" block "$(gate 'gh pr edit 5 --remove-label manually-verified && gh pr ready 5')"
+check "label removal, then ready --undo" allow "$(gate 'gh pr edit 5 --remove-label manually-verified && gh pr ready 5 --undo')"
 check "title change, then ready" allow "$(gate 'gh pr edit 5 --title t && gh pr ready 5')"
 
 echo "$pass passed, $fail failed"

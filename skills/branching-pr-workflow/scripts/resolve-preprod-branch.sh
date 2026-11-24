@@ -144,8 +144,9 @@ DEFAULT_BRANCH=$(default_branch)
 
 # The remote's live branch list; fall back to the last-fetched refs offline.
 LIVE=true
-REMOTE_BRANCHES=$(git ls-remote --heads origin 2>/dev/null | sed -E 's@^[^[:space:]]+[[:space:]]+refs/heads/@@')
-if [ -z "$REMOTE_BRANCHES" ]; then
+if LISTED=$(git ls-remote --heads origin 2>/dev/null); then
+  REMOTE_BRANCHES=$(printf '%s\n' "$LISTED" | sed -E 's@^[^[:space:]]+[[:space:]]+refs/heads/@@')
+else
   LIVE=false
   REMOTE_BRANCHES=$(git for-each-ref --format='%(refname:strip=3)' refs/remotes/origin 2>/dev/null)
 fi

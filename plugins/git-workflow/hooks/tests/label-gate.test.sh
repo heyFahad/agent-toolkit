@@ -69,6 +69,7 @@ check "quoted list with a space asks" ask "$(decision 'gh pr edit 5 --add-label 
 check "single-quoted list, space after comma, asks" ask "$(decision "gh pr edit 5 --add-label 'help wanted, Manually-Verified'")"
 check "--label= quoted list asks" ask "$(decision 'gh pr create --label="needs review,manually-verified"')"
 check "-l quoted list asks" ask "$(decision 'gh pr create -l "a b,manually-verified" --fill')"
+check "partly quoted list asks" ask "$(decision 'gh pr edit 5 --add-label "help wanted",manually-verified')"
 check "quoted other label, then remove passes" none "$(decision 'gh pr edit 5 --add-label "help wanted" --remove-label manually-verified')"
 
 check "remove-label passes" none "$(decision 'gh pr edit 12 --remove-label manually-verified')"
