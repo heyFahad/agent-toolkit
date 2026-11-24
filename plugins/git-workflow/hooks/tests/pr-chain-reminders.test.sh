@@ -43,7 +43,7 @@ remind() {
 }
 
 CHECK_PR="Once every PR for this change is open (the main PR and its pre-prod PR, or the stack's PRs), run the check-pr skill on them. Don't stop to ask the user first."
-DEVSTACK="Next: run devstack down, then the branch-cleanup skill."
+DEVSTACK="Next: if that was the pre-prod PR the user just approved, run devstack down (it stops every running service), then the branch-cleanup skill. Otherwise, run only the branch-cleanup skill once every PR is clean."
 CLEANUP="Next: run the branch-cleanup skill."
 
 check "gh pr create" "$CHECK_PR" "$(remind 'gh pr create --draft --base main --fill')"

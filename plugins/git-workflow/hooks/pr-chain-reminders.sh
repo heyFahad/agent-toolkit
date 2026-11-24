@@ -4,7 +4,8 @@
 #
 #   after gh pr create, gh pr new,   run check-pr once every PR for the
 #   gh stack submit                  change is open
-#   after gh pr ready (not --undo)   devstack down (when installed), then
+#   after gh pr ready (not --undo)   devstack down (when installed, and only
+#                                    after the user's approval), then
 #                                    branch-cleanup
 #
 # PostToolUse runs only when the command succeeded (a failed one fires
@@ -43,7 +44,7 @@ add() { TEXT="${TEXT:+$TEXT$'\n'}$1"; }
 [ "$OPENED" = false ] || add "Once every PR for this change is open (the main PR and its pre-prod PR, or the stack's PRs), run the check-pr skill on them. Don't stop to ask the user first."
 if [ "$READIED" = true ]; then
   if command -v devstack >/dev/null 2>&1; then
-    add "Next: run devstack down, then the branch-cleanup skill."
+    add "Next: if that was the pre-prod PR the user just approved, run devstack down (it stops every running service), then the branch-cleanup skill. Otherwise, run only the branch-cleanup skill once every PR is clean."
   else
     add "Next: run the branch-cleanup skill."
   fi
