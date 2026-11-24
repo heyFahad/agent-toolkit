@@ -1,6 +1,6 @@
 # Contributing to agent-toolkit
 
-There's no build step and no dependencies to install: editing a `SKILL.md`, a hook script, or a manifest needs nothing beyond a text editor. `claude` and `codex` (used below and in CI) are the standalone CLI installs, not something this repo brings in via a package manager.
+Use Python 3 to refresh Codex packages and run the discovery check. The checks use the standalone `claude` and `codex` CLIs.
 
 ## Test a change locally, before pushing anywhere
 
@@ -13,30 +13,30 @@ claude plugin install git-workflow@agent-toolkit
 
 ```bash
 codex plugin marketplace add /path/to/agent-toolkit
-codex plugin list --marketplace agent-toolkit --available
+codex plugin add git-workflow@agent-toolkit
 ```
 
-A local-path marketplace loads in place, so edits to a skill or hook show up on the next session without reinstalling. Run `claude plugin validate .` (or point it at any plugin subdirectory, or at `skills/`) any time to check a manifest before installing it.
+Run `python3 scripts/check-codex-plugins.py` to install the checkout and verify discovery in an isolated Codex settings directory. Run `claude plugin validate .` or pass a plugin directory or `skills/` to validate Claude Code packages.
 
 ## Repo layout
 
 - `AGENTS.md`: the handful of standing rules with no hook mechanism (yet) to enforce them.
 - `skills/<name>/SKILL.md`: the real, canonical content for every skill, in the flat layout external tools expect.
-- `plugins/<name>/`: one directory per plugin, holding `.claude-plugin/plugin.json`, `.codex-plugin/plugin.json`, a `skills/` folder of symlinks back to the canonical copies in `skills/`, and `hooks/hooks.json` plus scripts where a rule is mechanically enforced.
-- `.claude-plugin/marketplace.json` and `.agents/plugins/marketplace.json`: the same set of plugins, listed once per marketplace format. Adding a plugin means adding it to both files.
+- `plugins/<name>/` holds the Claude Code manifests, skill symlinks, and shared hook scripts.
+- `codex-plugins/<name>/` holds the Codex manifests and generated runtime files. Codex installs the contents of each package directory, so its runtime files live inside that directory.
+- `.claude-plugin/marketplace.json` and `.agents/plugins/marketplace.json` list the same plugin names in each host's format.
 
-Codex's plugin manifests (`.codex-plugin/plugin.json`) carry a fuller `interface` block than Claude's. That's not this repo's invention: Codex's own plugin validator (`openai/codex`'s `validate_plugin.py`) requires it.
+Edit canonical skills under `skills/`. The links in `plugins/<name>/skills/` determine which skills each plugin ships. Run `python3 scripts/sync-codex-packages.py` and commit the refreshed Codex copies with the source change. Skill tests stay with the canonical files.
 
-Plugin-side skill folders are symlinks rather than copies on purpose: `plugins/<name>/skills/<skill>` always points back to `skills/<skill>`, so there's exactly one place to edit a skill's content regardless of how many plugins reference it. Always edit the `skills/<name>/SKILL.md` path, never the symlink under `plugins/`.
-
-`claude plugin validate` will note that it doesn't follow those symlinks when checking a plugin directly. That's expected: a real session loading the plugin does follow them, and `claude plugin validate skills` checks the canonical content directly.
+Claude Code follows the existing symlinks during plugin loading. Its validator may report that it skipped symlinks while checking a plugin directory. The canonical skills are validated separately.
 
 ## CI
 
 Every push and PR to `main` (`.github/workflows/validate.yml`) checks:
 
 - the Claude Code marketplace manifest, with `claude plugin validate --strict`
-- the Codex marketplace manifest, by actually registering it with the real `codex` CLI and confirming its plugin list matches the Claude Code marketplace's exactly (`claude plugin validate` doesn't understand Codex's marketplace schema, so this uses Codex's own tooling instead, checked against the Claude Code manifest as the source of truth rather than a hardcoded count)
+- Codex package files against their canonical sources
+- the Codex marketplace catalog, enabled plugins, and discovered skills in an isolated settings directory
 - every plugin directory, with plain (non-strict) `claude plugin validate`, since the symlink notice above would otherwise fail a strict check
 - the canonical `skills/` directory, with `claude plugin validate --strict` (no symlinks there to trip that check)
 - every shell script under `plugins/` and `skills/` (hooks and skill helper scripts), for valid bash syntax and the executable bit

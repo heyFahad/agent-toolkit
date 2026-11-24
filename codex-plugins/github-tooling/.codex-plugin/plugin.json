@@ -1,0 +1,25 @@
+{
+  "name": "github-tooling",
+  "description": "GitHub PR review and CI triage",
+  "interface": {
+    "displayName": "GitHub Tooling",
+    "shortDescription": "GitHub PR review and CI triage",
+    "longDescription": "check-pr: Copilot, human review and CI triage across a ticket's main and pre-prod PRs.",
+    "developerName": "Fahad Javed",
+    "category": "Developer Tools",
+    "capabilities": [
+      "GitHub",
+      "Validation"
+    ],
+    "defaultPrompt": [
+      "Triage the bot review findings on this PR"
+    ]
+  },
+  "version": "2.2.1",
+  "author": {
+    "name": "Fahad Javed",
+    "email": "fahad@heyfahad.dev",
+    "url": "https://heyfahad.dev"
+  },
+  "skills": "./skills/"
+}

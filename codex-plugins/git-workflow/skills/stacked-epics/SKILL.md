@@ -1,0 +1,53 @@
+---
+name: stacked-epics
+description: Managing a long-running epic made of several related subtasks/tickets using a trunk branch and gh-stack. Use when starting work on a subtask that belongs to a multi-ticket epic, when deciding whether two subtasks should stack, or when deploying an epic's current progress to the pre-prod branch.
+metadata:
+  category: git-workflow
+---
+
+# Multi-subtask epics and stacked PRs
+
+This applies to a long-running epic or feature made of several related subtasks/tickets, not a standalone ticket, which uses the `branching-pr-workflow` skill as-is.
+
+As in that skill, `main` below is short for the repo's default branch, and "the pre-prod branch" is whatever `branching-pr-workflow`'s `scripts/resolve-preprod-branch.sh` reports for this repo (`dev`, `develop`, `staging`, ...). Never assume either name.
+
+## Trunk branch
+
+Create a parent/trunk branch for the epic off `main`, named `feature/<EPIC-TICKET>-<slug>`. Open one draft PR from it against `main`. It stays open for the epic's lifetime as a tracking/integration PR, not something reviewed line-by-line (the subtask PRs are the real review surface). Apply the `production` label here only, never on subtask PRs.
+
+## Subtask branches never get the standalone dual-PR treatment
+
+Regardless of how large or behavior-changing a given subtask is (not even the docs-only carve-out from `branching-pr-workflow` applies here), it does not get its own `main` PR or its own pre-prod PR. Every subtask PR targets only the branch immediately below it in the `gh-stack` chain (an earlier subtask branch, or the trunk for the first one in a stack), never `main` or the pre-prod branch directly. The trunk's PR against `main` is the *only* PR in the whole epic that ever points at `main`.
+
+Subtask PRs are the epic's real review surface, so each one gets the self-review from `branching-pr-workflow` before it is opened. The range is the subtask's own work, measured against the local branch below it in the stack, since that branch may not be pushed yet: `git diff <branch-below>...HEAD`. The trunk's PRs, to `main` and to the pre-prod branch, carry only subtask work that was already reviewed, so they don't get a review of their own. The one exception is a trunk pre-prod PR from a `conflicts/...` branch whose merge needed conflicts resolved by hand: that resolution is new code, and gets the resolution review from `branching-pr-workflow`. So does a back-merge of `main` into the trunk whose conflicts were resolved by hand. Its findings are fixed with a new commit on the branch that holds that merge (the trunk itself, or its `backmerge/...` branch, per `back-merge`), never by rebasing it.
+
+## Managing the stack
+
+Use the `gh-stack` CLI extension, rooted at the parent branch as the stack's trunk: `gh stack init --base <parent> <first-subtask-branch>`.
+
+- **Stack a subtask branch on top of another only when it has a genuine code dependency on that branch's not-yet-merged work.** `gh-stack` is strictly linear (one parent, one child per branch). Don't chain independent subtasks together just because they're part of the same epic: that creates a false dependency where a later one can't cleanly land until an earlier, unrelated one merges.
+- When subtasks are independent of each other, give each its own branch off the trunk (its own single-link stack) rather than linking them in a chain.
+- Before starting a new subtask, bring the stack up to date in three steps:
+  1. `gh stack rebase`: it fetches, fast-forwards the trunk, and cascades a rebase through every branch above it, without pushing. This replaces manually checking whether the parent has gone stale.
+  2. `verify --full` (the `verify` skill) on each branch the rebase changed: a rebase changes the code each one holds.
+  3. `gh stack push`.
+
+  Don't use `gh stack sync` for this: it does the same rebase and pushes the branches at once, before anything can verify them, so `git-workflow`'s `verify-gate` hook blocks it. One thing only `sync` does is pull down layers someone else added to the stack on GitHub. If the stack's PRs on GitHub include branches your local stack doesn't have, run `gh stack checkout <one of the stack's PR numbers>` instead: it fetches the stack from GitHub without pushing. Then rebase, verify and push as above.
+- Branch each new subtask off the current top of the relevant stack via `gh stack add`, not a fresh `git checkout -b` off the parent directly. The latter is what silently goes stale the moment an earlier subtask's PR merges.
+- `gh stack rebase` keeps subtasks in step with the trunk, not the trunk with `main`. After each release, back-merge `main` into the trunk as the `back-merge` skill describes, then rebase the stacks onto it the same way.
+
+## Deploying to the pre-prod branch
+
+Deploying the epic's current state for QA happens at the trunk level only, never per subtask. Whenever the work merged into the trunk so far needs QA, open a PR from the trunk branch against the pre-prod branch. This carries everything merged into the trunk up to that point.
+
+Run the same pre-check as a standalone ticket first, with the trunk as the feature branch: conflicts and unrelated files from tickets the pre-prod branch already has, as described in the `clean-preprod-pr` skill (the `preprod-pr-check` hook enforces it). Fall through to that skill's `conflicts/...` branch recipe only if the check fails. Repeat as needed across the epic's lifetime: each pre-prod round is its own PR from the trunk, or from a `conflicts/...` branch the trunk is merged into.
+
+## Merging the epic
+
+Merge the trunk's `main` PR only once every subtask that belongs in this release has merged into the trunk and the trunk has been validated on the pre-prod environment. That merge is what ships the whole epic to production. Treat it as the real deploy gate, not a rubber-stamp just because the individual subtask PRs were already reviewed.
+
+Once that's done, the `branch-cleanup` skill removes the local trunk, subtask and `conflicts/...` branches, and their worktrees.
+
+## Known limits
+
+Merging a stacked PR still requires the GitHub web UI (no CLI merge support yet), and the target repo/org needs GitHub's stacked-PRs feature enabled. Verify this on a new repo (a `submit`/`link` failure is the signal) before assuming it's available; the branches and PRs still work as plain sequential PRs even without it.
