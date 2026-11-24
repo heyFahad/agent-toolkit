@@ -30,9 +30,9 @@ cmd=${1:-}
 [ -n "$cmd" ] || { usage >&2; exit 2; }
 shift
 case $cmd in
-  up|status|logs|restart|down|urls|attach|ports)
+  up|status|logs|restart|down|urls|attach|ports|idle-watch)
     if [ "$cmd" = ports ]; then ds_require_tools jq yq; else ds_require_tools; fi
-    fn="cmd_$cmd"
+    fn="cmd_${cmd//-/_}"
     if declare -F "$fn" >/dev/null; then "$fn" "$@"; else ds_die 2 "$cmd: not implemented yet"; fi
     ;;
   -h|--help|help) usage ;;

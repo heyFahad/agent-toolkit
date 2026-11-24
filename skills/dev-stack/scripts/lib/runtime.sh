@@ -11,6 +11,8 @@ DS_LIB=${DS_LIB:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}
 . "$DS_LIB/state.sh"
 # shellcheck source=infra.sh
 . "$DS_LIB/infra.sh"
+# shellcheck source=idle.sh
+. "$DS_LIB/idle.sh"
 
 # --- process-compose plumbing ---------------------------------------------
 
@@ -102,8 +104,23 @@ _ds_lock() {
 }
 _ds_unlock() { local lock; lock="$(ds_state_dir)/lock"; [ "$(cat "$lock/pid" 2>/dev/null)" = $$ ] && rm -rf "$lock"; }
 
-# _ds_exit: the one EXIT trap: release the lock and drop this command's snapshot.
-_ds_exit() { _ds_unlock; [ -n "${DS_REG:-}" ] && rm -f "$DS_REG"; return 0; }
+# _ds_try_lock: take the lock only if it's free right now (the idle watchdog
+# treats a running devstack command as activity rather than waiting for it).
+_ds_try_lock() {
+  local lock; lock="$(ds_state_dir)/lock"
+  mkdir "$lock" 2>/dev/null || return 1
+  echo $$ > "$lock/pid"
+}
+
+# _ds_exit: the one EXIT trap: release the lock, drop this command's snapshot,
+# and (in the idle watchdog) give up the watchdog claim and its pending sleep.
+_ds_exit() {
+  _ds_unlock
+  [ -n "${DS_REG:-}" ] && rm -f "$DS_REG"
+  [ -n "${DS_SLEEP:-}" ] && kill "$DS_SLEEP" 2>/dev/null
+  [ -n "${DS_IDLE_OWNED:-}" ] && _ds_idle_release
+  return 0
+}
 
 # _ds_state_writable: fail at once (not as lock contention) when the state
 # folder can't be created or written, as in a sandbox that blocks it.
@@ -243,6 +260,8 @@ _ds_up() {
   shift 2
   while [ "$1" != -- ]; do froms+=("$1"); shift; done; shift
   names=("$@")
+  local idle_limit
+  idle_limit=$(_ds_idle_limit "$DS_REG") || exit $?
   # An optional dependency named on the command line is as good as --with it,
   # so it's ordered (and waited for) before its dependant.
   with="$with,$(IFS=,; echo "${names[*]}")"
@@ -337,6 +356,7 @@ _ds_up() {
     ds_die 1 "process-compose rejected the new config; nothing was changed"
   fi
   rm -rf "$prev"
+  _ds_idle_arm "$idle_limit"
   ps=$(_ds_ps)
   while IFS= read -r svc; do
     [ -n "$svc" ] || continue
@@ -385,9 +405,10 @@ cmd_status() {
            ready: .is_ready, port: $reg[0].services[.name].port,
            dir: ($own[0][.name] // ($reg[0]._root + "/" + $reg[0].services[.name].repo))})' <<<"$ps")
   if [ $json = 1 ]; then echo "$rows"; return; fi
-  if [ "$(jq length <<<"$rows")" = 0 ]; then echo "nothing running"; return; fi
+  if [ "$(jq length <<<"$rows")" = 0 ]; then echo "nothing running"; _ds_idle_status 0; return; fi
   jq -r '.[] | [.name, (.port|tostring), (if .ready == "Ready" then "Ready" else .status end), .dir] | @tsv' <<<"$rows" \
     | while IFS=$'\t' read -r n p s d; do printf '%-16s %-5s %-10s %s\n' "$n" "$p" "$s" "$d"; done
+  _ds_idle_status 1
 }
 
 cmd_logs() {
@@ -438,6 +459,7 @@ cmd_restart() {
     fi
   fi
   [ "$(_ds_proc "$ps" "$svc" is_running)" = true ] || ds_die 1 "$svc isn't running; use devstack up $svc"
+  _ds_idle_touch
   : > "$(ds_state_dir)/logs/$svc.log"
   _ds_pc process restart "$svc" >/dev/null || ds_die 1 "process-compose couldn't restart $svc"
   _ds_wait "$svc" || exit 1
@@ -451,10 +473,9 @@ cmd_down() {
   _ds_reach
   f="$(ds_state_dir)/owners.json"
   if [ $# -eq 0 ]; then
-    if _ds_alive; then
-      _ds_pc down >/dev/null || ds_die 1 "process-compose down failed; the stack may still be running (check devstack status)"
-    fi
-    rm -f "$DS_SOCK" "$(ds_state_dir)/server.registry"; echo '{}' > "$f"
+    _ds_down_all
+    _ds_idle_stop
+    rm -f "$(_ds_idle_dir)/stopped"
     echo "stopped everything (Docker containers left running)"
     return
   fi
@@ -467,6 +488,14 @@ cmd_down() {
     [ -f "$f" ] && jq --arg s "$svc" 'del(.[$s])' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
     echo "stopped $svc"
   done
+}
+
+# _ds_down_all: stop the process-compose server and forget every owner.
+_ds_down_all() {
+  if _ds_alive; then
+    _ds_pc down >/dev/null || ds_die 1 "process-compose down failed; the stack may still be running (check devstack status)"
+  fi
+  rm -f "$DS_SOCK" "$(ds_state_dir)/server.registry"; echo '{}' > "$(ds_state_dir)/owners.json"
 }
 
 cmd_urls() {

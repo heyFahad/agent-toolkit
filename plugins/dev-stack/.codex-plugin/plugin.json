@@ -4,7 +4,7 @@
   "interface": {
     "displayName": "Dev Stack",
     "shortDescription": "Start, check and stop the local services a change needs, each on its own Node version, Doppler config and port",
-    "longDescription": "A devstack command that reads a workspace registry (stack.yaml), starts only the services a change needs plus their dependencies through one background process-compose server, gates each on a health check, runs services from a ticket worktree when asked, checks the Docker containers they rely on, and keeps its output to a few lines so agents can verify their work without reading whole logs.",
+    "longDescription": "A devstack command that reads a workspace registry (stack.yaml), starts only the services a change needs plus their dependencies through one background process-compose server, gates each on a health check, runs services from a ticket worktree when asked, checks the Docker containers they rely on, keeps its output to a few lines so agents can verify their work without reading whole logs, and stops a stack nobody has used for 15 minutes.",
     "developerName": "Fahad Javed",
     "category": "Developer Tools",
     "capabilities": [
@@ -16,7 +16,7 @@
       "Show me which local services are running"
     ]
   },
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": {
     "name": "Fahad Javed",
     "email": "fahad@heyfahad.dev",
