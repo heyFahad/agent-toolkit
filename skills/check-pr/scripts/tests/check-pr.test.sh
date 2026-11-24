@@ -151,6 +151,77 @@ GITHUB_TOKEN=env-token run find-pr-pair.sh feat/ATC-1-thing
 check "pair: ignores an exported GITHUB_TOKEN" 0 "$(calls 'GH_TOKEN=env-token')"
 check "pair: used the keyring token" 0 "$(grep -v '^GH_TOKEN=stub-token ' "$GH_CALLS" | grep -vc ' auth token' || true)"
 
+# ---------------------------------------- find-pr-pair: pre-prod vs stacked
+# A checkout of o/r, so the resolver gets asked, and a stub resolver.
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
+OR="$TMP/o-r"
+git init -q "$OR"
+git -C "$OR" remote add origin git@github.com:O/R.git
+cat >"$TMP/resolver" <<'EOF'
+#!/bin/bash
+case "$RESOLVE" in
+  2) echo "ambiguous" >&2; exit 2 ;;
+  3) exit 3 ;;
+  *) echo "$RESOLVE" ;;
+esac
+EOF
+chmod +x "$TMP/resolver"
+cat >"$FX/pulls.json" <<'EOF'
+{"data":{"repository":{"defaultBranchRef":{"name":"main"},"pullRequests":{"nodes":[
+ {"number":21,"url":"u21","title":"t","isDraft":true,"headRefName":"feat/PROJ-9-x","baseRefName":"main","headRefOid":"a9"},
+ {"number":22,"url":"u22","title":"t","isDraft":true,"headRefName":"feat/PROJ-9-x","baseRefName":"staging","headRefOid":"a9"},
+ {"number":23,"url":"u23","title":"t","isDraft":true,"headRefName":"feat/PROJ-9-x","baseRefName":"feat/PROJ-8-base","headRefOid":"a9"},
+ {"number":24,"url":"u24","title":"t","isDraft":true,"headRefName":"conflicts/PROJ-9-x","baseRefName":"staging","headRefOid":"c24"},
+ {"number":25,"url":"u25","title":"t","isDraft":true,"headRefName":"feat/PROJ-9-x","baseRefName":"dev","headRefOid":"a9"}
+]}}}}
+EOF
+cd "$OR" || exit 1
+export AGENT_TOOLKIT_PREPROD_RESOLVER="$TMP/resolver" CLAUDE_CONFIG_DIR="$TMP/claude-config"
+
+RESOLVE=staging run find-pr-pair.sh -R o/r feat/PROJ-9-x
+check "stack: exit 0" 0 "$CODE"
+check "stack: pre-prod branch" '"staging"' "$(q .preprodBranch)"
+check "stack: only PRs into staging are pre-prod" '[22,24]' "$(q '[.preprod[].number]')"
+check "stack: the rest are stacked" '[[23,"head"],[25,"head"]]' "$(q '[.stacked[] | [.number, .matchedBy]]')"
+check "stack: main PR" 21 "$(q .main.number)"
+
+RESOLVE=staging run find-pr-pair.sh feat/PROJ-9-x
+check "stack: repo from gh repo view still asks the resolver" '"staging"' "$(q .preprodBranch)"
+
+RESOLVE=3 run find-pr-pair.sh -R o/r feat/PROJ-9-x
+check "stack: no pre-prod branch" '""' "$(q .preprodBranch)"
+check "stack: no pre-prod branch, no pre-prod PRs" '[]' "$(q '[.preprod[].number]')"
+check "stack: no pre-prod branch, feature PRs are stacked" '[22,23,25]' "$(q '[.stacked[].number]')"
+
+RESOLVE=2 run find-pr-pair.sh -R o/r feat/PROJ-9-x
+check "stack: ambiguous resolver" null "$(q .preprodBranch)"
+check "stack: ambiguous keeps every non-default base" '[22,23,24,25]' "$(q '[.preprod[].number]')"
+check "stack: ambiguous stacks nothing" '[]' "$(q .stacked)"
+
+AGENT_TOOLKIT_PREPROD_RESOLVER=/nonexistent RESOLVE=staging run find-pr-pair.sh -R o/r feat/PROJ-9-x
+check "stack: missing resolver" '[null,[22,23,24,25]]' "$(q '[.preprodBranch, [.preprod[].number]]')"
+
+RESOLVE=staging run find-pr-pair.sh -R other/repo feat/PROJ-9-x
+check "stack: -R another repo doesn't ask this checkout's resolver" null "$(q .preprodBranch)"
+cd "$HERE" || exit 1
+
+# find_preprod_resolver: an installed git-workflow plugin's copy, when
+# neither the variable nor a sibling skill has one.
+INST="$TMP/plugins-cache/git-workflow/9.9.9"
+mkdir -p "$INST/skills/branching-pr-workflow/scripts" "$CLAUDE_CONFIG_DIR/plugins" "$TMP/lonely"
+: >"$INST/skills/branching-pr-workflow/scripts/resolve-preprod-branch.sh"
+jq -n --arg p "$INST" '{plugins: {"git-workflow@agent-toolkit": [{installPath: $p}]}}' >"$CLAUDE_CONFIG_DIR/plugins/installed_plugins.json"
+# shellcheck disable=SC1091 # lib.sh, sourced by path
+check "resolver: from installed_plugins.json" "$INST/skills/branching-pr-workflow/scripts/resolve-preprod-branch.sh" \
+  "$(unset AGENT_TOOLKIT_PREPROD_RESOLVER; . "$S/lib.sh"; find_preprod_resolver "$TMP/lonely")"
+# shellcheck disable=SC1091 # lib.sh, sourced by path
+check "resolver: the sibling skill first" "$S/../../branching-pr-workflow/scripts/resolve-preprod-branch.sh" \
+  "$(unset AGENT_TOOLKIT_PREPROD_RESOLVER; . "$S/lib.sh"; find_preprod_resolver "$S")"
+# shellcheck disable=SC1091 # lib.sh, sourced by path
+check "resolver: none" "" \
+  "$(unset AGENT_TOOLKIT_PREPROD_RESOLVER; CLAUDE_CONFIG_DIR="$TMP/empty"; . "$S/lib.sh"; find_preprod_resolver "$TMP/lonely")"
+unset AGENT_TOOLKIT_PREPROD_RESOLVER
+
 # --------------------------------------------------------------- review-threads
 cat >"$FX/threads-1.json" <<'EOF'
 {"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":true,"endCursor":"x"},"nodes":[
@@ -854,6 +925,73 @@ run pr-gate.sh -R o/r 12
 check "gate: review and CI on different heads block" '[false,true]' \
   "$(q '[.clean, ([.blocking[].reason] | index("head-moved") != null)]')"
 check "gate: heads differ, so nobody is credited with reviewing CI's head" null "$(q .reviewer)"
+
+# -------------------------------------------------------------- wait-for-review
+# A stub pr-gate.sh: the Nth read of PR P answers from $WFX/P.N.json, or the
+# last one there is; it exits 2 while $WFX/P.fail counts down.
+WFX="$TMP/wait"
+mkdir -p "$WFX"
+cat >"$TMP/gate-stub" <<'EOF'
+#!/bin/bash
+pr=${!#}
+n=$(($(cat "$WFX/$pr.count" 2>/dev/null || echo 0) + 1))
+echo "$n" >"$WFX/$pr.count"
+echo "$(date +%s) $*" >>"$WFX/log"
+if [ -f "$WFX/$pr.fail" ]; then echo "lookup failed" >&2; exit 2; fi
+f="$WFX/$pr.$n.json"
+while [ ! -f "$f" ] && [ "$n" -gt 1 ]; do n=$((n - 1)); f="$WFX/$pr.$n.json"; done
+cat "$f"
+jq -e .clean "$f" >/dev/null
+EOF
+chmod +x "$TMP/gate-stub"
+export WFX CHECK_PR_GATE="$TMP/gate-stub" CHECK_PR_WAIT_INTERVAL=0
+gate_json() { # PR BLOCKING-REASON...
+  local pr=$1
+  shift
+  jq -n --argjson pr "$pr" '{pr: $pr, clean: ($ARGS.positional | length == 0),
+    blocking: ($ARGS.positional | map({reason: ., detail: ""})), warnings: []}' --args "$@"
+}
+wreset() { rm -rf "$WFX" && mkdir -p "$WFX"; }
+
+wreset
+gate_json 1 ci-pending >"$WFX/1.1.json"
+gate_json 1 >"$WFX/1.2.json"
+gate_json 2 >"$WFX/2.1.json"
+run wait-for-review.sh -R o/r 1 2
+check "wait: settles" 0 "$CODE"
+check "wait: one entry per PR, the last read" '[[1,true],[2,true]]' "$(q '[.[] | [.pr, .clean]]')"
+check "wait: passes -R on" 1 "$(grep -c -- '-R o/r 1' "$WFX/log" | awk '{print ($1 >= 1)}')"
+
+wreset
+gate_json 3 copilot-pending >"$WFX/3.1.json"
+CHECK_PR_WAIT_INTERVAL=1 run wait-for-review.sh --timeout 1s 3
+check "wait: times out" 124 "$CODE"
+check "wait: prints the pending state" '[["copilot-pending"]]' "$(q '[.[] | [.blocking[].reason]]')"
+
+wreset
+gate_json 4 head-moved >"$WFX/4.1.json"
+gate_json 4 unresolved-threads >"$WFX/4.2.json"
+run wait-for-review.sh 4
+check "wait: head-moved isn't settled, other blockers are" '[0,2]' "[$CODE,$(cat "$WFX/4.count")]"
+
+wreset
+touch "$WFX/5.fail"
+run wait-for-review.sh 5
+check "wait: three failed reads in a row" '[2,3]' "[$CODE,$(cat "$WFX/5.count")]"
+
+run wait-for-review.sh --timeout 5x 1
+check "wait: bad duration" 2 "$CODE"
+run wait-for-review.sh
+check "wait: no PR" 2 "$CODE"
+
+wreset
+gate_json 6 >"$WFX/6.1.json"
+start=$(date +%s)
+CHECK_PR_WAIT_INTERVAL=1 run wait-for-review.sh 6
+first=$(awk 'NR == 1 { print $1 }' "$WFX/log")
+check "wait: settles after one read" '[0,1]' "[$CODE,$(cat "$WFX/6.count")]"
+check "wait: the first read comes after an interval, not at launch" true "$([ $((first - start)) -ge 1 ] && echo true || echo false)"
+unset CHECK_PR_GATE CHECK_PR_WAIT_INTERVAL
 
 echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]

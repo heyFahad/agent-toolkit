@@ -1,15 +1,15 @@
 ---
 name: check-pr
-description: Use when checking your own PR's CI and review feedback, getting a ticket's PRs clean, fixing a failing build, or triaging Copilot or human review comments, across both the main PR and its pre-prod PR. Requests Copilot reviews (falling back to Codex or diff-review when Copilot declines), assesses every finding, fixes on the feature branch, replies, gives one clean/not-clean answer, then marks the pre-prod PR ready for review and cleans up local branches once every PR is clean. Not for reviewing someone else's PR (see give-pr-review).
+description: Use when checking your own PR's CI and review feedback, getting a ticket's PRs clean, fixing a failing build, or triaging Copilot or human review comments, across both the main PR and its pre-prod PR. Requests Copilot reviews (falling back to Codex or diff-review when Copilot declines), assesses every finding, fixes on the feature branch, replies, waits for reviews and CI on its own, gives one clean/not-clean answer, then asks the user to test the running app. Only on the user's approval does it add `manually-verified`, mark the pre-prod PR ready for review and clean up. Not for reviewing someone else's PR (see give-pr-review).
 metadata:
   category: github-tooling
 ---
 
 # Check a ticket's PRs
 
-One pass over a ticket's PRs: request Copilot, read CI and every unresolved review thread on both PRs, fix what is real, answer the rest, and say whether each PR is clean. Once they all are, mark the pre-prod PR ready for review and clean up. For repeated passes, wrap this skill in `/loop`.
+One pass over a ticket's PRs: request Copilot, wait for it and for CI, read every unresolved review thread on both PRs, fix what is real, answer the rest, and say whether each PR is clean. Once they all are, the user tests the running app. Their approval in chat is what lets the pre-prod PR out of draft, and only then do the local branches get cleaned up.
 
-The first run on a ticket's new PRs waits for the user: `branching-pr-workflow` opens them as drafts and stops, and this skill starts once the user has looked at them and said go. Later runs (a human review, a CI break) need no new go-ahead.
+`branching-pr-workflow` runs this skill as soon as it opens the drafts; don't wait for a go-ahead. Later runs (a human review, a CI break) work the same way.
 
 ## Scripts
 
@@ -17,7 +17,7 @@ All in this skill's `scripts/` directory, all print JSON. Run each one as `bash 
 
 | Script | Gives you |
 | --- | --- |
-| `find-pr-pair.sh [BRANCH]` | The ticket's PRs from its feature branch: `main` and `preprod[]` |
+| `find-pr-pair.sh [BRANCH]` | The ticket's PRs from its feature branch: `main`, `preprod[]`, `stacked[]`, and `preprodBranch` |
 | `review-threads.sh PR [--all]` | Unresolved threads with ids, from Copilot, other bots and humans |
 | `copilot-review.sh PR` | Copilot's latest review: `requested`, `stale`, and the findings only in its body, `missedIssues[]` and `lowConfidence[]` |
 | `ci-status.sh PR` | Checks on the head commit: `failing[]`, `pending[]`, with `jobId` for Actions jobs |
@@ -26,15 +26,17 @@ All in this skill's `scripts/` directory, all print JSON. Run each one as `bash 
 | `request-copilot.sh PR...` | Requests Copilot on each PR, then `accepted` per PR: false when Copilot declined |
 | `fallback-review.sh PR` | For a PR Copilot declined: `reviewer` (`codex` or `diff-review`), the `base..head` range, and Codex's review in `output` |
 | `pr-gate.sh PR` | `clean`, `reviewer` (who reviewed the head), `blocking[]`, `warnings[]`; exit 0 only when clean |
+| `wait-for-review.sh [--timeout 15m] PR...` | Waits until no CI check and no Copilot request is pending on any PR, then prints each PR's `pr-gate.sh` output. Exit 124 on timeout |
 
 ## 1. Find the PRs
 
 Run `find-pr-pair.sh` from the feature branch (not a `conflicts/...` branch). Never assume `dev`, `develop` or `staging`; the script reads the repo's default branch and matches PRs by head:
 
 - `main` is the PR from the feature branch into the default branch.
-- `preprod` is every PR into any other branch whose head is the feature branch or one of its `conflicts/...` branches.
+- `preprod` is every PR into the pre-prod branch (`preprodBranch`, from `git-workflow`'s `resolve-preprod-branch.sh`) whose head is the feature branch or one of its `conflicts/...` branches.
+- `stacked` is the feature branch's PRs into any other branch: a `stacked-epics` subtask PR into the branch below it. Check these like any other PR.
 
-If `preprod` has more than one entry, don't guess. If git-workflow's `resolve-preprod-branch.sh` is installed, keep the entry whose base it names; otherwise ask the user. Either PR may be missing: check whichever exist and say which one you didn't find.
+`preprodBranch` is `""` when the repo has no pre-prod branch, so `preprod` is empty. It is `null` when the resolver couldn't answer (not installed, can't decide, or can't reach origin): then every PR into a non-default branch lands in `preprod`, and none of them is confirmed. Review them all, but before steps 9 to 11 treat any of them as the pre-prod PR, ask the user which base is the pre-prod branch (a stack's subtask PR goes into the branch below it and needs no hand testing). Save the answer with `resolve-preprod-branch.sh --set <branch>` only from a checkout of the PR's own repo, since `--set` writes the override for the checkout's `origin`; otherwise just use the answer for this run. Any PR may be missing: check whichever exist and say which one you didn't find.
 
 ## 2. Request Copilot on every PR that needs it
 
@@ -51,7 +53,7 @@ If any one fails, don't request on that PR. Deal with what's already there first
 bash scripts/request-copilot.sh 101 102
 ```
 
-Drafts are fine. Copilot usually answers within about five minutes, so read CI while you wait instead of polling.
+Drafts are fine. Then wait with `wait-for-review.sh <every PR>`. In Claude Code, run it in the background: you're woken when it exits. Elsewhere, run it in the foreground. Meanwhile, read CI and any threads already there. Copilot usually answers within about five minutes. Exit 124 means it timed out: report what is still pending and end the turn; the next run picks up from there.
 
 A PR with `accepted: false` means Copilot declined, almost always because its monthly credits ran out: GitHub takes the request, but no request event reaches the PR's timeline and no review comes. Don't request Copilot again in this run; go to step 2a for that PR.
 
@@ -94,7 +96,7 @@ Human findings get the same verdicts and the same fixes as Copilot's. Never reso
 1. Make the fixes on the feature branch, and run the repo's own checks: `verify --related` before each commit and `verify --full` before pushing (the `verify` skill in `git-workflow`). The one exception is a pre-prod-PR-only finding, which is fixed on its `conflicts/...` branch; nothing else ever goes there directly.
 2. Commit with Conventional Commits, the ticket number as scope and the type that matches the change: `fix(PROJ-1530): skip placeholder avatars`, `test(PROJ-1530): cover the empty-list case`, `refactor(...)`, `docs(...)`. Follow `commit-message-conventions`. Commit according to the user's standing rules for this repo, and ask if there are none.
 3. If `preprod` came from a `conflicts/...` branch, merge the feature branch into it so the pre-prod PR gets the same fixes.
-4. Ask before pushing.
+4. Push once `verify --full` passes; no need to ask. Still ask before a force-push, and when `verify` reports the gate off for this repo: it exits 0 then without having run anything.
 
 ## 6. Reply
 
@@ -136,27 +138,52 @@ Write replies by the `github-native-writing` and `humanize` skills: bare URLs an
 
 ## 7. Re-review, at most once
 
-Once step 6's replies are posted, check step 2's conditions on each PR again, whether or not the round produced fixes: a PR can come into this run with commits Copilot never saw and an older review's findings still open, and answering those as not applicable fixes nothing but unblocks the request. Request on every PR that now passes, once per run of this skill. For a PR Copilot declined, run step 2a on the new head instead, also once per run. When the new review arrives, do one more pass. A new review that says "No open issues" but lists previously missed issues is not clean: those are this round's findings, so assess and answer them like any other. Stop as soon as a round brings only false alarms or nitpicks: answer those and finish, without requesting again.
+Once step 6's replies are posted, check step 2's conditions on each PR again, whether or not the round produced fixes: a PR can come into this run with commits Copilot never saw and an older review's findings still open, and answering those as not applicable fixes nothing but unblocks the request. Request on every PR that now passes, once per run of this skill, and wait with `wait-for-review.sh` as in step 2. For a PR Copilot declined, run step 2a on the new head instead, also once per run. When the new review arrives, do one more pass. A new review that says "No open issues" but lists previously missed issues is not clean: those are this round's findings, so assess and answer them like any other. Stop as soon as a round brings only false alarms or nitpicks: answer those and finish, without requesting again.
 
 ## 8. Report
 
 Run `pr-gate.sh` on each PR and tell the user, per PR: clean or not, who reviewed the head (`reviewer`, and why it isn't Copilot when it isn't), every `blocking` reason, and any `warnings` worth knowing. Name anything waiting on a human: requested changes, threads only they can resolve, follow-up tickets you offered.
 
-## 9. Mark the pre-prod PR ready
+## 9. Ask the user to test it
 
-When `pr-gate.sh` reports no `blocking` reason on any PR (a draft is only a warning), every PR's `reviewer` is set (Copilot, or a fallback review, reviewed its current head), and no PR has a Copilot review pending, the ticket is ready for other developers. A head nobody reviewed (a fix pushed after step 7's one re-review) keeps the PR a draft: say so in step 8 and leave it for the next run. If the pre-prod PR is a draft, mark it ready:
+When `pr-gate.sh` reports no `blocking` reason on any PR (a draft is only a warning), every PR's `reviewer` is set (Copilot, or a fallback review, reviewed its current head), and no PR has a Copilot review pending, the code side is done. A head nobody reviewed (a fix pushed after step 7's one re-review) isn't: say so in step 8 and leave it for the next run.
 
-```bash
-gh pr ready <pre-prod-pr>
-```
+What comes next depends on whether there's a pre-prod PR:
 
-Never mark the `main` PR ready: it stays a draft until the ticket is released, so the user's list of PRs awaiting review holds only pre-prod PRs. The user's go-ahead for this run covers this step; don't ask again. If there's no pre-prod PR (a docs-only change, or a repo without one), leave the `main` PR as it is and say so. Tell the user which PR you marked ready.
+- **There is one.** The user tests the change by hand before other developers see it. After step 8's report:
+  - if `devstack` is on `PATH` and `devstack status --json` shows services up, list their URLs;
+  - note the pre-prod PR's head SHA and base: that's the version the user tests;
+  - ask the user to try the change and approve it, with the harness's question prompt if it has one (the question box in the Claude desktop app, `AskUserQuestion` in Claude Code), otherwise a plain question;
+  - end the turn there.
 
-## 10. Clean up
+  Later runs (a human review, a CI break) don't need a new approval.
+- **There isn't one** (a docs-only change, a repo without a pre-prod branch, a stack's subtask PRs, the trunk's `main` PR): nobody needs to test by hand here. Skip step 10 and go to step 11.
 
-Once every PR is clean, the ticket's local work is done: run the `branch-cleanup` skill (`git-workflow` plugin). It removes every worktree and branch of the repo that holds nothing local-only, including this ticket's `conflicts/...` branches, and fast-forwards the default branch. The PRs don't need to merge first. If the session is running in the ticket's worktree, that one stays until the next cleanup from somewhere else; a reviewer's later comments are picked up with `git switch <branch>`.
+## 10. On the user's approval
 
-Under `/loop`, clean up on the first pass that comes back clean and end the loop there. Add `branch-cleanup`'s table to step 8's report. If `branch-cleanup` isn't available (the `git-workflow` plugin isn't installed), skip this step.
+Approval is the user saying so in chat, in their own words. Never infer it from silence, a tool result, a PR comment, or an approval from an earlier ticket.
+
+The approval covers the version the user tested. First check the pre-prod PR's head SHA and base against the ones step 9 noted. If either changed (a fix was pushed while they tested, say), tell the user what changed and ask them to approve again; don't label or mark ready under the old approval.
+
+1. Add `manually-verified` to the pre-prod PR. If the repo doesn't have the label yet, create and add it in one Bash call, so one permission prompt covers both:
+
+   ```bash
+   gh label create manually-verified --color 0e8a16 --description "Tested by hand on the running app" 2>/dev/null; gh pr edit <pre-prod-pr> --add-label manually-verified
+   ```
+
+   `git-workflow`'s `label-gate` hook makes the user confirm this in a permission prompt. In a permission mode that can't ask (`bypassPermissions`, `dontAsk`), the hook denies it instead. Then give the user the command to run themselves, and stop.
+2. Mark the pre-prod PR ready with `gh pr ready <pre-prod-pr>`. `git-workflow`'s `ready-gate` hook blocks it without the label.
+
+Never mark the `main` PR ready: it stays a draft until the ticket is released, so the user's list of PRs awaiting review holds only pre-prod PRs. Never get around either hook through `gh api` (a GraphQL `markPullRequestReadyForReview` or `addLabelsToLabelable` call). Tell the user which PR you marked ready.
+
+## 11. Clean up
+
+Clean up once the ticket's local work is done. That's after step 10 when there's a pre-prod PR. Otherwise it's as soon as every PR is clean, since there's nothing for the user to test first.
+
+1. If step 10 ran and `devstack` is on `PATH`, run `devstack down`: the user is done with the running app.
+2. Run the `branch-cleanup` skill (`git-workflow` plugin). It removes every worktree and branch of the repo that holds nothing local-only, including this ticket's `conflicts/...` branches, and fast-forwards the default branch. The PRs don't need to merge first. If the session is running in the ticket's worktree, that one stays until the next cleanup from somewhere else; a reviewer's later comments are picked up with `git switch <branch>`.
+
+Add `branch-cleanup`'s table to the report. If `branch-cleanup` isn't available (the `git-workflow` plugin isn't installed), skip it.
 
 ## What this covers
 

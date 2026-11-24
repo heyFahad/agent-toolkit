@@ -72,3 +72,37 @@ require_pr_number() {
     '' | *[!0-9]*) die "expected a PR number, got '${1:-}'" ;;
   esac
 }
+
+# find_preprod_resolver [SCRIPTS_DIR]: prints the path of git-workflow's
+# resolve-preprod-branch.sh, or nothing. That script lives in another plugin,
+# so look where it can be:
+#   1. $AGENT_TOOLKIT_PREPROD_RESOLVER, when set (and only there)
+#   2. next to this skill, in a source checkout of the toolkit, where skills
+#      are siblings (SCRIPTS_DIR is this skill's scripts/ folder)
+#   3. the installed git-workflow plugin, from Claude Code's
+#      installed_plugins.json
+find_preprod_resolver() {
+  local dir=${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}
+  local rel=skills/branching-pr-workflow/scripts/resolve-preprod-branch.sh
+  if [ -n "${AGENT_TOOLKIT_PREPROD_RESOLVER+set}" ]; then
+    [ ! -f "$AGENT_TOOLKIT_PREPROD_RESOLVER" ] || printf '%s' "$AGENT_TOOLKIT_PREPROD_RESOLVER"
+    return 0
+  fi
+  if [ -f "$dir/../../branching-pr-workflow/scripts/resolve-preprod-branch.sh" ]; then
+    printf '%s' "$dir/../../branching-pr-workflow/scripts/resolve-preprod-branch.sh"
+    return 0
+  fi
+  local installed="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/installed_plugins.json" p
+  [ -f "$installed" ] || return 0
+  p=$(jq -r '[.plugins // {} | to_entries[] | select(.key | startswith("git-workflow@")) | .value[]?.installPath] | first // empty' "$installed" 2>/dev/null)
+  [ -z "$p" ] || [ ! -f "$p/$rel" ] || printf '%s' "$p/$rel"
+}
+
+# checkout_repo_key: the current checkout's origin as a lowercase owner/name,
+# or nothing.
+checkout_repo_key() {
+  local url
+  url=$(git remote get-url origin 2>/dev/null) || return 0
+  printf '%s' "$url" | sed -E 's#\.git/?$##; s#/$##; s#^[^:]+:(//[^/]+/)?##' |
+    awk -F/ '{ if (NF >= 2) print $(NF-1) "/" $NF; else print $NF }' | tr '[:upper:]' '[:lower:]'
+}

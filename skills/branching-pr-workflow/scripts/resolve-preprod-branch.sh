@@ -18,8 +18,9 @@
 # Exit codes:
 #   0  branch printed on stdout
 #   1  not a git repo, or no origin remote
-#   2  ambiguous: candidates are on stderr. Ask the user which one QA PRs
-#      target, then save the answer with --set.
+#   2  can't tell: several candidates, or origin unreachable with no
+#      candidate in the local refs (details on stderr). Ask the user which
+#      branch QA PRs target, then save the answer with --set.
 #   3  this repo has no pre-prod branch
 #
 # The override file lives outside any plugin folder so it survives plugin
@@ -142,8 +143,11 @@ fi
 DEFAULT_BRANCH=$(default_branch)
 
 # The remote's live branch list; fall back to the last-fetched refs offline.
-REMOTE_BRANCHES=$(git ls-remote --heads origin 2>/dev/null | sed -E 's@^[^[:space:]]+[[:space:]]+refs/heads/@@')
-if [ -z "$REMOTE_BRANCHES" ]; then
+LIVE=true
+if LISTED=$(git ls-remote --heads origin 2>/dev/null); then
+  REMOTE_BRANCHES=$(printf '%s\n' "$LISTED" | sed -E 's@^[^[:space:]]+[[:space:]]+refs/heads/@@')
+else
+  LIVE=false
   REMOTE_BRANCHES=$(git for-each-ref --format='%(refname:strip=3)' refs/remotes/origin 2>/dev/null)
 fi
 
@@ -159,6 +163,14 @@ CANDIDATES="${CANDIDATES# }"
 save_cache() {
   mkdir -p "$STATE_DIR" 2>/dev/null && printf '%s\n' "$1" > "$CACHE_FILE" 2>/dev/null || true
 }
+
+if [ -z "$CANDIDATES" ] && [ "$LIVE" = false ]; then
+  # The last-fetched refs may hold only the branches this checkout fetched,
+  # so a missing pre-prod branch there proves nothing. Callers take exit 3
+  # as "no pre-prod branch, so no QA approval needed": don't guess it.
+  echo "resolve-preprod-branch: couldn't list origin's branches (git ls-remote failed), and the local refs show no pre-prod branch. Check the connection to origin, or record the answer with: $0 --set <branch>|none" >&2
+  exit 2
+fi
 
 if [ -z "$CANDIDATES" ]; then
   save_cache "-"
