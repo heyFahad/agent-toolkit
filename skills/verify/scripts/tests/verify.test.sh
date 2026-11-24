@@ -363,6 +363,63 @@ run_verify "$R" --full
 check "run: records and logs older than 14 days are pruned" false \
   "$([ -e "$AGENT_TOOLKIT_STATE_DIR/verify/old.json" ] || [ -e "$AGENT_TOOLKIT_STATE_DIR/verify/logs/old.log" ] && echo true || echo false)"
 
+# -------------------------------------------------------------------- branch
+# --branch runs the quick checks on every file the branch changes since it
+# left the default branch: committed, uncommitted and untracked, but not
+# what the default branch changed since.
+R=$(mkrepo br '{"lint":"echo l","test":"echo t"}' "" "$(printf 'npm run lint\nnpm test')" '{"jest":"^29"}')
+git -C "$R" branch -q -M main
+echo m >"$R/main-later.ts"
+git -C "$R" switch -q -c feat
+git -C "$R" switch -q main
+git -C "$R" add -A && git -C "$R" -c user.email=t@t -c user.name=t commit -q -m later
+git -C "$R" update-ref refs/remotes/origin/main main
+git -C "$R" switch -q feat
+echo c >"$R/committed.ts"
+echo e >"$R/edited.ts"
+git -C "$R" add -A && git -C "$R" -c user.email=t@t -c user.name=t commit -q -m c
+echo u >>"$R/edited.ts"
+echo n >"$R/new.ts"
+run_verify "$R" --list --branch
+check "branch: related checks over every file the branch changes" \
+  '["CI=true npm run lint","CI=true npx --no-install jest --maxWorkers=50% --findRelatedTests --passWithNoTests committed.ts edited.ts new.ts"]' "$(q '[.[].run]')"
+git -C "$R" checkout -q edited.ts
+printf '#!/bin/sh\nexit 0\n' >"$TMP/bin/npx"
+chmod +x "$TMP/bin/npx"
+run_verify "$R" --branch
+check "branch: runs and says how many files" '[0,true]' "[$CODE,$(printf '%s' "$OUT" | grep -q 'checks the 3 files this branch changes' && echo true || echo false)]"
+TREE=$(lib vf_tree "$R")
+check "branch: records the branch level" branch "$(jq -r .level "$AGENT_TOOLKIT_STATE_DIR/verify/$TREE.json")"
+check "branch: satisfies related and branch, not full" '0 0 1' \
+  "$(lib vf_record_ok "$TREE" related; echo -n "$? "; lib vf_record_ok "$TREE" branch; echo -n "$? "; lib vf_record_ok "$TREE" full; echo $?)"
+run_verify "$R" --related
+check "branch: a later --related pass keeps the --branch record" 0 "$(lib vf_record_ok "$TREE" branch; echo $?)"
+run_verify "$R" --full
+run_verify "$R" --branch
+check "branch: a later --branch pass keeps the --full record" 0 "$(lib vf_record_ok "$TREE" full; echo $?)"
+# origin/HEAD, when set, names the default branch.
+git -C "$R" update-ref refs/remotes/origin/trunk "$(git -C "$R" rev-parse feat)"
+git -C "$R" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/trunk
+check "branch: origin/HEAD is the base when set" "$(git -C "$R" rev-parse feat)" "$(lib vf_branch_base "$R")"
+git -C "$R" symbolic-ref --delete refs/remotes/origin/HEAD
+# Nothing to diff against: --branch runs every check instead.
+git -C "$R" update-ref -d refs/remotes/origin/main
+git -C "$R" update-ref -d refs/remotes/origin/trunk
+echo x >"$R/x.ts"
+run_verify "$R" --branch
+check "branch: no default branch falls back to --full, and says so" '[0,true,"full"]' \
+  "[$CODE,$(printf '%s' "$OUT" | grep -q 'runs every check' && echo true || echo false),\"$(jq -r .level "$AGENT_TOOLKIT_STATE_DIR/verify/$(lib vf_tree "$R").json")\"]"
+
+rm "$TMP/bin/npx"
+
+# firstPush in the config: per repo, or for every repo at the top.
+check "branch: the first push needs --branch by default" branch "$(lib vf_first_push_level "$R")"
+echo '{"firstPush": "full"}' >"$CFG"
+check "branch: firstPush full at the top applies to every repo" full "$(lib vf_first_push_level "$R")"
+echo '{"firstPush": "full", "repos": {"owner/br": {"firstPush": "branch"}}}' >"$CFG"
+check "branch: a repo's own firstPush wins" branch "$(lib vf_first_push_level "$R")"
+rm "$CFG"
+
 # ---------------------------------------------------------------------- lock
 # One run at a time on the machine: a second run waits for the first, and
 # says whose run it's queued behind.

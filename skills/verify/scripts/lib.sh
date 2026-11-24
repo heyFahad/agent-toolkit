@@ -225,11 +225,13 @@ vf_related_map() {
 }
 
 # vf_checks ROOT LEVEL [FILES...]: the checks to run, as a JSON array of
-# {name, run}. LEVEL is full or related; FILES are the changed files for the
-# related level. [] means the gate is off.
+# {name, run}. LEVEL is full, branch or related; FILES are the changed files
+# for the related and branch levels, which run the same checks (branch just
+# on every file the branch changed). [] means the gate is off.
 vf_checks() {
   local root=$1 level=$2 ov pm x names related rtype tests_ci dev runner flag
   shift 2
+  [ "$level" != branch ] || level=related
   ov=$(vf_override "$root")
   if [ -n "$ov" ]; then
     rtype=$(printf '%s' "$ov" | jq -r '.related | type')
@@ -331,21 +333,59 @@ _vf_tree_with() {
 # vf_record_file TREE: where the record for TREE lives.
 vf_record_file() { echo "$(vf_state_dir)/$1.json"; }
 
+# vf_rank LEVEL: related 1, branch 2, full 3. Each level's run covers the
+# ones below it: branch checks a superset of related's files, and full runs
+# everything.
+vf_rank() {
+  case "$1" in
+    full) echo 3 ;;
+    branch) echo 2 ;;
+    related) echo 1 ;;
+    *) echo 0 ;;
+  esac
+}
+
 # vf_record_ok TREE LEVEL: exit 0 when TREE has a passing record at LEVEL or
-# above (a full run satisfies related).
+# above.
 vf_record_ok() {
   local f
   f=$(vf_record_file "$1")
   [ -f "$f" ] || return 1
-  jq -e --arg want "$2" '.passed == true and (.level == "full" or .level == $want)' "$f" >/dev/null 2>&1
+  jq -e --argjson want "$(vf_rank "$2")" '.passed == true and
+    ({related: 1, branch: 2, full: 3}[.level] // 0) >= $want' "$f" >/dev/null 2>&1
 }
 
-# vf_changed_files ROOT: files changed against HEAD, plus untracked files that
-# aren't ignored, that still exist. One per line, relative to ROOT.
+# vf_branch_base ROOT: where the current branch split from the default
+# branch (origin/HEAD, else origin/main or origin/master), or exit 1 when
+# there's none of those.
+vf_branch_base() {
+  local root=$1 r cand
+  cand=$(git -C "$root" symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || true)
+  for r in $cand origin/main origin/master; do
+    git -C "$root" rev-parse -q --verify "$r^{commit}" >/dev/null 2>&1 || continue
+    git -C "$root" merge-base HEAD "$r" 2>/dev/null && return 0
+  done
+  return 1
+}
+
+# vf_first_push_level ROOT: what the push that creates a branch on the
+# remote needs: branch, unless the override's "firstPush" (for the repo, or
+# at the top of the file for every repo) says full.
+vf_first_push_level() {
+  local key cfg v=""
+  key=$(vf_repo_key "$1")
+  cfg=$(vf_config_file)
+  [ -s "$cfg" ] && v=$(jq -r --arg k "$key" '.repos[$k].firstPush // .firstPush // empty' "$cfg" 2>/dev/null)
+  case "$v" in full) echo full ;; *) echo branch ;; esac
+}
+
+# vf_changed_files ROOT [BASE]: files the working tree changes against BASE
+# (default HEAD), plus untracked files that aren't ignored, that still exist.
+# One per line, relative to ROOT.
 vf_changed_files() {
   (
     cd "$1" || exit 0
-    { git diff --name-only HEAD 2>/dev/null; git ls-files --others --exclude-standard; } |
+    { git diff --name-only "${2:-HEAD}" 2>/dev/null; git ls-files --others --exclude-standard; } |
       sort -u | while IFS= read -r f; do [ -e "$f" ] && printf '%s\n' "$f"; done
   )
 }

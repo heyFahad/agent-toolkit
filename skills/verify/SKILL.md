@@ -1,28 +1,31 @@
 ---
 name: verify
-description: Run a repo's checks before committing or pushing, and record that they passed. Use before every git commit and push (`--related`), before the first push of a branch and before pushing a `conflicts/...` branch (`--full`), when the verify-gate hook blocks a commit, push or PR, after `gh stack sync` rebases a stack, and when a repo's checks need setting by hand.
+description: Run a repo's checks before committing or pushing, and record that they passed. Use before every git commit and push (`--related`), before the first push of a branch (`--branch`), before pushing a `conflicts/...` branch (`--full`), when the verify-gate hook blocks a commit, push or PR, after `gh stack sync` rebases a stack, and when a repo's checks need setting by hand.
 metadata:
   category: git-workflow
 ---
 
 # Verify a change before committing or pushing it
 
-`scripts/verify` runs a repo's checks and records the result against the exact tree it ran on. The `verify-gate` hook (`git-workflow` plugin) reads those records and blocks a commit, push or PR whose tree hasn't passed. So nothing unchecked leaves your machine, and the full suite runs once per branch, before its PRs open, not on every push. CI runs everything on every push anyway, and `check-pr` waits for it and fixes what fails.
+`scripts/verify` runs a repo's checks and records the result against the exact tree it ran on. The `verify-gate` hook (`git-workflow` plugin) reads those records and blocks a commit, push or PR whose tree hasn't passed. So nothing unchecked leaves your machine, while the full suite runs on CI rather than here. CI runs everything on every push, and `check-pr` waits for it and fixes what fails. Locally, a branch's checks cover the code it changed.
 
 ## The two levels
 
 | Command | Runs | When |
 | --- | --- | --- |
 | `verify --related` | The repo's format, lint and typecheck scripts, plus the tests related to the changed files (`jest --findRelatedTests`, `vitest related`) | Before each `git commit` and each later push |
-| `verify --full` | Every check | Once per branch, before the push that creates it on the remote (so its PRs open green), and before each push of a `conflicts/...` branch |
+| `verify --branch` | The same quick checks, on every file the branch changes since it left the default branch (committed, uncommitted and untracked) | Once per branch, before the push that creates it on the remote, so its PRs open green |
+| `verify --full` | Every check | Before each push of a `conflicts/...` branch, and wherever the repo's settings ask for it on the first push (`firstPush`, below) |
 
 Run it from anywhere in the repo, as `bash <this skill>/scripts/verify --related`. It prints `PASS` or `FAIL` per check, and the tail of a failing check's output. The full log path is in the record (`verify --status`).
 
 `verify --related <files>` checks only the files you name. That's handy while working, but it writes no record, since it didn't cover every change.
 
-A passing `--related` run never replaces a passing `--full` one, so running `--related` before a commit doesn't cost you the full run you already did.
+A passing run never replaces a passing one at a higher level (`--full` over `--branch` over `--related`), so running `--related` before a commit doesn't cost you the bigger run you already did.
 
-Never run the full suite on every turn, every small edit or every push. That's what `--related` is for.
+`--branch` finds where the branch started from `origin/HEAD` (else `origin/main` or `origin/master`). With none of those, it says so and runs every check instead.
+
+Never run the full suite on every turn, every small edit or every push. That's what `--related` and `--branch` are for.
 
 ### One run at a time
 
@@ -34,12 +37,12 @@ Jest and vitest run with `--maxWorkers=50%` too, so even one run leaves cores fr
 
 | Command | Needs |
 | --- | --- |
-| `git commit` | a passing `--related` (or `--full`) run of the current working tree |
-| `git push`, `gh pr create` | a passing `--related` run of each branch tree being pushed, or `--full` when the push creates the branch on the remote, or the branch is a `conflicts/...` one |
+| `git commit` | a passing `--related` (or higher) run of the current working tree |
+| `git push`, `gh pr create` | a passing `--related` run of each branch tree being pushed; `--branch` when the push creates the branch on the remote; `--full` when the branch is a `conflicts/...` one |
 | `gh stack push`, `gh stack submit` | the same, for every open branch in the stack |
 | `gh stack sync` | blocked: it rebases and pushes in one go, so use `gh stack rebase`, verify each changed branch, then `gh stack push` |
 
-Whether a push creates the branch comes from the remote-tracking refs (`origin/<branch>`) the last fetch left, with no network call. A branch someone else pushed since your last fetch counts as new, which only asks for the full run. A `conflicts/...` branch always needs `--full`: its merge of the feature branch into the pre-prod branch is new code that no earlier run saw.
+Whether a push creates the branch comes from the remote-tracking refs (`origin/<branch>`) the last fetch left, with no network call. A branch someone else pushed since your last fetch counts as new, which only asks for the bigger run. A `conflicts/...` branch always needs `--full`: its merge of the feature branch into the pre-prod branch is new code that no earlier run saw.
 
 Run a push, `gh pr create` or `gh stack push` in its own Bash call. Chained after a commit, merge or rebase (`git commit -m x && git push`), it's blocked: the hook runs before the call, so it can't see the commit the push would send.
 
@@ -77,7 +80,9 @@ When inference gets it wrong (a monorepo, checks in a shared workflow, tests tha
 }
 ```
 
-`{files}` becomes the changed files, shell-quoted. Without `related`, `--related` runs the full list. `"checks": []` turns the gate off for that repo.
+`{files}` becomes the changed files, shell-quoted. Without `related`, `--related` and `--branch` run the full list. `"checks": []` turns the gate off for that repo.
+
+`"firstPush": "full"` makes the push that creates a branch need `--full` instead of `--branch`. Set it in a repo's entry, or at the top of the file for every repo; a repo's own setting wins. It suits a repo whose related level misses a lot, so that PRs still open green.
 
 A repo without an import graph for `vitest related` to follow (a shell-test repo, say) can map changed paths to the suites that cover them instead. Make `related` an object:
 

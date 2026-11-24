@@ -1,5 +1,5 @@
 #!/bin/bash
-# Usage: verify --related [FILES...] | --full | --status [--tree SHA] | --list [--related] [FILES...]
+# Usage: verify --related [FILES...] | --branch | --full | --status [--tree SHA] | --list [--related|--branch] [FILES...]
 #
 # Runs a repo's checks and records that they passed, so the verify-gate hook
 # lets the tree be committed or pushed. See lib.sh for where the checks come
@@ -8,6 +8,9 @@
 #   --related [FILES...]  run the quick checks (format, lint and typecheck,
 #                         and tests related to FILES, by default the files
 #                         changed against HEAD)
+#   --branch              the quick checks on every file the branch changes
+#                         since it split from the default branch (what the
+#                         push that creates the branch on the remote needs)
 #   --full                run every check
 #   --status [--tree SHA] print the record for a tree (default: the working
 #                         tree); exit 1 when there is none
@@ -46,6 +49,10 @@ while [ "$#" -gt 0 ]; do
       LEVEL=related
       [ -n "$MODE" ] || MODE=run
       ;;
+    --branch)
+      LEVEL=branch
+      [ -n "$MODE" ] || MODE=run
+      ;;
     --full)
       LEVEL=full
       [ -n "$MODE" ] || MODE=run
@@ -55,9 +62,23 @@ while [ "$#" -gt 0 ]; do
   esac
   shift
 done
-[ -n "$MODE" ] || vf_die 2 "usage: verify --related [FILES...] | --full | --status [--tree SHA] | --list [--related] [FILES...]"
+[ -n "$MODE" ] || vf_die 2 "usage: verify --related [FILES...] | --branch | --full | --status [--tree SHA] | --list [--related|--branch] [FILES...]"
 
 ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || vf_die 2 "not in a git repository"
+
+# Named files check only those, so the run can't vouch for the whole tree:
+# useful while working, but it writes no record.
+EXPLICIT=false
+[ "${#FILES[@]}" -eq 0 ] || EXPLICIT=true
+if [ "$LEVEL" = branch ] && [ "$EXPLICIT" = false ] && [ "$MODE" != status ]; then
+  if BASE=$(vf_branch_base "$ROOT"); then
+    while IFS= read -r f; do FILES+=("$f"); done < <(vf_changed_files "$ROOT" "$BASE")
+    [ "$MODE" = list ] || echo "verify: --branch checks the ${#FILES[@]} files this branch changes since ${BASE:0:7}"
+  else
+    [ "$MODE" = list ] || echo "verify: no origin/HEAD, origin/main or origin/master to find where this branch started, so --branch runs every check"
+    LEVEL=full
+  fi
+fi
 
 if [ "$MODE" = list ]; then
   vf_checks "$ROOT" "$LEVEL" ${FILES[@]+"${FILES[@]}"}
@@ -73,10 +94,6 @@ if [ "$MODE" = status ]; then
 fi
 
 # run
-# Named files check only those, so the run can't vouch for the whole tree:
-# useful while working, but it writes no record.
-EXPLICIT=false
-[ "${#FILES[@]}" -eq 0 ] || EXPLICIT=true
 if [ "$LEVEL" = related ] && [ "${#FILES[@]}" -eq 0 ]; then
   while IFS= read -r f; do FILES+=("$f"); done < <(vf_changed_files "$ROOT")
 fi
@@ -166,8 +183,8 @@ RECORD=$(jq -n --arg tree "$TREE" --arg tracked "$AFTER" --arg level "$LEVEL" --
   --argjson untracked "$(printf '%s' "$UNTRACKED" | jq -R -s -c 'split("\n") | map(select(. != ""))')" \
   '{tree: $tree, trackedTree: $tracked, level: $level, repo: $repo, at: $at, passed: $passed, commands: $commands, untracked: $untracked, log: $log}')
 for t in "$TREE" "$AFTER"; do
-  # A passing --related run never replaces a passing --full one.
-  if [ "$LEVEL" = related ] && [ "$PASSED" = true ] && vf_record_ok "$t" full; then
+  # A passing run never replaces a passing one at a higher level.
+  if [ "$PASSED" = true ] && [ "$LEVEL" != full ] && vf_record_ok "$t" "$([ "$LEVEL" = related ] && echo branch || echo full)"; then
     continue
   fi
   tmp=$(mktemp "$STATE/.record.XXXXXX")

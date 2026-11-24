@@ -6,12 +6,15 @@
 #   git commit                        the working tree needs a passing
 #                                     `verify --related` (or --full) record
 #   git push, gh pr create,           every branch tree being pushed needs a
-#   gh stack push, gh stack submit    passing `verify --related` record, or
-#                                     `verify --full` when the push creates
+#   gh stack push, gh stack submit    passing `verify --related` record;
+#                                     `verify --branch` (every file the
+#                                     branch changes) when the push creates
 #                                     the branch on the remote (there's no
-#                                     remote-tracking ref for it here) or the
-#                                     branch is a conflicts/... branch, whose
-#                                     merged tree is new code
+#                                     remote-tracking ref for it here), or
+#                                     --full where the override's firstPush
+#                                     says so; and `verify --full` for a
+#                                     conflicts/... branch, whose merged tree
+#                                     is new code
 #   gh stack sync                     blocked: it rebases and pushes in one go,
 #                                     so nothing can verify the rebased trees
 #                                     first (use gh stack rebase, verify each
@@ -67,8 +70,9 @@ gate_root() {
 
 # push_level ROOT REMOTE BRANCH [SRC]: sets `level` to what a push of SRC
 # (by default BRANCH) to BRANCH on REMOTE needs, and `why` to the reason when
-# that's full: a conflicts/... branch, or no remote-tracking ref for BRANCH,
-# so the push creates it.
+# that's more than related: a conflicts/... branch (full), or no
+# remote-tracking ref for BRANCH, so the push creates it (branch, or full
+# where the override's firstPush says so).
 push_level() {
   local b
   level=related why=""
@@ -80,7 +84,7 @@ push_level() {
     esac
   done
   if ! git -C "$1" rev-parse -q --verify "refs/remotes/$2/$3" >/dev/null 2>&1; then
-    level=full why="it creates $2/$3"
+    level=$(vf_first_push_level "$1") why="it creates $2/$3"
   fi
 }
 

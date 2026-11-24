@@ -17,7 +17,7 @@ VERIFY="$HERE/../../skills/verify/scripts/verify"
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 export XDG_CONFIG_HOME="$TMP/config" AGENT_TOOLKIT_STATE_DIR="$TMP/state" NVM_DIR="$TMP/nvm"
-mkdir -p "$TMP/bin"
+mkdir -p "$TMP/bin" "$XDG_CONFIG_HOME/agent-toolkit"
 cat >"$TMP/bin/npm" <<'EOF'
 #!/bin/bash
 [ "$1" = run ] && shift
@@ -99,7 +99,7 @@ verify --related
 commit "add d"
 gate 'git push'
 check "push: a related record isn't enough" 2 "$CODE"
-check "push: says to run verify --full" true "$(said 'verify --full')"
+check "push: a first push says to run verify --branch" true "$(said 'verify --branch')"
 verify --full
 for cmd in 'git push' 'git push origin HEAD' 'git push -u origin feat' \
   'git push --force-with-lease --force-if-includes origin feat' 'git push origin feat:feat' 'git push origin +feat'; do
@@ -307,18 +307,31 @@ mv "$TMP/gh.orig" "$TMP/bin/gh"
 rm -f "$FX/stack.json" "$TMP/bin/gh-warn"
 
 # ------------------------------------------------- first push vs later ones
-# Only the push that creates the branch on the remote needs --full; once the
-# remote-tracking ref exists, a --related record of the pushed tree is enough.
+# Only the push that creates the branch on the remote needs --branch (every
+# file the branch changes); once the remote-tracking ref exists, a --related
+# record of the pushed tree is enough.
 git -C "$R" switch -q -c later main
 echo l1 >"$R/l1.txt"
 verify --related
 commit "l1"
 gate 'git push -u origin later'
-check "first push: needs --full" 2 "$CODE"
+check "first push: a --related record isn't enough" 2 "$CODE"
 check "first push: says it creates the branch" true "$(said 'since it creates origin/later')"
+check "first push: asks for --branch" true "$(said 'verify --branch')"
+# With a default branch to diff against, --branch records a branch run.
+git -C "$R" update-ref refs/remotes/origin/main main
+verify --branch
+check "first push: verify --branch records the branch level" branch "$(cd "$R" && bash "$VERIFY" --status | jq -r .level)"
+gate 'git push -u origin later'
+check "first push: a --branch record allows" 0 "$CODE"
+# firstPush: full in the config asks for the whole suite instead.
+echo '{"firstPush": "full"}' >"$XDG_CONFIG_HOME/agent-toolkit/verify.local.json"
+gate 'git push -u origin later'
+check "first push: firstPush full makes a --branch record not enough" '[2,true]' "[$CODE,$(said 'verify --full')]"
 verify --full
 gate 'git push -u origin later'
-check "first push: a --full record allows" 0 "$CODE"
+check "first push: firstPush full, a --full record allows" 0 "$CODE"
+rm "$XDG_CONFIG_HOME/agent-toolkit/verify.local.json"
 git -C "$R" update-ref refs/remotes/origin/later HEAD
 git -C "$R" config branch.later.remote origin
 git -C "$R" config branch.later.merge refs/heads/later
@@ -330,14 +343,14 @@ for cmd in 'git push' 'git push origin' 'git push origin later' 'git push origin
   check "later push: $cmd allows with a --related record" 0 "$CODE"
 done
 gate 'git push origin later:other-new'
-check "later push: to a branch the remote doesn't have needs --full" 2 "$CODE"
+check "later push: to a branch the remote doesn't have needs --branch" 2 "$CODE"
 gate 'git push backup later'
-check "later push: to a remote without the branch needs --full" 2 "$CODE"
+check "later push: to a remote without the branch needs --branch" 2 "$CODE"
 check "later push: and names that remote" true "$(said 'creates backup/later')"
 # Pushed to an upstream of another name: that name is what the remote has.
 git -C "$R" config branch.later.merge refs/heads/later-up
 gate 'git push'
-check "later push: to an upstream the remote doesn't have yet needs --full" 2 "$CODE"
+check "later push: to an upstream the remote doesn't have yet needs --branch" 2 "$CODE"
 git -C "$R" update-ref refs/remotes/origin/later-up HEAD
 gate 'git push'
 check "later push: to an upstream of another name it has, --related" 0 "$CODE"
@@ -363,8 +376,9 @@ git -C "$R" update-ref refs/remotes/origin/conflicts/t-1-x HEAD
 echo m >"$R/m.txt"
 verify --related
 commit "merge"
+verify --branch
 gate 'git push origin conflicts/t-1-x'
-check "conflicts: a later push still needs --full" 2 "$CODE"
+check "conflicts: a later push still needs --full, --branch isn't enough" 2 "$CODE"
 check "conflicts: and says why" true "$(said 'conflicts/ branch')"
 gate 'git push'
 check "conflicts: a bare push too" 2 "$CODE"
@@ -391,12 +405,12 @@ echo f >"$R/f.txt"
 verify --related
 commit "f"
 gate 'gh pr create --title t'
-check "pr create: a branch origin doesn't have needs --full" 2 "$CODE"
+check "pr create: a branch origin doesn't have needs --branch" 2 "$CODE"
 check "pr create: says why" true "$(said 'creates origin/fresh')"
 check "pr create: one message, not one per tree it looked at" 1 "$(grep -c 'verify-gate:' "$TMP/stderr")"
 jq -n '{branches: [{name: "later", isMerged: false, isQueued: false}, {name: "fresh", isMerged: false, isQueued: false}]}' >"$FX/stack.json"
 gate 'gh stack push'
-check "stack push: a new branch needs --full" '[2,true,false]' "[$CODE,$(said 'stack push of fresh'),$(said 'stack push of later')]"
+check "stack push: a new branch needs --branch" '[2,true,false]' "[$CODE,$(said 'stack push of fresh'),$(said 'stack push of later')]"
 verify --full
 gate 'gh stack push'
 check "stack push: and a branch origin has, --related" 0 "$CODE"
