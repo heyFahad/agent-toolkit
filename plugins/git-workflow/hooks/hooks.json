@@ -22,6 +22,16 @@
             "timeout": 15
           }
         ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/label-gate.sh",
+            "timeout": 10
+          }
+        ]
       }
     ]
   }
