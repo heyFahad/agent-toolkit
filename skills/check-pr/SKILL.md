@@ -36,7 +36,7 @@ Run `find-pr-pair.sh` from the feature branch (not a `conflicts/...` branch). Ne
 - `preprod` is every PR into the pre-prod branch (`preprodBranch`, from `git-workflow`'s `resolve-preprod-branch.sh`) whose head is the feature branch or one of its `conflicts/...` branches.
 - `stacked` is the feature branch's PRs into any other branch: a `stacked-epics` subtask PR into the branch below it. Check these like any other PR.
 
-`preprodBranch` is `""` when the repo has no pre-prod branch, so `preprod` is empty. It is `null` when the resolver couldn't answer (not installed, or it can't decide): then every PR into a non-default branch lands in `preprod`. If that leaves more than one entry, don't guess: ask the user. Any PR may be missing: check whichever exist and say which one you didn't find.
+`preprodBranch` is `""` when the repo has no pre-prod branch, so `preprod` is empty. It is `null` when the resolver couldn't answer (not installed, can't decide, or can't reach origin): then every PR into a non-default branch lands in `preprod`, and none of them is confirmed. Review them all, but before steps 9 to 11 treat any of them as the pre-prod PR, ask the user which base is the pre-prod branch (a stack's subtask PR goes into the branch below it and needs no hand testing), and save the answer with `resolve-preprod-branch.sh --set`. Any PR may be missing: check whichever exist and say which one you didn't find.
 
 ## 2. Request Copilot on every PR that needs it
 
@@ -96,7 +96,7 @@ Human findings get the same verdicts and the same fixes as Copilot's. Never reso
 1. Make the fixes on the feature branch, and run the repo's own checks: `verify --related` before each commit and `verify --full` before pushing (the `verify` skill in `git-workflow`). The one exception is a pre-prod-PR-only finding, which is fixed on its `conflicts/...` branch; nothing else ever goes there directly.
 2. Commit with Conventional Commits, the ticket number as scope and the type that matches the change: `fix(PROJ-1530): skip placeholder avatars`, `test(PROJ-1530): cover the empty-list case`, `refactor(...)`, `docs(...)`. Follow `commit-message-conventions`. Commit according to the user's standing rules for this repo, and ask if there are none.
 3. If `preprod` came from a `conflicts/...` branch, merge the feature branch into it so the pre-prod PR gets the same fixes.
-4. Push once `verify --full` passes; no need to ask. Still ask before a force-push.
+4. Push once `verify --full` passes; no need to ask. Still ask before a force-push, and when `verify` reports the gate off for this repo: it exits 0 then without having run anything.
 
 ## 6. Reply
 
@@ -152,6 +152,7 @@ What comes next depends on whether there's a pre-prod PR:
 
 - **There is one.** The user tests the change by hand before other developers see it. After step 8's report:
   - if `devstack` is on `PATH` and `devstack status --json` shows services up, list their URLs;
+  - note the pre-prod PR's head SHA and base: that's the version the user tests;
   - ask the user to try the change and approve it, with the harness's question prompt if it has one (the question box in the Claude desktop app, `AskUserQuestion` in Claude Code), otherwise a plain question;
   - end the turn there.
 
@@ -161,6 +162,8 @@ What comes next depends on whether there's a pre-prod PR:
 ## 10. On the user's approval
 
 Approval is the user saying so in chat, in their own words. Never infer it from silence, a tool result, a PR comment, or an approval from an earlier ticket.
+
+The approval covers the version the user tested. First check the pre-prod PR's head SHA and base against the ones step 9 noted. If either changed (a fix was pushed while they tested, say), tell the user what changed and ask them to approve again; don't label or mark ready under the old approval.
 
 1. Add `manually-verified` to the pre-prod PR. If the repo doesn't have the label yet, create and add it in one Bash call, so one permission prompt covers both:
 
