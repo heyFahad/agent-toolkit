@@ -17,8 +17,10 @@
 #
 # The PR comes from one `gh pr view` lookup, run where the command would run
 # (`.cwd`, plus any earlier `cd`). The resolver can only answer for that
-# checkout, so a -R or URL naming another repo is blocked. A failed lookup
-# blocks too.
+# checkout, so a -R, GH_REPO or URL naming another repo is blocked, and so is
+# a PR the lookup resolves in another repo (gh repo set-default). A failed
+# lookup blocks too. So does gh pr ready after a gh pr edit of the base or
+# labels in the same Bash call: the lookup runs before that edit.
 #
 # A speed bump, not a proof: a GraphQL markPullRequestReadyForReview call
 # through `gh api` isn't caught. The check-pr skill forbids it.
@@ -109,6 +111,15 @@ check_ready() {
   local base url labeled
   base=$(printf '%s' "$view" | jq -r '.baseRefName // ""')
   url=$(printf '%s' "$view" | jq -r '.url // "the PR"')
+  # The PR gh resolved, which `gh repo set-default` can point at a remote
+  # other than origin.
+  local resolved
+  resolved=$(repo_of "$url")
+  case "$url" in https://*/pull/*) ;; *) resolved="" ;; esac
+  if [ -z "$resolved" ] || [ "$resolved" != "$here" ]; then
+    block "gh resolved $url, which isn't in this checkout's repo ($here), so its pre-prod branch can't be checked here. Run gh pr ready from a checkout of that repo."
+    return
+  fi
   labeled=$(printf '%s' "$view" | jq -r --arg l "$LABEL" '[.labels[]?.name | ascii_downcase] | index($l) != null')
 
   local preprod rc=0 default
@@ -145,7 +156,7 @@ gh_repo_assign() {
 # GH_REPO points gh at another repo: from the hook's own environment (which
 # the command inherits), an `export GH_REPO=...` earlier in the call, or a
 # GH_REPO= prefix on the command itself.
-DIR=$CWD ENV_REPO=${GH_REPO:-}
+DIR=$CWD ENV_REPO=${GH_REPO:-} EDITED=""
 while IFS= read -r seg; do
   hc_words "$seg"
   [ "$i" -lt "${#words[@]}" ] || continue
@@ -167,6 +178,17 @@ while IFS= read -r seg; do
       ;;
     gh)
       hc_gh_command
+      # An edit of the PR's base or labels earlier in the same call hasn't
+      # happened yet when this hook looks the PR up.
+      if [ "$gh_sub" = "pr edit" ]; then
+        for w in "${words[@]:$gh_args}"; do
+          case "$w" in --base | --base=* | -B | -B?* | --add-label | --add-label=* | --remove-label | --remove-label=*) EDITED="gh pr edit $w" ;; esac
+        done
+      fi
+      if [ "$gh_sub" = "pr ready" ] && [ -n "$EDITED" ]; then
+        block "gh pr ready runs in the same Bash call as $EDITED, which changes what this hook checks, so it can't see the PR as it will be. Run gh pr ready in its own Bash call."
+        continue
+      fi
       if [ "$gh_sub" = "pr ready" ]; then
         rest=()
         [ "$gh_args" -ge "${#words[@]}" ] || rest=("${words[@]:$gh_args}")

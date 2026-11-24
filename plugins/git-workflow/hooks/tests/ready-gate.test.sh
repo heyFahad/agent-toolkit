@@ -57,7 +57,7 @@ check() {
 view() {
   local base=$1
   shift
-  jq -n --arg b "$base" '{baseRefName: $b, url: "https://github.com/o/r/pull/5",
+  jq -n --arg b "$base" --arg u "${VIEW_URL:-https://github.com/o/r/pull/5}" '{baseRefName: $b, url: $u,
     labels: ($ARGS.positional | map({name: .}))}' --args "$@" >"$FX/view.json"
 }
 
@@ -141,6 +141,20 @@ check "redirection isn't the PR argument" allow "$(gate 'gh pr ready 5 2>&1')"
 check "  looks up PR 5" true "$(grep -qF 'pr view 5 --json' "$GHLOG" && echo true || echo false)"
 check "spaced redirection isn't the PR argument" allow "$(gate 'gh pr ready > /dev/null')"
 check "  looks up the current branch" true "$(grep -qF '|pr view --json' "$GHLOG" && echo true || echo false)"
+
+# The PR gh actually resolves (gh repo set-default can point at another remote).
+VIEW_URL=https://github.com/other/repo/pull/5 view staging manually-verified
+check "the PR gh resolves is in another repo" block "$(gate 'gh pr ready 5')"
+check "  says which" true "$(said 'other/repo')"
+view staging manually-verified
+
+# Readying after a base or label change in the same call: the lookup would see
+# the PR as it was before the edit.
+check "base change, then ready" block "$(gate 'gh pr edit 5 --base staging && gh pr ready 5')"
+check "  says to run it on its own" true "$(said 'its own Bash call')"
+check "-B change, then ready" block "$(gate 'gh pr edit 5 -B staging; gh pr ready 5')"
+check "label change, then ready" block "$(gate 'gh pr edit 5 --remove-label manually-verified && gh pr ready 5')"
+check "title change, then ready" allow "$(gate 'gh pr edit 5 --title t && gh pr ready 5')"
 
 echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]
