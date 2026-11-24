@@ -17,11 +17,9 @@ Everything mandatory gets a hook, not just a paragraph asking an agent to rememb
 
 ### Let an agent set it up (recommended)
 
-Paste this into Claude Code or Codex:
+Paste this into the coding agent you want to set up:
 
-> Add the `agent-toolkit` plugin marketplace from `heyFahad/agent-toolkit`, then list what's in it. Ask me which plugins I want from that list, with a one-line description of each, and install only the ones I pick. Once installed, run `/reload-plugins` and confirm which skills and hooks are now active by name.
-
-That's deliberately a request for the agent to *ask before installing*, not to install everything unattended, and to work off whatever the marketplace actually lists rather than a number written down here that could go stale. Swap the last sentence for "install everything without asking" if that's what you want instead.
+> Set up the `agent-toolkit` marketplace from `heyFahad/agent-toolkit` for the agent handling this request. Identify the current host and use its own marketplace and plugin tools. List the available plugins with a one-line description of each. If I provided a selection alongside this prompt, install it. Otherwise, ask me once which plugins I want. A selection can name plugins or request the entire catalog. Refresh or start a new session as the host requires. Use its runtime inventory to report the skills and hooks that loaded by name, including any hooks awaiting trust. If the host lacks marketplace support, offer the individual skills it can install and explain which hooks are unavailable.
 
 ### Do it yourself
 
@@ -45,11 +43,13 @@ Or from inside a session: `/plugin marketplace add heyFahad/agent-toolkit`, then
 
 ```bash
 codex plugin marketplace add heyFahad/agent-toolkit
+codex plugin list --marketplace agent-toolkit --available --json
+codex plugin add git-workflow@agent-toolkit
 ```
 
-Then, inside a session: `/plugin install <name>@agent-toolkit` for each plugin, followed by `/reload-plugins`.
+Install each plugin you want, then start a fresh Codex session. In the Codex CLI, `/skills` lists discovered skills and `/hooks` shows hook status. Review and trust the toolkit's command hooks in `/hooks` to activate them. Use the `humanize` skill in Codex for the writing checks that Claude Code runs as agent hooks.
 
-**Check what actually loaded:** in Claude Code, `/context` shows active skills and agents, and `/plugin` opens the plugin manager, including an **Errors** tab if a hook or skill failed to load. In Codex, `codex plugin list` shows installed plugins.
+In Claude Code, `/context` shows available skills and agents, and `/plugin` shows plugin loading errors.
 
 ### Just want one skill?
 
@@ -60,7 +60,7 @@ npx skills add heyFahad/agent-toolkit --list
 npx skills add heyFahad/agent-toolkit --skill humanize --skill commit-message-conventions
 ```
 
-This only installs the skill text. The mechanical hooks that back some of these skills are Claude Code plugin features and don't come along with a single-skill install.
+Standalone installs include the skill and its supporting files. Hooks are supplied through the host's plugin package.
 
 ## Contributing
 
