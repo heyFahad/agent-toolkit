@@ -1,0 +1,76 @@
+---
+name: jira-ticket-lifecycle
+description: Read a Jira ticket in full (comments, history, parent, links) before planning any work on it, then keep its status and assignee in sync with the git/PR workflow, resolving each project's own status names and transition graph rather than assuming a universal one. Use as soon as a ticket is picked up or mentioned as the next piece of work, and again once its PR(s) are opened.
+metadata:
+  category: atlassian-workflow
+---
+
+# Jira ticket lifecycle management
+
+## Read the whole ticket before planning anything
+
+A ticket's description is often its oldest part. Scope changes, decisions, half-finished fixes, and "actually, don't do X" usually land in comments or in later edits, and an epic's background often lives only on the parent. Planning from the summary and description alone means building against a version of the ticket nobody holds any more. So before planning, estimating, or writing code for a ticket, read all of it:
+
+1. **The ticket itself, in full.** `twg jira workitem get <KEY> --full -o json` (all fields, the complete comment thread, and remote links such as PRs and Confluence pages). A plain `get` without `--comments`/`--full` doesn't promise the complete thread. On a large payload `twg` prints only a short summary inline and writes the real content to the file named under `output_files.stdout`: open that file and read the description and every comment. The inline summary is a pointer, not the ticket.
+2. **Its history.** `twg jira workitem changelog query --issue-id <KEY> --first 100 -o json` (follow `pageInfo.nextCursor` with `--after` if `hasNextPage` is true). Skim it for what the current fields don't show: description or summary edits after creation, moves back to an earlier status (QA bounced it, or it was reopened), reassignments, and scope fields changing (sprint, fix version, story points). Status moves forward and routine field noise can be ignored.
+3. **Its neighbours.** The parent (epic or story) and any linked issues that block it, are blocked by it, or duplicate it, fetched in one call: `twg jira workitem get <PARENT> <LINKED...> -o json`. Comments on those are optional unless the ticket points at them.
+
+Then, before anything else, write a short **current understanding** for the person doing the work: what's being asked *now*, with anything a later comment or edit changed from the description called out as such ("description says X; the 3 Nov comment narrows it to Y"). Where comments disagree with each other or with the description and the newer one doesn't clearly settle it, list the conflict and ask; don't quietly pick a side. If a comment says part of the work is already done (a merged PR, a config change already made), say so, since it changes the plan.
+
+Without `twg`, the Atlassian MCP equivalents are `getJiraIssue` plus `listJiraIssueComments`; the same rule applies of reading the comments, not just the fields.
+
+## Keep status and assignee in sync
+
+Whenever picking up or working on a Jira ticket, keep the ticket's Jira status and assignee in sync with the git/PR workflow, without needing to be asked each time:
+
+- If the ticket isn't already assigned to the person doing the work, assign it to them first. This keeps ownership visible to the rest of the team.
+- Move the ticket to whatever status represents **work started** as soon as work begins, even if that work is still planning/discovery and no code has been written yet. Don't wait for the first commit or PR to make this transition.
+- Move the ticket to whatever status represents **dev review** (the team's equivalent of a PR-opened checkpoint) once the PR(s) are opened. For tickets using the `branching-pr-workflow` dual-PR workflow, that's once the `main`-targeting PR exists (draft is fine).
+- Stop there. Don't transition the ticket to QA or Done: that's the assignee's call once they judge the PR is merged or otherwise ready for testing, and further transitions are theirs to make, not something to do proactively.
+- Keep the original assignee throughout. Don't reassign to anyone else.
+
+## There is no universal "In Progress" or "Dev Review"
+
+Status names, and the graph connecting them, are defined per project by that project's workflow scheme. A different board can use different words for the same milestone ("In Review" vs "Code Review" vs "Ready for QA"), skip a milestone entirely, or require several hops through intermediate statuses to reach it. Never hardcode a literal status name into a transition call — resolve it first:
+
+- Look for `status-map.local.json` (format in `references/status-map.md`) in `${XDG_CONFIG_HOME:-$HOME/.config}/agent-toolkit/` first, then next to this skill. The first location survives plugin updates; the second is a read-only legacy fallback, because an installed plugin's folder is versioned and gets replaced on update. If the current project has an entry (directly, or via a shared `workflow` id), use its `started`/`devReview` status names, `edges` graph, and `avoidBranches` as a starting map.
+- If there's no entry (new project, or the file doesn't exist at all), don't ask the person to hand-author one upfront — bootstrap it yourself (see below), and fall back to the generic matching heuristics in `references/status-map.md`'s `default` block for the first walk while you do.
+
+### Bootstrapping a project with no config yet
+
+Prefer getting the *complete* graph in one shot, and prefer getting it with zero human involvement when that's actually possible — fall back a step at a time only when the previous one doesn't work. Full detail and exact commands in `references/status-map.md`; summary:
+
+1. **Try the API first.** `POST /rest/api/3/workflows` (`twg api jira:/rest/api/3/workflows -X POST`) returns the real workflow definition for a project+issue-type — no human needed at all when it works. As of 2026-09 this reliably fails for most accounts (a `twg`-OAuth-scope wall, then — if routed around via Basic Auth with a personal API token — a Jira project-permission wall; both confirmed by direct testing, not assumed). Try it anyway before falling back: don't skip straight to asking a human on the assumption it'll fail, since permission grants can change, and this is what makes the skill actually automatic for whichever accounts and projects it does work for.
+2. **If that fails, ask for the screenshot.** Have the person open any issue, click its status field, choose **View Workflow**, turn on **Show transition labels**, and share the result. This needs a human, but only once per project, ever.
+3. **If a screenshot isn't practical**, fall back to walking a couple of real tickets live — slower, and it won't surface branches no ticket happens to be sitting in, but it needs nothing from the other person.
+4. Whichever step succeeds, write the result back to `status-map.local.json` in `${XDG_CONFIG_HOME:-$HOME/.config}/agent-toolkit/` yourself (create the folder if needed, and copy over any entries from a legacy copy next to this skill the first time), and — if a persistent memory system is available in this environment — save a short pointer memory noting where the graph now lives and when it was captured, so a future session doesn't ask again. The config file is the source of truth; memory just points at it.
+
+## Reaching a milestone can take more than one transition
+
+A ticket's current status only exposes the transitions leading directly out of it — never assume the milestone you want is one call away. Walk toward it:
+
+1. Read the ticket's current status.
+2. If it already satisfies the target milestone, stop — nothing to do.
+3. If a `workflows` graph is available, compute a candidate path from the current status to the milestone over its `edges`, skipping anything in `avoidBranches` or `stopBoundary`. This is a plan, not a green light for every hop in it.
+4. Discover the transitions actually available from the *current* status (see "Transition ids are not stable" below — never reuse a transition list or id fetched at an earlier status, and never execute a planned hop without this live check first).
+5. If the live discovery offers the planned hop (or, with no graph available, if exactly one available transition's destination matches the milestone per the config's or default's match list), take it. If the live set *doesn't* match what the graph predicted, treat the graph as stale for this edge rather than forcing it — downgrade or drop that edge in the config and fall through to step 6.
+6. If there's no plan or it just went stale, narrow the live options to transitions that move the ticket forward and aren't on the avoid list — sub-workflows like design/legal/security review, "Not Doing"/"Won't Do"/cancel-shaped transitions, or anything that moves back to an earlier status category. If exactly one candidate remains, take it and repeat from step 1 on the new status.
+7. If step 6 leaves zero or more than one plausible candidate, stop and ask the person doing the work which branch to take. A wrong hop here doesn't just fail loudly — it can silently route the ticket into an unrelated workflow lane (a design reviewer gets pinged, the ticket lands in the wrong swimlane), so an ambiguous fork is a stopping condition, not a guess.
+8. Cap the walk at a handful of hops (5-6). Hitting the cap without reaching the milestone means the config's assumptions are stale — report the path taken so far and stop, rather than looping.
+9. Any edge taken live that wasn't already marked `confirmed-live` in the config, upgrade it. Any `diagram-only` edge that live discovery contradicts, flag for review rather than silently deleting — it may just mean this issue type's workflow differs (see "Per-issue-type caution" below).
+
+A `status-map.local.json` graph is a hint to plan with, never a substitute for step 4 at each hop: Jira workflows change, and a hop that worked before can disappear or move — and a diagram in particular shows the *designed* graph, which conditions/screens/permissions can make the *live* graph a subset of, never a superset.
+
+## Per-issue-type caution
+
+A project's workflow scheme can assign a different workflow (different graph, sometimes different statuses) to each issue type. A path validated on one issue type (e.g. Task) isn't guaranteed to hold for another (e.g. Bug) in the same project, even though a plain status list for the project looks identical — that list is a union across all of the project's issue types. Don't assume a config entry validated on one ticket generalizes without spot-checking on a ticket of the type actually in hand.
+
+## Transition ids are not stable
+
+**Jira transition ids are only valid for the issue's current status, not stable across its lifecycle.** Always fetch the available transitions immediately before every transition call (e.g. `getTransitionsForJiraIssue`, or `twg`'s own transition-discovery step). Never reuse a transition id fetched earlier in the same session, even for the same issue, since it may already have moved once and the id for the same target status can change. A stale id fails with a generic "you might not have permission" error that doesn't hint at the real cause.
+
+This is a Jira-workflow habit, not tied to a specific project or ticket prefix. Apply it whenever Jira tooling is available and a ticket is in play. See the `prefer-twg-cli` skill for which tool to use.
+
+## References
+
+- `references/status-map.md` — where `status-map.local.json` lives, its format, default matching heuristics, and an example.

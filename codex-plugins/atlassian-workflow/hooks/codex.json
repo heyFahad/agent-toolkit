@@ -1,0 +1,17 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "^mcp__",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${PLUGIN_ROOT}/hooks/prefer-twg-gate.sh\"",
+            "timeout": 15,
+            "statusMessage": "prefer-twg-gate"
+          }
+        ]
+      }
+    ]
+  }
+}

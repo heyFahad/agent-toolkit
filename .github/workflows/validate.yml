@@ -27,24 +27,15 @@ jobs:
       - name: Validate Claude Code marketplace manifest
         run: claude plugin validate .claude-plugin/marketplace.json --strict
 
-      - name: Validate Codex marketplace manifest
-        # claude plugin validate only understands Claude's marketplace schema,
-        # so the Codex marketplace file is checked with Codex's own CLI
-        # instead - actually registering it and confirming every plugin
-        # resolves, not just that the JSON parses. The expected list is read
-        # from the Claude Code marketplace file rather than hardcoded here,
-        # so this doesn't need a manual update every time a plugin is added
-        # or removed - it just needs the two marketplace files to agree.
-        run: |
-          codex plugin marketplace add .
-          codex plugin list --marketplace agent-toolkit --available --json > /tmp/codex-plugins.json
-          expected=$(jq -r '.plugins[].name' .claude-plugin/marketplace.json | sort | tr '\n' ' ' | sed 's/ $//')
-          actual=$(jq -r '.available[].name' /tmp/codex-plugins.json | sort | tr '\n' ' ' | sed 's/ $//')
-          if [ "$expected" != "$actual" ]; then
-            echo "::error::Codex marketplace plugin list doesn't match the Claude Code marketplace. Expected: $expected. Got: $actual"
-            exit 1
-          fi
-          codex plugin marketplace remove agent-toolkit
+      - name: Test safety of Codex package sync
+        run: python3 scripts/tests/test_sync_codex_packages.py
+
+      - name: Check Codex package files
+        run: python3 scripts/sync-codex-packages.py --check
+
+      - name: Install Codex plugins and verify skill and hook discovery
+        timeout-minutes: 3
+        run: python3 scripts/check-codex-plugins.py
 
       - name: Validate each plugin
         # Not --strict here: every plugin with a shared skill triggers an

@@ -1,7 +1,7 @@
 #!/bin/bash
 # Node version lookup, each service's command, and the process-compose config.
 DS_LIB=${DS_LIB:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}
-# shellcheck source=common.sh
+# shellcheck source-path=SCRIPTDIR source=common.sh
 . "$DS_LIB/common.sh"
 
 # ds_node_bin <dir> <node_field>: the nvm bin directory for that Node version.
@@ -11,14 +11,19 @@ ds_node_bin() {
     [ -f "$dir/.nvmrc" ] || ds_die 2 "$dir/.nvmrc not found"
     v=$(tr -d '[:space:]' < "$dir/.nvmrc")
   fi
-  local nvm=${NVM_DIR:-$HOME/.nvm} spec=$v best
+  local nvm=${NVM_DIR:-$HOME/.nvm} spec=$v best installed version
   # nvm aliases (lts/iron, default, ...) are files holding a version or another alias.
   for _ in 1 2 3; do [ -f "$nvm/alias/$v" ] && v=$(tr -d '[:space:]' < "$nvm/alias/$v"); done
   v=${v#v}
   if [ ! -d "$nvm/versions/node/v$v/bin" ] && [[ $v =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
     # A partial version (22, 22.16): the newest installed match.
-    best=$(ls "$nvm/versions/node" 2>/dev/null | sed -n "s/^v\($v\.[0-9.]*\)$/\1/p" \
-      | sort -t. -k1,1n -k2,2n -k3,3n | tail -1)
+    best=$(
+      for installed in "$nvm/versions/node/v$v."*; do
+        [ -d "$installed/bin" ] || continue
+        version=${installed##*/v}
+        [[ $version =~ ^[0-9]+(\.[0-9]+)+$ ]] && printf '%s\n' "$version"
+      done | sort -t. -k1,1n -k2,2n -k3,3n | tail -1
+    )
     [ -n "$best" ] && v=$best
   fi
   local bin="$nvm/versions/node/v$v/bin"

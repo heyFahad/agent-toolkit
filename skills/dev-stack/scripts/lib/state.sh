@@ -2,7 +2,7 @@
 # Which checkout each service runs from (owners.json), and local files that
 # a fresh worktree lacks.
 DS_LIB=${DS_LIB:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}
-# shellcheck source=common.sh
+# shellcheck source-path=SCRIPTDIR source=common.sh
 . "$DS_LIB/common.sh"
 
 _ds_owners() { echo "$(ds_state_dir)/owners.json"; }

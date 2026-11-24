@@ -1,0 +1,17 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "^Bash$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${PLUGIN_ROOT}/hooks/lockfile-verification-gate.sh\"",
+            "timeout": 15,
+            "statusMessage": "lockfile-verification-gate"
+          }
+        ]
+      }
+    ]
+  }
+}

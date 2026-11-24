@@ -7,7 +7,7 @@
       "category": "git",
       "source": {
         "source": "local",
-        "path": "./plugins/git-workflow"
+        "path": "./codex-plugins/git-workflow"
       },
       "policy": {
         "installation": "AVAILABLE",
@@ -20,7 +20,7 @@
       "category": "tooling",
       "source": {
         "source": "local",
-        "path": "./plugins/package-manager-safety"
+        "path": "./codex-plugins/package-manager-safety"
       },
       "policy": {
         "installation": "AVAILABLE",
@@ -33,7 +33,7 @@
       "category": "github",
       "source": {
         "source": "local",
-        "path": "./plugins/github-tooling"
+        "path": "./codex-plugins/github-tooling"
       },
       "policy": {
         "installation": "AVAILABLE",
@@ -46,7 +46,7 @@
       "category": "git",
       "source": {
         "source": "local",
-        "path": "./plugins/pr-conventions"
+        "path": "./codex-plugins/pr-conventions"
       },
       "policy": {
         "installation": "AVAILABLE",
@@ -59,7 +59,7 @@
       "category": "jira",
       "source": {
         "source": "local",
-        "path": "./plugins/atlassian-workflow"
+        "path": "./codex-plugins/atlassian-workflow"
       },
       "policy": {
         "installation": "AVAILABLE",
@@ -72,7 +72,7 @@
       "category": "writing",
       "source": {
         "source": "local",
-        "path": "./plugins/writing-conventions"
+        "path": "./codex-plugins/writing-conventions"
       },
       "policy": {
         "installation": "AVAILABLE",
@@ -85,7 +85,7 @@
       "category": "coding",
       "source": {
         "source": "local",
-        "path": "./plugins/coding-style"
+        "path": "./codex-plugins/coding-style"
       },
       "policy": {
         "installation": "AVAILABLE",
@@ -98,7 +98,7 @@
       "category": "development",
       "source": {
         "source": "local",
-        "path": "./plugins/dev-stack"
+        "path": "./codex-plugins/dev-stack"
       },
       "policy": {
         "installation": "AVAILABLE",
