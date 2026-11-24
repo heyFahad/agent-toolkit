@@ -1,7 +1,7 @@
 #!/bin/bash
 # Target expansion and dependency ordering.
 DS_LIB=${DS_LIB:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}
-# shellcheck source=common.sh
+# shellcheck source-path=SCRIPTDIR source=common.sh
 . "$DS_LIB/common.sh"
 
 # shellcheck disable=SC2016 # a jq program, not shell

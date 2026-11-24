@@ -1,7 +1,7 @@
 #!/bin/bash
 # Prerequisite checks, registry lookup and registry validation.
 DS_LIB=${DS_LIB:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}
-# shellcheck source=common.sh
+# shellcheck source-path=SCRIPTDIR source=common.sh
 . "$DS_LIB/common.sh"
 
 # ds_require_tools: exit 3 with an install line for each missing tool.
@@ -71,9 +71,14 @@ else (.services | to_entries[] | problems(.key; .value)),
 
 # ds_registry_json <path>: the validated registry as JSON.
 ds_registry_json() {
-  local json problems
+  local json problems problem
   json=$(yq -o=json '.' "$1" 2>&1) || ds_die 2 "can't parse $1: $json"
   problems=$(jq -r "$_DS_VALIDATE" <<<"$json") || ds_die 2 "can't validate $1"
-  [ -z "$problems" ] || { echo "$problems" | sed 's/^/devstack: /' >&2; exit 2; }
+  if [ -n "$problems" ]; then
+    while IFS= read -r problem; do
+      printf 'devstack: %s\n' "$problem" >&2
+    done <<<"$problems"
+    exit 2
+  fi
   echo "$json"
 }

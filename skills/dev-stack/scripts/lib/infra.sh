@@ -2,7 +2,7 @@
 # Docker containers a service relies on. devstack only ever starts a stopped
 # container; it never creates, stops or removes one.
 DS_LIB=${DS_LIB:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}
-# shellcheck source=common.sh
+# shellcheck source-path=SCRIPTDIR source=common.sh
 . "$DS_LIB/common.sh"
 
 # ds_infra_ensure <container...>

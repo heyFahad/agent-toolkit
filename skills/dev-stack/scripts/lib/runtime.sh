@@ -1,15 +1,15 @@
 #!/bin/bash
 # The commands: up, status, logs, restart, down, urls, attach.
 DS_LIB=${DS_LIB:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}
-# shellcheck source=registry.sh
+# shellcheck source-path=SCRIPTDIR source=registry.sh
 . "$DS_LIB/registry.sh"
-# shellcheck source=resolve.sh
+# shellcheck source-path=SCRIPTDIR source=resolve.sh
 . "$DS_LIB/resolve.sh"
-# shellcheck source=build.sh
+# shellcheck source-path=SCRIPTDIR source=build.sh
 . "$DS_LIB/build.sh"
-# shellcheck source=state.sh
+# shellcheck source-path=SCRIPTDIR source=state.sh
 . "$DS_LIB/state.sh"
-# shellcheck source=infra.sh
+# shellcheck source-path=SCRIPTDIR source=infra.sh
 . "$DS_LIB/infra.sh"
 
 # --- process-compose plumbing ---------------------------------------------
@@ -353,7 +353,8 @@ _ds_up() {
     # --with has to be healthy before its dependant starts.
     local d dout
     while IFS= read -r d; do
-      [ -n "$d" ] && grep -qFx "$d" <<<"$svcs" || continue
+      [ -n "$d" ] || continue
+      grep -qFx "$d" <<<"$svcs" || continue
       if ! dout=$(_ds_wait "$d"); then
         echo "$dout"
         ds_die 1 "$svc wasn't started: its dependency $d isn't healthy"
@@ -503,11 +504,13 @@ cmd_ports() {
            END { exit !(s == 1 && e == 1 && sl < el) }' "$f" \
         || ds_die 2 "$f needs exactly one <!-- devstack:ports:start --> followed by one <!-- devstack:ports:end -->"
       table=$(_ds_ports_md); tmp=$(mktemp)
-      DS_TABLE="$table" awk '
+      if ! DS_TABLE="$table" awk '
         /<!-- devstack:ports:start -->/ { print; print ""; print ENVIRON["DS_TABLE"]; print ""; skip = 1; next }
         /<!-- devstack:ports:end -->/ { skip = 0 }
-        !skip { print }' "$f" > "$tmp" && mv "$tmp" "$f" \
-        || { rm -f "$tmp"; ds_die 1 "couldn't write $f"; }
+        !skip { print }' "$f" > "$tmp" || ! mv "$tmp" "$f"; then
+        rm -f "$tmp"
+        ds_die 1 "couldn't write $f"
+      fi
       echo "updated the port table in $f" ;;
     *) ds_die 2 "ports: unknown option $1" ;;
   esac
