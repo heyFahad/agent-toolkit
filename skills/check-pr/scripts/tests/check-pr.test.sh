@@ -926,5 +926,72 @@ check "gate: review and CI on different heads block" '[false,true]' \
   "$(q '[.clean, ([.blocking[].reason] | index("head-moved") != null)]')"
 check "gate: heads differ, so nobody is credited with reviewing CI's head" null "$(q .reviewer)"
 
+# -------------------------------------------------------------- wait-for-review
+# A stub pr-gate.sh: the Nth read of PR P answers from $WFX/P.N.json, or the
+# last one there is; it exits 2 while $WFX/P.fail counts down.
+WFX="$TMP/wait"
+mkdir -p "$WFX"
+cat >"$TMP/gate-stub" <<'EOF'
+#!/bin/bash
+pr=${!#}
+n=$(($(cat "$WFX/$pr.count" 2>/dev/null || echo 0) + 1))
+echo "$n" >"$WFX/$pr.count"
+echo "$(date +%s) $*" >>"$WFX/log"
+if [ -f "$WFX/$pr.fail" ]; then echo "lookup failed" >&2; exit 2; fi
+f="$WFX/$pr.$n.json"
+while [ ! -f "$f" ] && [ "$n" -gt 1 ]; do n=$((n - 1)); f="$WFX/$pr.$n.json"; done
+cat "$f"
+jq -e .clean "$f" >/dev/null
+EOF
+chmod +x "$TMP/gate-stub"
+export WFX CHECK_PR_GATE="$TMP/gate-stub" CHECK_PR_WAIT_INTERVAL=0
+gate_json() { # PR BLOCKING-REASON...
+  local pr=$1
+  shift
+  jq -n --argjson pr "$pr" '{pr: $pr, clean: ($ARGS.positional | length == 0),
+    blocking: ($ARGS.positional | map({reason: ., detail: ""})), warnings: []}' --args "$@"
+}
+wreset() { rm -rf "$WFX" && mkdir -p "$WFX"; }
+
+wreset
+gate_json 1 ci-pending >"$WFX/1.1.json"
+gate_json 1 >"$WFX/1.2.json"
+gate_json 2 >"$WFX/2.1.json"
+run wait-for-review.sh -R o/r 1 2
+check "wait: settles" 0 "$CODE"
+check "wait: one entry per PR, the last read" '[[1,true],[2,true]]' "$(q '[.[] | [.pr, .clean]]')"
+check "wait: passes -R on" 1 "$(grep -c -- '-R o/r 1' "$WFX/log" | awk '{print ($1 >= 1)}')"
+
+wreset
+gate_json 3 copilot-pending >"$WFX/3.1.json"
+CHECK_PR_WAIT_INTERVAL=1 run wait-for-review.sh --timeout 1s 3
+check "wait: times out" 124 "$CODE"
+check "wait: prints the pending state" '[["copilot-pending"]]' "$(q '[.[] | [.blocking[].reason]]')"
+
+wreset
+gate_json 4 head-moved >"$WFX/4.1.json"
+gate_json 4 unresolved-threads >"$WFX/4.2.json"
+run wait-for-review.sh 4
+check "wait: head-moved isn't settled, other blockers are" '[0,2]' "[$CODE,$(cat "$WFX/4.count")]"
+
+wreset
+touch "$WFX/5.fail"
+run wait-for-review.sh 5
+check "wait: three failed reads in a row" '[2,3]' "[$CODE,$(cat "$WFX/5.count")]"
+
+run wait-for-review.sh --timeout 5x 1
+check "wait: bad duration" 2 "$CODE"
+run wait-for-review.sh
+check "wait: no PR" 2 "$CODE"
+
+wreset
+gate_json 6 >"$WFX/6.1.json"
+start=$(date +%s)
+CHECK_PR_WAIT_INTERVAL=1 run wait-for-review.sh 6
+first=$(awk 'NR == 1 { print $1 }' "$WFX/log")
+check "wait: settles after one read" '[0,1]' "[$CODE,$(cat "$WFX/6.count")]"
+check "wait: the first read comes after an interval, not at launch" true "$([ $((first - start)) -ge 1 ] && echo true || echo false)"
+unset CHECK_PR_GATE CHECK_PR_WAIT_INTERVAL
+
 echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]
