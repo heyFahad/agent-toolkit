@@ -75,7 +75,7 @@ The same review applies to a single-PR change that skips the dual-PR process, an
 
 ## Opening PRs
 
-Once local changes are complete, verified (`verify --full` from the `verify` skill passes on the branch) and self-reviewed (above), push the branch and open **two PRs**, both as **drafts** unless told otherwise:
+Once local changes are complete, verified (`verify --full` from the `verify` skill passes on the branch) and self-reviewed (above), push the branch and open **two PRs**, both as **drafts** unless told otherwise. Don't ask first: a passing `verify --full` is what makes this safe. The one exception is a repo where `verify` reports the gate off: nothing checked the code, so ask the user before pushing.
 
 1. One against **`main`**: this is the PR that will eventually ship the change to production. It stays open for the lifetime of the ticket.
 2. One against **the pre-prod branch**: this deploys the change to the pre-prod environment for QA.
@@ -84,11 +84,9 @@ Before opening the pre-prod PR, run the pre-check in the `clean-preprod-pr` skil
 
 Give both PRs the same title (see `pr-title-conventions`). Apply a **`production`** label (or the repo's equivalent) to the `main` PR only, never to the pre-prod PR, for easy tracking of what's queued to ship.
 
-### Then stop and wait for the user
+### Then run `check-pr`
 
-Drafts exist so that a PR opened by mistake does no harm, so don't build on them yet: don't request reviewers, mark anything ready, or run `check-pr`. Give the user both PR links and ask whether they look right and whether to go ahead with `check-pr`, using the harness's question prompt if it has one (the question box in the Claude desktop app, `AskUserQuestion` in Claude Code), otherwise a plain question at the end of the turn. End the turn there.
-
-On the user's go-ahead, run the `check-pr` skill (in `github-tooling`). It requests Copilot on both PRs, triages Copilot, human and CI feedback, marks the pre-prod PR ready for review once everything is clean, and cleans up. The `main` PR stays a draft until the ticket is released.
+As soon as both drafts are open, run the `check-pr` skill (in `github-tooling`) on them, without stopping to ask. It requests reviews and waits for them, triages Copilot, human and CI feedback, and then asks the user to test the running app. The user's approval there is the one place the chain stops for them: only then does the pre-prod PR get `manually-verified` and leave draft, and the local branches get cleaned up. The `main` PR stays a draft until the ticket is released.
 
 ## Handling feedback
 
@@ -110,8 +108,8 @@ After a release, `main` should be merged back into the pre-prod branch with a me
 
 ## Cleaning up
 
-Once both PRs are open and their feedback is resolved, merged or not, the local branches and worktree have nothing left that isn't on the remote. `check-pr` runs the `branch-cleanup` skill at that point; run it yourself if the PRs got clean some other way. This is the last step for every ticket.
+Once the PRs are clean and the user has approved the change (or, for a single-PR change, once it's clean), the local branches and worktree have nothing left that isn't on the remote. `check-pr` runs the `branch-cleanup` skill at that point; run it yourself if the PRs got there some other way. This is the last step for every ticket.
 
 ## Skipping the dual-PR process
 
-Docs-only or otherwise low-risk changes that don't need QA can skip the dual-PR process: a single PR against `main` is enough. So can any repo where the resolver reports no pre-prod branch.
+Docs-only or otherwise low-risk changes that don't need QA can skip the dual-PR process: a single PR against `main` is enough. So can any repo where the resolver reports no pre-prod branch. With no pre-prod PR there's nothing for the user to test before it goes out: `check-pr` cleans up as soon as the PR is clean, without waiting for an approval.
