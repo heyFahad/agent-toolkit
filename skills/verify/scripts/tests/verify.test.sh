@@ -132,14 +132,43 @@ check "list: an uncommitted lockfile doesn't count" '"CI=true npm run lint"' "$(
 R=$(mkrepo jest '{"lint":"l","test":"t"}' "" "$(printf 'npm run lint\nnpm test')" '{"jest":"^29"}')
 run_verify "$R" --list --related a.ts b.ts
 check "list: related with jest" \
-  '["CI=true npm run lint","CI=true npx --no-install jest --findRelatedTests --passWithNoTests a.ts b.ts"]' "$(q '[.[].run]')"
+  '["CI=true npm run lint","CI=true npx --no-install jest --maxWorkers=50% --findRelatedTests --passWithNoTests a.ts b.ts"]' "$(q '[.[].run]')"
 
 R=$(mkrepo vitest '{"lint":"l","test":"t","build":"b"}' pnpm-lock.yaml "$(printf 'pnpm lint\npnpm test\npnpm build')" '{"vitest":"^2"}')
 run_verify "$R" --list --related src/a.ts
 check "list: related with vitest" \
-  '["CI=true pnpm run lint","CI=true pnpm exec vitest related --run --passWithNoTests src/a.ts"]' "$(q '[.[].run]')"
+  '["CI=true pnpm run lint","CI=true pnpm exec vitest related --run --passWithNoTests --maxWorkers=50% src/a.ts"]' "$(q '[.[].run]')"
 run_verify "$R" --list --related
 check "list: related, no changed files" '["CI=true pnpm run lint"]' "$(q '[.[].run]')"
+
+# The related level runs the type scripts too, not only format and lint.
+R=$(mkrepo relty '{"lint":"l","typecheck":"tc","test":"t","build":"b"}' "" \
+  "$(printf 'npm run lint\nnpm run typecheck\nnpm test\nnpm run build')" '{"jest":"^29"}')
+run_verify "$R" --list --related a.ts
+check "list: related runs lint, typecheck and related tests" '["lint","typecheck","related-tests"]' "$(q '[.[].name]')"
+
+# ------------------------------------------------------------- worker caps
+# A script that is one jest or vitest call gets the cap at the full level;
+# npm needs `--` to pass it on, the others don't; after CI's own `--` it
+# comes last.
+R=$(mkrepo capnpm '{"test":"jest","test:e2e":"cross-env X=1 jest -c e2e.js"}' "" \
+  "$(printf 'npm test\nnpm run test:e2e -- --ci')" '{"jest":"^29"}')
+run_verify "$R" --list
+check "caps: jest under npm, with and without CI's arguments" \
+  '["CI=true npm run test -- --maxWorkers=50%","CI=true npm run test:e2e -- --ci --maxWorkers=50%"]' "$(q '[.[].run]')"
+R=$(mkrepo cappnpm '{"test":"vitest run"}' pnpm-lock.yaml 'pnpm test' '{"vitest":"^3.1.0"}')
+run_verify "$R" --list
+check "caps: vitest under pnpm, no --" '["CI=true pnpm run test --maxWorkers=50%"]' "$(q '[.[].run]')"
+R=$(mkrepo capnone '{"test":"jest && node after.js","test:serial":"jest --runInBand","test:w":"jest","test:node":"node t.js"}' "" \
+  "$(printf 'npm test\nnpm run test:serial\nnpm run test:w -- -w 2\nnpm run test:node')" '{"jest":"^29"}')
+run_verify "$R" --list
+check "caps: none for chained scripts, a worker count of their own, or no jest" \
+  '["CI=true npm run test","CI=true npm run test:node","CI=true npm run test:serial","CI=true npm run test:w -- -w 2"]' "$(q '[.[].run]')"
+R=$(mkrepo capold '{"lint":"l","test":"vitest run"}' "" "$(printf 'npm run lint\nnpm test')" '{"vitest":"^0.34.6"}')
+run_verify "$R" --list
+check "caps: vitest 0.x has no --maxWorkers" '["CI=true npm run lint","CI=true npm run test"]' "$(q '[.[].run]')"
+run_verify "$R" --list --related a.ts
+check "caps: nor for related tests" '"CI=true npx --no-install vitest related --run --passWithNoTests a.ts"' "$(q '.[1].run')"
 
 R=$(mkrepo notestci '{"lint":"l","test":"t"}' "" 'npm run lint' '{"jest":"^29"}')
 run_verify "$R" --list --related a.ts
@@ -160,6 +189,40 @@ check "list: override with no related runs the full list" '["make t"]' "$(q '[.[
 echo '{"repos":{"owner/repo":{"checks":[]}}}' >"$CFG"
 run_verify "$R" --list
 check "list: empty checks turns the gate off" '[]' "$OUT"
+
+# An object-form related maps changed paths to the suites that cover them.
+jq -n '{repos: {"owner/repo": {checks: [{name: "all", run: "make all"}], related: {
+  run: "shellcheck {files}",
+  paths: {
+    "skills/check-pr/**": "bash skills/check-pr/tests/t.sh",
+    "skills/*/SKILL.md": "lint-skill {files}",
+    "**/*.json": "jq . {files}",
+    "plugins/x/**": "bash skills/check-pr/tests/t.sh"}}}}}' >"$CFG"
+run_verify "$R" --list --related skills/check-pr/scripts/a.sh skills/verify/SKILL.md skills/verify/deep/SKILL.md README.md
+check "paths: each matching glob's command, {files} as the files it matched" \
+  "$(jq -nc '[{name: "related", run: "shellcheck skills/check-pr/scripts/a.sh skills/verify/SKILL.md skills/verify/deep/SKILL.md README.md"},
+    {name: "related skills/check-pr/**", run: "bash skills/check-pr/tests/t.sh"},
+    {name: "related skills/*/SKILL.md", run: "lint-skill skills/verify/SKILL.md"}]')" "$OUT"
+run_verify "$R" --list --related a.json sub/dir/b.json
+check "paths: **/ matches no directory or many" '["shellcheck a.json sub/dir/b.json","jq . a.json sub/dir/b.json"]' "$(q '[.[].run]')"
+run_verify "$R" --list --related skills/check-pr/x plugins/x/y
+check "paths: two globs with the same command run it once" '["shellcheck skills/check-pr/x plugins/x/y","bash skills/check-pr/tests/t.sh"]' "$(q '[.[].run]')"
+jq '.repos["owner/repo"].related |= del(.run)' "$CFG" >"$CFG.tmp" && mv "$CFG.tmp" "$CFG"
+run_verify "$R" --list --related docs/x.md 'a b.json'
+check "paths: no run, only the matching globs, files quoted" \
+  "$(jq -nc --arg r "jq . $(printf '%q' 'a b.json')" '[$r]')" "$(q '[.[].run]')"
+run_verify "$R" --list --related docs/x.md
+check "paths: nothing matched, nothing to run" '[]' "$OUT"
+run_verify "$R" --list
+check "paths: the full level is still the checks" '["make all"]' "$(q '[.[].run]')"
+# A list of commands per glob, and {file} for one run per file: a suite both
+# its source and its test file pick runs once.
+jq -n '{repos: {"owner/repo": {checks: [{name: "all", run: "make all"}], related: {paths: {
+  "**/*.test.sh": "bash {file}",
+  "src/a.sh": ["bash tests/a.test.sh", "bash tests/b.test.sh"]}}}}}' >"$CFG"
+run_verify "$R" --list --related src/a.sh tests/a.test.sh 'tests/c d.test.sh'
+check "paths: {file} runs per file, a list runs each, the same command once" \
+  "$(jq -nc --arg c "bash $(printf '%q' 'tests/c d.test.sh')" '["bash tests/a.test.sh", $c, "bash tests/b.test.sh"]')" "$(q '[.[].run]')"
 rm "$CFG"
 
 R=$(mkrepo nopkg '{}' "" "")
@@ -299,6 +362,65 @@ touch -t 202001010000 "$AGENT_TOOLKIT_STATE_DIR/verify/old.json" "$AGENT_TOOLKIT
 run_verify "$R" --full
 check "run: records and logs older than 14 days are pruned" false \
   "$([ -e "$AGENT_TOOLKIT_STATE_DIR/verify/old.json" ] || [ -e "$AGENT_TOOLKIT_STATE_DIR/verify/logs/old.log" ] && echo true || echo false)"
+
+# ---------------------------------------------------------------------- lock
+# One run at a time on the machine: a second run waits for the first, and
+# says whose run it's queued behind.
+LOCK="$AGENT_TOOLKIT_STATE_DIR/verify/run.lock"
+export VF_LOCK_POLL=0.1
+A=$(mkrepo locka '{"lint":"sleep 1; touch '"$TMP"'/a-done"}' "" 'npm run lint')
+B=$(mkrepo lockb '{"lint":"test -f '"$TMP"'/a-done"}' "" 'npm run lint')
+rm -f "$TMP/a-done"
+(cd "$A" && bash "$S/verify" --full >"$TMP/a-out" 2>&1) &
+apid=$!
+for _ in $(seq 50); do [ -f "$LOCK/owner" ] && break; sleep 0.1; done
+check "lock: a run holds the lock, naming its repo" owner/locka "$(sed -n 's/^repo=//p' "$LOCK/owner" 2>/dev/null)"
+run_verify "$B" --full
+wait "$apid"
+check "lock: a second run waits for the first to finish" 0 "$CODE"
+check "lock: and says whose run it's queued behind" true "$(printf '%s' "$OUT" | grep -q 'queued behind the verify run for owner/locka' && echo true || echo false)"
+check "lock: released after the run" false "$([ -e "$LOCK" ] && echo true || echo false)"
+
+# A lock whose holder died is stale: the next run takes it over.
+sh -c 'exit 0' &
+dead=$!
+wait "$dead"
+mkdir -p "$LOCK"
+printf 'pid=%s\nrepo=owner/gone\nat=then\n' "$dead" >"$LOCK/owner"
+run_verify "$B" --full
+check "lock: a dead holder's lock is taken over" 0 "$CODE"
+check "lock: and says so" true "$(printf '%s' "$OUT" | grep -q 'stale lock left by pid' && echo true || echo false)"
+check "lock: released after the run" false "$([ -e "$LOCK" ] && echo true || echo false)"
+
+# A live PID that started at another time isn't the holder: its PID was
+# reused. Only where ps can say when a process started.
+if [ -n "$(lib _vf_proc_start $$)" ]; then
+  mkdir -p "$LOCK"
+  printf 'pid=%s\nstart=Thu Jan  1 00:00:00 1970\nrepo=owner/old\nat=then\n' "$$" >"$LOCK/owner"
+  run_verify "$B" --full
+  check "lock: a reused PID's lock is stale" '[0,true]' "[$CODE,$(printf '%s' "$OUT" | grep -q 'stale lock' && echo true || echo false)]"
+fi
+
+# A lock with no owner a minute after it was made is stale too.
+mkdir -p "$LOCK"
+touch -t 202001010000 "$LOCK"
+run_verify "$B" --full
+check "lock: an ownerless lock from long ago is taken over" '[0,true]' "[$CODE,$(printf '%s' "$OUT" | grep -q 'stale lock' && echo true || echo false)]"
+
+# A run a check starts (a test suite that runs verify) shares the lock its
+# parent holds rather than waiting on it.
+sleep 30 &
+holder=$!
+mkdir -p "$LOCK"
+printf 'pid=%s\nstart=%s\nrepo=owner/parent\nat=now\n' "$holder" "$(lib _vf_proc_start "$holder")" >"$LOCK/owner"
+OUT=$(cd "$B" && VF_LOCK_HELD="$LOCK" bash "$S/verify" --full 2>"$TMP/stderr")
+CODE=$?
+check "lock: a nested run doesn't wait on its parent's lock" '[0,false]' "[$CODE,$(printf '%s' "$OUT" | grep -q queued && echo true || echo false)]"
+check "lock: and leaves it in place" owner/parent "$(sed -n 's/^repo=//p' "$LOCK/owner" 2>/dev/null)"
+kill "$holder" 2>/dev/null
+wait "$holder" 2>/dev/null
+rm -rf "$LOCK"
+unset VF_LOCK_POLL
 
 # CI with PR workflows that verify can't read isn't the same as no CI.
 R=$(mkrepo shellci '{}' "" 'bash run-tests.sh')

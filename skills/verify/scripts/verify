@@ -5,8 +5,9 @@
 # lets the tree be committed or pushed. See lib.sh for where the checks come
 # from, and the verify skill for when to run each level.
 #
-#   --related [FILES...]  run the quick checks (lint, and tests related to
-#                         FILES, by default the files changed against HEAD)
+#   --related [FILES...]  run the quick checks (format, lint and typecheck,
+#                         and tests related to FILES, by default the files
+#                         changed against HEAD)
 #   --full                run every check
 #   --status [--tree SHA] print the record for a tree (default: the working
 #                         tree); exit 1 when there is none
@@ -18,6 +19,9 @@
 # writes a record under the hash of the working tree after the run, and under
 # its tracked-files-only hash, which the verify-gate hook reads. Untracked
 # build output doesn't fail a run.
+#
+# Only one run checks at a time on this machine, across every repo and
+# session: another one prints that it's queued, and waits for it.
 #
 # Exit codes: 0 success (or the gate is off: no checks for this repo); 1 a
 # check failed; 2 bad usage or not a git repo; 3 a missing prerequisite (the
@@ -91,6 +95,12 @@ fi
 NODE_BIN=$(vf_node_path "$ROOT") || exit $?
 STATE=$(vf_state_dir)
 mkdir -p "$STATE/logs"
+# One run at a time on this machine (see vf_lock_acquire). Taken before the
+# tree is hashed: the tree may change while this waits.
+trap 'vf_lock_release' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+vf_lock_acquire "$(vf_repo_key "$ROOT")"
 LOG=$(mktemp "$STATE/logs/run.XXXXXX")
 BEFORE=$(vf_tracked_tree "$ROOT") || vf_die 2 "could not hash the working tree"
 

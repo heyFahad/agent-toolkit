@@ -1,20 +1,20 @@
 ---
 name: verify
-description: Run a repo's checks before committing or pushing, and record that they passed. Use before every git commit (`--related`), before pushing or opening PRs (`--full`), when the verify-gate hook blocks a commit, push or PR, after `gh stack sync` rebases a stack, and when a repo's checks need setting by hand.
+description: Run a repo's checks before committing or pushing, and record that they passed. Use before every git commit and push (`--related`), before the first push of a branch and before pushing a `conflicts/...` branch (`--full`), when the verify-gate hook blocks a commit, push or PR, after `gh stack sync` rebases a stack, and when a repo's checks need setting by hand.
 metadata:
   category: git-workflow
 ---
 
 # Verify a change before committing or pushing it
 
-`scripts/verify` runs a repo's checks and records the result against the exact tree it ran on. The `verify-gate` hook (`git-workflow` plugin) reads those records and blocks a commit, push or PR whose tree hasn't passed. So nothing unchecked leaves your machine, and full suites still run only once per push, not on every turn.
+`scripts/verify` runs a repo's checks and records the result against the exact tree it ran on. The `verify-gate` hook (`git-workflow` plugin) reads those records and blocks a commit, push or PR whose tree hasn't passed. So nothing unchecked leaves your machine, and the full suite runs once per branch, before its PRs open, not on every push. CI runs everything on every push anyway, and `check-pr` waits for it and fixes what fails.
 
 ## The two levels
 
 | Command | Runs | When |
 | --- | --- | --- |
-| `verify --related` | The repo's lint and format checks, plus the tests related to the changed files (`jest --findRelatedTests`, `vitest related`) | Before each `git commit` |
-| `verify --full` | Every check | Once, when the work is ready to push or open PRs |
+| `verify --related` | The repo's format, lint and typecheck scripts, plus the tests related to the changed files (`jest --findRelatedTests`, `vitest related`) | Before each `git commit` and each later push |
+| `verify --full` | Every check | Once per branch, before the push that creates it on the remote (so its PRs open green), and before each push of a `conflicts/...` branch |
 
 Run it from anywhere in the repo, as `bash <this skill>/scripts/verify --related`. It prints `PASS` or `FAIL` per check, and the tail of a failing check's output. The full log path is in the record (`verify --status`).
 
@@ -22,22 +22,30 @@ Run it from anywhere in the repo, as `bash <this skill>/scripts/verify --related
 
 A passing `--related` run never replaces a passing `--full` one, so running `--related` before a commit doesn't cost you the full run you already did.
 
-Never run the full suite on every turn or every small edit. That's what `--related` is for.
+Never run the full suite on every turn, every small edit or every push. That's what `--related` is for.
+
+### One run at a time
+
+Only one `verify` run checks at a time on the machine, across every repo and session. Jest, vitest and eslint each take every core they're given, and a few sessions running them at once can fill memory and swap. A second run prints that it's queued behind another repo's run and waits for it, so give `verify` a long timeout (or run it in the background) rather than starting it again. The lock is a directory in the verify state dir; a run whose holder has died takes it over on its own.
+
+Jest and vitest run with `--maxWorkers=50%` too, so even one run leaves cores free. A script that already sets a worker count, or chains several commands, is left as it is.
 
 ## What the gate needs
 
 | Command | Needs |
 | --- | --- |
 | `git commit` | a passing `--related` (or `--full`) run of the current working tree |
-| `git push`, `gh pr create` | a passing `--full` run of each branch being pushed |
-| `gh stack push`, `gh stack submit` | a passing `--full` run of every open branch in the stack |
+| `git push`, `gh pr create` | a passing `--related` run of each branch tree being pushed, or `--full` when the push creates the branch on the remote, or the branch is a `conflicts/...` one |
+| `gh stack push`, `gh stack submit` | the same, for every open branch in the stack |
 | `gh stack sync` | blocked: it rebases and pushes in one go, so use `gh stack rebase`, verify each changed branch, then `gh stack push` |
+
+Whether a push creates the branch comes from the remote-tracking refs (`origin/<branch>`) the last fetch left, with no network call. A branch someone else pushed since your last fetch counts as new, which only asks for the full run. A `conflicts/...` branch always needs `--full`: its merge of the feature branch into the pre-prod branch is new code that no earlier run saw.
 
 Run a push, `gh pr create` or `gh stack push` in its own Bash call. Chained after a commit, merge or rebase (`git commit -m x && git push`), it's blocked: the hook runs before the call, so it can't see the commit the push would send.
 
-To verify a branch that isn't checked out, check it out (or open a worktree of it) and run `verify --full` there. The hook's message says which branch.
+To verify a branch that isn't checked out, check it out (or open a worktree of it) and run `verify` there. The hook's message says which branch.
 
-The record belongs to a tree, so any edit after a run means running again. Committing doesn't count as an edit: verify once, then commit by path as many times as you like. A fixup rebase doesn't change the tree either. A `conflicts/...` branch has a tree of its own, which is what the pre-prod PR deploys, so it needs its own `--full`. So does each branch `gh stack rebase` changed.
+The record belongs to a tree, so any edit after a run means running again. Committing doesn't count as an edit: verify once, then commit by path as many times as you like. A fixup rebase doesn't change the tree either. A `conflicts/...` branch has a tree of its own, which is what the pre-prod PR deploys, so it needs its own `--full`. Each branch `gh stack rebase` changed needs its own run too: `--related` is what the gate asks for once the branch is on the remote.
 
 An untracked file you or the user keep around doesn't block a push: a record also matches the tracked files alone. That cuts both ways. If the change needs a new file and you forget to commit it, the push still goes through. So `verify` lists the untracked files each run included: commit the ones the change needs.
 
@@ -45,7 +53,7 @@ A check that changes tracked files fails the run. A `format` script that writes,
 
 ## Where the checks come from
 
-By default, from what CI runs: the root `package.json` scripts that a workflow triggered by `pull_request` invokes, with the arguments CI passes after `--`. Install-time scripts like `prepare` are left out, and so is a step CI ignores (`|| true`). `npm ci` installs; it doesn't count as running a `ci` script. They run with `CI=true`, through the package manager whose lockfile is committed, under the Node version `.nvmrc` names. CI is green on the default branch, so those checks pass before your change, and a failure is yours. A script CI never runs may already be failing, so it isn't used.
+By default, from what CI runs: the root `package.json` scripts that a workflow triggered by `pull_request` invokes, with the arguments CI passes after `--`. `--full` runs all of them; `--related` runs those whose names start with `format`, `lint` or `type`, plus jest or vitest on the changed files when CI runs a `test` script. Install-time scripts like `prepare` are left out, and so is a step CI ignores (`|| true`). `npm ci` installs; it doesn't count as running a `ci` script. They run with `CI=true`, through the package manager whose lockfile is committed, under the Node version `.nvmrc` names. CI is green on the default branch, so those checks pass before your change, and a failure is yours. A script CI never runs may already be failing, so it isn't used.
 
 `verify --list` prints what it would run, and `verify --list --related <files>` does the same for the quick level.
 
@@ -70,5 +78,19 @@ When inference gets it wrong (a monorepo, checks in a shared workflow, tests tha
 ```
 
 `{files}` becomes the changed files, shell-quoted. Without `related`, `--related` runs the full list. `"checks": []` turns the gate off for that repo.
+
+A repo without an import graph for `vitest related` to follow (a shell-test repo, say) can map changed paths to the suites that cover them instead. Make `related` an object:
+
+```json
+"related": {
+  "run": "shellcheck {files}",
+  "paths": {
+    "skills/check-pr/**": "bash skills/check-pr/scripts/tests/check-pr.test.sh",
+    "skills/*/SKILL.md": "markdownlint {files}"
+  }
+}
+```
+
+Each command whose glob matches a changed file runs once, with `{files}` as the files that glob matched, or once per matched file when it says `{file}` instead. A glob can name a list of commands rather than one. The same command picked twice runs once, so `"**/*.test.sh": "bash {file}"` next to `"src/lib.sh": "bash tests/lib.test.sh"` runs that suite once when both files change. `run` is optional and runs on every changed file. Globs are matched against paths from the repo root: `**/` matches any number of directories, `**` anything, and `*` and `?` stay within one directory, so `*.sh` matches only at the root and `**/*.sh` matches anywhere. A change no glob matches runs nothing beyond `run`.
 
 Never edit this file to get past a failing check. If a check fails for a reason that isn't your change, tell the user and let them decide.

@@ -6,7 +6,12 @@
 #   git commit                        the working tree needs a passing
 #                                     `verify --related` (or --full) record
 #   git push, gh pr create,           every branch tree being pushed needs a
-#   gh stack push, gh stack submit    passing `verify --full` record
+#   gh stack push, gh stack submit    passing `verify --related` record, or
+#                                     `verify --full` when the push creates
+#                                     the branch on the remote (there's no
+#                                     remote-tracking ref for it here) or the
+#                                     branch is a conflicts/... branch, whose
+#                                     merged tree is new code
 #   gh stack sync                     blocked: it rebases and pushes in one go,
 #                                     so nothing can verify the rebased trees
 #                                     first (use gh stack rebase, verify each
@@ -27,7 +32,9 @@
 # command; that errs towards blocking, and the message says what it saw.
 #
 # It only reads local files and git objects, except `gh stack view --json`,
-# which is local too. Exit 2 blocks the call, with the reason on stderr.
+# which is local too. Whether a push creates the branch comes from the
+# remote-tracking refs the last fetch left, never a network call: a branch
+# someone else pushed since counts as new, which only asks for more. Exit 2 blocks the call, with the reason on stderr.
 # Keep this bash 3.2 compatible: it runs under macOS's /bin/bash.
 set -uo pipefail
 
@@ -58,10 +65,30 @@ gate_root() {
   printf '%s' "$root"
 }
 
-# need TREE LEVEL ROOT WHAT [BRANCH]: block unless TREE has a passing record
-# at LEVEL. BRANCH, when it isn't the checked-out one, is named in the fix.
+# push_level ROOT REMOTE BRANCH [SRC]: sets `level` to what a push of SRC
+# (by default BRANCH) to BRANCH on REMOTE needs, and `why` to the reason when
+# that's full: a conflicts/... branch, or no remote-tracking ref for BRANCH,
+# so the push creates it.
+push_level() {
+  local b
+  level=related why=""
+  for b in "$3" "${4:-}"; do
+    case "$b" in conflicts/*)
+      level=full why="$b is a conflicts/ branch, whose merged tree is new code"
+      return 0
+      ;;
+    esac
+  done
+  if ! git -C "$1" rev-parse -q --verify "refs/remotes/$2/$3" >/dev/null 2>&1; then
+    level=full why="it creates $2/$3"
+  fi
+}
+
+# need TREE LEVEL ROOT WHAT [BRANCH] [WHY]: block unless TREE has a passing
+# record at LEVEL. BRANCH, when it isn't the checked-out one, is named in the
+# fix. WHY says why the level is full.
 need() {
-  local tree=$1 level=$2 root=$3 what=$4 branch=${5:-} f detail="" where cur
+  local tree=$1 level=$2 root=$3 what=$4 branch=${5:-} why=${6:-} f detail="" where cur
   vf_record_ok "$tree" "$level" && return 0
   f=$(vf_record_file "$tree")
   if [ -f "$f" ]; then
@@ -73,7 +100,7 @@ need() {
   if [ -n "$branch" ] && [ "$branch" != "$cur" ] && [ "$branch" != HEAD ]; then
     where="after you check out $branch (or in a worktree of it)"
   fi
-  block "verify-gate: $what needs a passing \`verify --$level\` of the tree it would take (${tree:0:7}). ${detail:+$detail }Run, $where: bash $VERIFY --$level"
+  block "verify-gate: $what needs a passing \`verify --$level\` of the tree it would take (${tree:0:7})${why:+, since $why}. ${detail:+$detail }Run, $where: bash $VERIFY --$level"
 }
 
 check_commit() { # dir
@@ -89,8 +116,40 @@ tree_of() {
     git -C "$1" rev-parse -q --verify "origin/$2^{tree}" 2>/dev/null
 }
 
+# push_remote ROOT: where a `git push` that names no remote goes.
+push_remote() {
+  local cur r
+  cur=$(git -C "$1" symbolic-ref -q --short HEAD 2>/dev/null || true)
+  for r in ${cur:+"branch.$cur.pushRemote"} remote.pushDefault ${cur:+"branch.$cur.remote"}; do
+    git -C "$1" config --get "$r" 2>/dev/null && return 0
+  done
+  echo origin
+}
+
+# push_dst ROOT REMOTE SRC: the branch a push of SRC with no destination
+# updates. HEAD is the current branch, pushed to its upstream when that's on
+# REMOTE.
+push_dst() {
+  local cur merge
+  case "$3" in
+    HEAD)
+      cur=$(git -C "$1" symbolic-ref -q --short HEAD 2>/dev/null) || {
+        echo HEAD
+        return 0
+      }
+      merge=$(git -C "$1" config --get "branch.$cur.merge" 2>/dev/null || true)
+      if [ -n "$merge" ] && [ "$(git -C "$1" config --get "branch.$cur.remote" 2>/dev/null)" = "$2" ]; then
+        echo "${merge#refs/heads/}"
+      else
+        echo "$cur"
+      fi
+      ;;
+    *) echo "${3#refs/heads/}" ;;
+  esac
+}
+
 check_push() { # dir args...
-  local dir=$1 root remote="" delete=false tags=false skip=false t src tree
+  local dir=$1 root remote="" delete=false tags=false skip=false t src dst tree level why
   local refs=()
   shift
   root=$(gate_root "$dir") || return 0
@@ -102,7 +161,7 @@ check_push() { # dir args...
     case "$t" in
       --delete | -d) delete=true ;;
       --all | --mirror | --branches)
-        block "verify-gate: git push $t pushes branches nobody verified. Push each branch by name (git push origin <branch>) after verify --full on it."
+        block "verify-gate: git push $t pushes branches nobody verified. Push each branch by name (git push origin <branch>) after verifying it."
         return 0
         ;;
       --tags) tags=true ;;
@@ -112,14 +171,15 @@ check_push() { # dir args...
     esac
   done
   [ "$delete" = false ] || return 0
+  [ -n "$remote" ] || remote=$(push_remote "$root")
   if [ "${#refs[@]}" -eq 0 ]; then
     [ "$tags" = false ] || return 0
-    if git -C "$root" config --get "remote.${remote:-origin}.push" >/dev/null 2>&1; then
-      block "verify-gate: git push with no branch named follows this repo's remote.<name>.push setting, which can push branches nobody verified. Push each branch by name (git push origin <branch>) after verify --full on it."
+    if git -C "$root" config --get "remote.$remote.push" >/dev/null 2>&1; then
+      block "verify-gate: git push with no branch named follows this repo's remote.<name>.push setting, which can push branches nobody verified. Push each branch by name (git push origin <branch>) after verifying it."
       return 0
     fi
     if [ "$(git -C "$root" config push.default 2>/dev/null)" = matching ]; then
-      block "verify-gate: git push with push.default=matching pushes every matching branch, verified or not. Push each branch by name (git push origin <branch>) after verify --full on it."
+      block "verify-gate: git push with push.default=matching pushes every matching branch, verified or not. Push each branch by name (git push origin <branch>) after verifying it."
       return 0
     fi
     refs=(HEAD)
@@ -127,26 +187,36 @@ check_push() { # dir args...
   for t in "${refs[@]}"; do
     t=${t#+}
     if [ "$t" = : ]; then
-      block "verify-gate: git push $remote : pushes every matching branch, verified or not. Push each branch by name (git push origin <branch>) after verify --full on it."
+      block "verify-gate: git push $remote : pushes every matching branch, verified or not. Push each branch by name (git push origin <branch>) after verifying it."
       continue
     fi
     src=${t%%:*}
     [ -n "$src" ] || continue # :dst deletes dst
     case "$src" in refs/tags/*) continue ;; esac
     case "$src" in *'*'*)
-      block "verify-gate: git push $src expands to branches the hook can't check one by one. Push each branch by name after verify --full on it."
+      block "verify-gate: git push $src expands to branches the hook can't check one by one. Push each branch by name after verifying it."
       continue
       ;;
     esac
     case "$src" in refs/tags/*) continue ;; esac
     git -C "$root" show-ref -q --verify "refs/tags/$src" 2>/dev/null && continue
     tree=$(tree_of "$root" "$src") || continue # unknown ref: git push fails on its own
-    need "$tree" full "$root" "git push of $src" "$src"
+    case "$t" in
+      *:*)
+        dst=${t#*:}
+        dst=${dst#refs/heads/}
+        ;;
+      *) dst=$(push_dst "$root" "$remote" "$src") ;;
+    esac
+    push_level "$root" "$remote" "$dst" "${src#refs/heads/}"
+    need "$tree" "$level" "$root" "git push of $src" "$src" "$why"
   done
 }
 
+# A PR opens on a branch already on origin, or one gh pushes there first: the
+# same levels as a push of it to origin.
 check_pr_create() { # dir args...
-  local dir=$1 root head="" next=false t tree
+  local dir=$1 root head="" next=false t tree level why
   shift
   root=$(gate_root "$dir") || return 0
   for t in "$@"; do
@@ -164,23 +234,28 @@ check_pr_create() { # dir args...
   head=${head#*:}
   if [ -z "$head" ]; then
     head=$(git -C "$root" symbolic-ref -q --short HEAD) || return 0
+    push_level "$root" origin "$head"
     # With no --head, gh may push the local branch first: its tip counts too.
     tree=$(git -C "$root" rev-parse -q --verify "$head^{tree}" 2>/dev/null) &&
-      need "$tree" full "$root" "gh pr create from $head (its local tip, which gh may push)" "$head"
+      need "$tree" "$level" "$root" "gh pr create from $head (its local tip, which gh may push)" "$head" "$why"
+    # Not on origin yet: the local tip is all there is.
+    git -C "$root" rev-parse -q --verify "refs/remotes/origin/$head" >/dev/null 2>&1 || return 0
   fi
+  push_level "$root" origin "$head"
   # The PR shows the branch as it is on GitHub: origin's copy first.
   tree=$(git -C "$root" rev-parse -q --verify "origin/$head^{tree}" 2>/dev/null ||
     git -C "$root" rev-parse -q --verify "$head^{tree}" 2>/dev/null) || {
     block "verify-gate: gh pr create from $head, but $head isn't a branch here or on origin (fetch it, or push it first), so its tree can't be checked."
     return 0
   }
-  need "$tree" full "$root" "gh pr create from $head" "$head"
+  need "$tree" "$level" "$root" "gh pr create from $head" "$head" "$why"
 }
 
 # check_stack DIR SUB: every branch gh stack would push that isn't merged or
-# queued needs a full record. sync is blocked outright.
+# queued needs a record, at the level a push of it to origin would. sync is
+# blocked outright.
 check_stack() {
-  local root json err b tree
+  local root json err b tree level why
   root=$(gate_root "$1") || return 0
   if [ "$2" = sync ]; then
     block "verify-gate: gh stack sync rebases the stack and pushes it in one go, so the rebased branches can't be verified first. Run gh stack rebase, then verify --full on each branch it changed, then gh stack push."
@@ -199,13 +274,14 @@ check_stack() {
   fi
   for b in $(printf '%s' "$json" | jq -r '.branches[] | select((.isMerged or .isQueued) | not) | .name'); do
     tree=$(tree_of "$root" "$b") || continue
-    need "$tree" full "$root" "gh stack $2 of $b" "$b"
+    push_level "$root" origin "$b"
+    need "$tree" "$level" "$root" "gh stack $2 of $b" "$b" "$why"
   done
 }
 
 # Pushes that come after a branch-moving command in the same call.
 moved_then() { # what
-  block "verify-gate: $1 runs in the same Bash call as a command that moves the branch ($MOVED), so this hook can't see what it would push. Run the push in its own Bash call, after verify --full."
+  block "verify-gate: $1 runs in the same Bash call as a command that moves the branch ($MOVED), so this hook can't see what it would push. Run the push in its own Bash call, after verify."
 }
 
 DIR=$CWD MOVED="" SWITCHED=false

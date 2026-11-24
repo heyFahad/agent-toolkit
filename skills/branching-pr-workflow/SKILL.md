@@ -77,6 +77,8 @@ The same review applies to a single-PR change that skips the dual-PR process, an
 
 Once local changes are complete, verified (`verify --full` from the `verify` skill passes on the branch) and self-reviewed (above), push the branch and open **two PRs**, both as **drafts** unless told otherwise. Don't ask first: a passing `verify --full` is what makes this safe. The one exception is a repo where `verify` reports the gate off: nothing checked the code, so ask the user before pushing.
 
+That first push is the one that needs `--full`, so the PRs open green and no review is spent on broken code. Later pushes of the branch need only `verify --related`: CI runs everything on each push, and `check-pr` fixes what it finds. A `conflicts/...` branch is the exception, needing `--full` on every push, since each merge into it is new code.
+
 1. One against **`main`**: this is the PR that will eventually ship the change to production. It stays open for the lifetime of the ticket.
 2. One against **the pre-prod branch**: this deploys the change to the pre-prod environment for QA.
 

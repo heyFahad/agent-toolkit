@@ -93,10 +93,10 @@ Human findings get the same verdicts and the same fixes as Copilot's. Never reso
 
 ## 5. Fix on the feature branch
 
-1. Make the fixes on the feature branch, and run the repo's own checks: `verify --related` before each commit and `verify --full` before pushing (the `verify` skill in `git-workflow`). The one exception is a pre-prod-PR-only finding, which is fixed on its `conflicts/...` branch; nothing else ever goes there directly.
+1. Make the fixes on the feature branch, and run the repo's own checks: `verify --related` before each commit (the `verify` skill in `git-workflow`). A fix round's push needs no more than that: the branch is already on the remote, and CI runs the full suite. The exception is a `conflicts/...` branch, whose new merge needs `verify --full` before it's pushed. The one exception is a pre-prod-PR-only finding, which is fixed on its `conflicts/...` branch; nothing else ever goes there directly.
 2. Commit with Conventional Commits, the ticket number as scope and the type that matches the change: `fix(PROJ-1530): skip placeholder avatars`, `test(PROJ-1530): cover the empty-list case`, `refactor(...)`, `docs(...)`. Follow `commit-message-conventions`. Commit according to the user's standing rules for this repo, and ask if there are none.
 3. If `preprod` came from a `conflicts/...` branch, merge the feature branch into it so the pre-prod PR gets the same fixes.
-4. Push once `verify --full` passes; no need to ask. Still ask before a force-push, and when `verify` reports the gate off for this repo: it exits 0 then without having run anything.
+4. Push once `verify` passes at the level the gate asks for; no need to ask. Still ask before a force-push, and when `verify` reports the gate off for this repo: it exits 0 then without having run anything.
 
 ## 6. Reply
 

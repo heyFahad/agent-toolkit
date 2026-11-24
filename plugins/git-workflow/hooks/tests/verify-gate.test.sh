@@ -306,6 +306,103 @@ check "stack: output without a branch list blocks" 2 "$CODE"
 mv "$TMP/gh.orig" "$TMP/bin/gh"
 rm -f "$FX/stack.json" "$TMP/bin/gh-warn"
 
+# ------------------------------------------------- first push vs later ones
+# Only the push that creates the branch on the remote needs --full; once the
+# remote-tracking ref exists, a --related record of the pushed tree is enough.
+git -C "$R" switch -q -c later main
+echo l1 >"$R/l1.txt"
+verify --related
+commit "l1"
+gate 'git push -u origin later'
+check "first push: needs --full" 2 "$CODE"
+check "first push: says it creates the branch" true "$(said 'since it creates origin/later')"
+verify --full
+gate 'git push -u origin later'
+check "first push: a --full record allows" 0 "$CODE"
+git -C "$R" update-ref refs/remotes/origin/later HEAD
+git -C "$R" config branch.later.remote origin
+git -C "$R" config branch.later.merge refs/heads/later
+echo l2 >"$R/l2.txt"
+verify --related
+commit "l2"
+for cmd in 'git push' 'git push origin' 'git push origin later' 'git push origin HEAD' 'git push origin later:later' 'git push --force-with-lease origin later'; do
+  gate "$cmd"
+  check "later push: $cmd allows with a --related record" 0 "$CODE"
+done
+gate 'git push origin later:other-new'
+check "later push: to a branch the remote doesn't have needs --full" 2 "$CODE"
+gate 'git push backup later'
+check "later push: to a remote without the branch needs --full" 2 "$CODE"
+check "later push: and names that remote" true "$(said 'creates backup/later')"
+# Pushed to an upstream of another name: that name is what the remote has.
+git -C "$R" config branch.later.merge refs/heads/later-up
+gate 'git push'
+check "later push: to an upstream the remote doesn't have yet needs --full" 2 "$CODE"
+git -C "$R" update-ref refs/remotes/origin/later-up HEAD
+gate 'git push'
+check "later push: to an upstream of another name it has, --related" 0 "$CODE"
+gate 'git push origin later'
+check "later push: by name goes to that name, which origin has" 0 "$CODE"
+git -C "$R" config branch.later.merge refs/heads/later
+# pushRemote decides where a bare push goes.
+git -C "$R" config branch.later.pushRemote backup
+gate 'git push'
+check "later push: branch.<b>.pushRemote is the remote a bare push checks" 2 "$CODE"
+git -C "$R" config --unset branch.later.pushRemote
+# An unverified tree is still blocked, at --related.
+echo l3 >"$R/l3.txt"
+commit "l3"
+gate 'git push'
+check "later push: no record at all blocks" 2 "$CODE"
+check "later push: and asks for --related" true "$(said 'verify --related')"
+check "later push: not --full" false "$(said 'verify --full')"
+
+# A conflicts/... branch holds a merge that's new code: always --full.
+git -C "$R" switch -q -c conflicts/t-1-x later
+git -C "$R" update-ref refs/remotes/origin/conflicts/t-1-x HEAD
+echo m >"$R/m.txt"
+verify --related
+commit "merge"
+gate 'git push origin conflicts/t-1-x'
+check "conflicts: a later push still needs --full" 2 "$CODE"
+check "conflicts: and says why" true "$(said 'conflicts/ branch')"
+gate 'git push'
+check "conflicts: a bare push too" 2 "$CODE"
+git -C "$R" switch -q later
+gate 'git push origin later:conflicts/t-1-x'
+check "conflicts: pushing onto one needs --full" 2 "$CODE"
+gate 'git push origin conflicts/t-1-x:later'
+check "conflicts: pushing one elsewhere needs --full" 2 "$CODE"
+gate 'gh pr create --head conflicts/t-1-x --base main'
+check "conflicts: gh pr create from one needs --full" 2 "$CODE"
+git -C "$R" switch -q conflicts/t-1-x
+verify --full
+git -C "$R" switch -q later
+gate 'git push origin conflicts/t-1-x'
+check "conflicts: a --full record allows" 0 "$CODE"
+
+# gh pr create and gh stack push follow the same rule, against origin.
+git -C "$R" update-ref refs/remotes/origin/later HEAD
+verify --related
+gate 'gh pr create --title t'
+check "pr create: a branch origin has needs --related" 0 "$CODE"
+git -C "$R" switch -q -c fresh later
+echo f >"$R/f.txt"
+verify --related
+commit "f"
+gate 'gh pr create --title t'
+check "pr create: a branch origin doesn't have needs --full" 2 "$CODE"
+check "pr create: says why" true "$(said 'creates origin/fresh')"
+check "pr create: one message, not one per tree it looked at" 1 "$(grep -c 'verify-gate:' "$TMP/stderr")"
+jq -n '{branches: [{name: "later", isMerged: false, isQueued: false}, {name: "fresh", isMerged: false, isQueued: false}]}' >"$FX/stack.json"
+gate 'gh stack push'
+check "stack push: a new branch needs --full" '[2,true,false]' "[$CODE,$(said 'stack push of fresh'),$(said 'stack push of later')]"
+verify --full
+gate 'gh stack push'
+check "stack push: and a branch origin has, --related" 0 "$CODE"
+rm -f "$FX/stack.json"
+git -C "$R" switch -q feat
+
 # ----------------------------------------------------------------- gate off
 OFF="$TMP/off"
 git init -q -b main "$OFF"

@@ -31,7 +31,7 @@ Use the `gh-stack` CLI extension, rooted at the parent branch as the stack's tru
 - When subtasks are independent of each other, give each its own branch off the trunk (its own single-link stack) rather than linking them in a chain.
 - Before starting a new subtask, bring the stack up to date in three steps:
   1. `gh stack rebase`: it fetches, fast-forwards the trunk, and cascades a rebase through every branch above it, without pushing. This replaces manually checking whether the parent has gone stale.
-  2. `verify --full` (the `verify` skill) on each branch the rebase changed: a rebase changes the code each one holds.
+  2. `verify --related` (the `verify` skill) on each branch the rebase changed: a rebase changes the code each one holds. A branch that isn't on the remote yet needs `verify --full` instead, as its first push always does.
   3. `gh stack push`.
 
   Don't use `gh stack sync` for this: it does the same rebase and pushes the branches at once, before anything can verify them, so `git-workflow`'s `verify-gate` hook blocks it. One thing only `sync` does is pull down layers someone else added to the stack on GitHub. If the stack's PRs on GitHub include branches your local stack doesn't have, run `gh stack checkout <one of the stack's PR numbers>` instead: it fetches the stack from GitHub without pushing. Then rebase, verify and push as above.
