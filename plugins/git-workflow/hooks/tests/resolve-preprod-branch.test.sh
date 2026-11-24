@@ -121,5 +121,19 @@ STUB_DEFAULT='' expect "--default falls back to origin/HEAD" "main" 0 --default
 git symbolic-ref --delete refs/remotes/origin/HEAD
 STUB_DEFAULT='' expect "--default fails when neither tells" "" 1 --default
 
+# --- origin unreachable and the local refs incomplete: unknown, never "none".
+# The ready gate takes exit 3 as "no pre-prod branch, so no approval needed".
+reset_state
+git remote set-url origin "$TMP/origin.git"
+mv "$TMP/origin.git" "$TMP/origin.git.off"
+for r in $(git for-each-ref --format='%(refname)' refs/remotes/origin); do
+  [ "$r" = refs/remotes/origin/main ] || git update-ref -d "$r"
+done
+expect "offline with incomplete refs is unknown" "" 2
+mv "$TMP/origin.git.off" "$TMP/origin.git"
+counts staging 3 dev 1
+expect "nothing was cached: online again, it's found" "staging" 0
+reset_state
+
 echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]
