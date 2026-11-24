@@ -356,7 +356,8 @@ _ds_up() {
     ds_die 1 "process-compose rejected the new config; nothing was changed"
   fi
   rm -rf "$prev"
-  _ds_idle_arm "$idle_limit"
+  # shellcheck disable=SC2086 # one word per service
+  _ds_idle_arm "$idle_limit" $svcs
   ps=$(_ds_ps)
   while IFS= read -r svc; do
     [ -n "$svc" ] || continue
@@ -459,7 +460,7 @@ cmd_restart() {
     fi
   fi
   [ "$(_ds_proc "$ps" "$svc" is_running)" = true ] || ds_die 1 "$svc isn't running; use devstack up $svc"
-  _ds_idle_touch
+  _ds_idle_touch "$svc"
   : > "$(ds_state_dir)/logs/$svc.log"
   _ds_pc process restart "$svc" >/dev/null || ds_die 1 "process-compose couldn't restart $svc"
   _ds_wait "$svc" || exit 1
@@ -467,15 +468,14 @@ cmd_restart() {
 
 cmd_down() {
   DS_SOCK=$(_ds_sock) || exit $?
-  local f svc ps
+  local svc ps
   for svc in "$@"; do _ds_check_name "$svc"; done
   _ds_lock
   _ds_reach
-  f="$(ds_state_dir)/owners.json"
   if [ $# -eq 0 ]; then
     _ds_down_all
     _ds_idle_stop
-    rm -f "$(_ds_idle_dir)/stopped"
+    _ds_idle_forget
     echo "stopped everything (Docker containers left running)"
     return
   fi
@@ -485,7 +485,7 @@ cmd_down() {
   done
   for svc in "$@"; do
     _ds_pc process stop "$svc" >/dev/null || ds_die 1 "process-compose couldn't stop $svc"
-    [ -f "$f" ] && jq --arg s "$svc" 'del(.[$s])' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+    _ds_owner_del "$svc"
     echo "stopped $svc"
   done
 }

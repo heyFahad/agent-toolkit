@@ -20,7 +20,7 @@ In a sandbox, devstack needs to reach its unix socket and write to its state fol
 | `devstack up <target or service…>` | Start what a change needs. Prints one line per service. |
 | `… --from <svc>=<worktree>` | Run that service from the ticket's worktree instead of the main checkout. Repeat per service. |
 | `… --with <svc>` | Also start an optional dependency. |
-| `devstack status [--json]` | See what's running, on which port, from which directory, and when the idle shutdown is due. |
+| `devstack status [--json]` | See what's running, on which port, from which directory, and when each service's idle stop is due. |
 | `devstack logs <svc> [--errors] [--tail N]` | Read one service's log (30 lines by default). |
 | `devstack restart <svc> [--from <path>]` | Restart one service, optionally from another checkout. |
 | `devstack urls` | Get what to hand the user: web URLs, APIs, Metro ports. |
@@ -43,13 +43,15 @@ Running services cost memory and CPU the whole time they're up, so start them la
 
 ## Idle shutdown
 
-`up` starts a watchdog that runs `devstack down` after 15 minutes in which no running service had a connection on its port or wrote a line to its log, so a stack nobody is using doesn't stay up. It checks once a minute, runs once per state folder, and exits when the stack goes down any other way. Lines that name a service's health-check path don't count: those are process-compose's own probes. An app that keeps a connection open (the Simulator's link to Metro, a browser tab holding a websocket) keeps the stack up; that's someone using it.
+`up` starts a watchdog that stops each service nobody has used for 15 minutes: no connection on its port and no new line in its log. Working on one target, the others you started earlier stop on their own. A quiet service stays up while a running service depends on it (a shared API stays while either app that uses it runs), and dependants stop before what they depend on. When the last service stops, the whole stack goes down.
 
-- `devstack status` ends with the countdown. After an idle shutdown it says when and why (also in `~/.local/state/devstack/idle/stopped`).
+The watchdog checks once a minute, runs once per state folder (one for the whole stack), and exits when the stack goes down any other way. Lines that name a service's health-check path don't count: those are process-compose's own probes. An app that keeps a connection open (the Simulator's link to Metro, a browser tab holding a websocket) keeps its service up; that's someone using it. So does a service that logs on a timer.
+
+- `devstack status` ends with each running service's countdown (`idle stop in: …`) and lists what the watchdog stopped (`stopped while idle: …`). A stopped service shows as `Stopped`.
 - Change the limit with `idle: {minutes: 30}` in `stack.yaml`, or `DEVSTACK_IDLE_MINUTES` for one `up`; `0` turns it off. The setting from the latest `up` applies.
-- If the user comes back to a stopped stack, run the same `devstack up` again.
+- If the user comes back to a stopped service, run `devstack up` for it again. It starts cold, so a URL handed over earlier answers again only once it's Ready.
 
-Docker containers stay running after an idle shutdown unless the registry sets `idle: {stop_infra: true}`. Then the watchdog also stops the containers that devstack itself started (never one that was already running), since no managed service uses them once the stack is down. Suggest it to a user whose Docker VM is short of memory.
+Docker containers stay running unless the registry sets `idle: {stop_infra: true}`. Then, once no running service lists a container in its `infra`, the watchdog stops it, but only if devstack itself started it (never one that was already running). Suggest it to a user whose Docker VM is short of memory.
 
 MongoDB sizes its WiredTiger cache to about half the Docker VM's memory unless told otherwise: 3.6 GB of a 7.8 GB VM has been seen. devstack doesn't create containers, so it can't set that, but `up` says once when a MongoDB container it relies on has no cap. Tell the user that whoever creates the container should add `--wiredTigerCacheSizeGB 1` to the `mongod` command (`docker run … mongo:7 --wiredTigerCacheSizeGB 1`, or `command:` in a compose file); the container has to be recreated for it to apply.
 

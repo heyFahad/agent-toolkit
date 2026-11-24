@@ -10,6 +10,13 @@ _ds_owners() { echo "$(ds_state_dir)/owners.json"; }
 # ds_owner_get <svc>: the directory <svc> runs from, or nothing.
 ds_owner_get() { jq -r --arg s "$1" '.[$s] // empty' "$(_ds_owners)" 2>/dev/null; }
 
+# _ds_owner_del <svc>: forget where <svc> runs from (it was stopped).
+_ds_owner_del() {
+  local f; f=$(_ds_owners)
+  [ -f "$f" ] || return 0
+  jq --arg s "$1" 'del(.[$s])' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+}
+
 # ds_owner_set <svc> <dir>: record it (atomic write).
 ds_owner_set() {
   local f tmp

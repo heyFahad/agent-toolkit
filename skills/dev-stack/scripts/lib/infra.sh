@@ -2,7 +2,7 @@
 # Docker containers a service relies on. devstack only ever starts a stopped
 # container; it never creates, recreates or removes one. The one exception to
 # "never stops one": with the registry's idle.stop_infra, the idle watchdog
-# stops the containers devstack itself started, once it has stopped the stack.
+# stops the containers devstack itself started once no running service uses them.
 DS_LIB=${DS_LIB:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}
 # shellcheck source=common.sh
 . "$DS_LIB/common.sh"
@@ -41,16 +41,19 @@ _ds_infra_hint() {
   echo "$1" >> "$mark"
 }
 
-# ds_infra_stop_started: stop the containers devstack started, and print
-# their names. Only the idle watchdog calls it, and only with idle.stop_infra.
-ds_infra_stop_started() {
-  local f c out=""
+# ds_infra_stop_unused <used>: stop each container devstack started that isn't
+# in <used> (one name per line), and print their names. Only the idle watchdog
+# calls it, and only with idle.stop_infra.
+ds_infra_stop_unused() {
+  local f c out="" keep=""
   f="$(ds_state_dir)/infra-started"
   [ -f "$f" ] || return 0
   command -v docker >/dev/null 2>&1 || return 0
   for c in $(sort -u "$f"); do
-    docker stop "$c" >/dev/null 2>&1 && out="$out $c"
+    if grep -qxF "$c" <<<"$1"; then keep+="$c"$'\n'
+    elif docker stop "$c" >/dev/null 2>&1; then out="$out $c"
+    else keep+="$c"$'\n'; fi
   done
-  rm -f "$f"
+  printf '%s' "$keep" > "$f"
   echo "${out# }"
 }
