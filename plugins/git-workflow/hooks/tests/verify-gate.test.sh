@@ -140,7 +140,7 @@ rm "$R/scratch.txt"
 # ----------------------------------------------------------------- pr create
 gate 'gh pr create --base main --title t --body b'
 check "pr create: the current branch, verified" 0 "$CODE"
-for cmd in 'gh pr create --head other' 'gh pr create -H other' 'gh pr create --head=other' 'gh pr create --head someone:other'; do
+for cmd in 'gh pr create --head other' 'gh pr create -H other' 'gh pr create --head=other' 'gh pr create --head someone:other' 'gh pr -R o/r create --head other' 'gh pr --repo=o/r new -H other'; do
   gate "$cmd"
   check "pr create: $cmd checks other" 2 "$CODE"
 done
@@ -289,6 +289,7 @@ check "stack sync: blocked" 2 "$CODE"
 check "stack sync: says to rebase, verify, then push" true "$(said 'gh stack rebase')"
 # A warning on stderr doesn't hide the branches; output that isn't the
 # expected JSON blocks.
+# shellcheck disable=SC2016 # $FX expands when the stub runs
 printf '#!/bin/bash\necho "warning: something" >&2\ncat "$FX/stack.json"\n' >"$TMP/bin/gh-warn"
 cp "$TMP/bin/gh" "$TMP/gh.orig"
 cat >"$TMP/bin/gh" <<'EOF'

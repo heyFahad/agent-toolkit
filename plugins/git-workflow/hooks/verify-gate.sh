@@ -36,6 +36,8 @@ SCRIPTS="$HERE/../skills/verify/scripts"
 [ -f "$SCRIPTS/lib.sh" ] || exit 0
 # shellcheck source-path=SCRIPTDIR source=../skills/verify/scripts/lib.sh
 . "$SCRIPTS/lib.sh"
+# shellcheck source-path=SCRIPTDIR source=lib/commands.sh
+. "$HERE/lib/commands.sh"
 VERIFY=$(cd "$SCRIPTS" && pwd)/verify
 
 INPUT=$(cat)
@@ -47,13 +49,6 @@ printf '%s' "$COMMAND" | grep -qE '(^|[^[:alnum:]_-])(git|gh)[[:space:]]' || exi
 
 REASONS=""
 block() { REASONS="$REASONS$1"$'\n'; }
-
-# A path from a cd or -C argument, against the current directory.
-resolve() { # dir base
-  local d=${1/#\~/$HOME}
-  case "$d" in /*) ;; *) d="$2/$d" ;; esac
-  (cd "$d" 2>/dev/null && pwd) || printf '%s' "$d"
-}
 
 # gate_root DIR: the repo root, when DIR is in a repo whose gate is on.
 gate_root() {
@@ -208,47 +203,6 @@ check_stack() {
   done
 }
 
-# A backslash at the end of a line continues the command: join first. Then
-# drop heredoc bodies, which aren't commands.
-CLEAN=$(printf '%s\n' "$COMMAND" | awk '
-  { line = (pending == "" ? $0 : pending " " $0); pending = "" }
-  /\\$/ { pending = substr(line, 1, length(line) - 1); next }
-  { print line }
-  END { if (pending != "") print pending }' | awk -v q="'" '
-  skip { if ($0 ~ "^[[:space:]]*" term "[[:space:]]*$") skip = 0; next }
-  {
-    print
-    if (match($0, "<<-?[[:space:]]*[\"" q "]?[A-Za-z_][A-Za-z0-9_]*")) {
-      term = substr($0, RSTART, RLENGTH)
-      gsub("<<-?[[:space:]]*[\"" q "]?", "", term)
-      skip = 1
-    }
-  }')
-
-# One command per line: split on ; && || | & ( ) and newlines.
-SEGMENTS=$(printf '%s\n' "$CLEAN" | awk '{ gsub(/&&|\|\||[;|&()]/, "\n"); print }')
-
-# Shell keywords and wrappers that run the command after them.
-skip_wrappers() { # sets i past them
-  while [ "$i" -lt "${#words[@]}" ]; do
-    case "${words[$i]}" in
-      if | then | else | elif | do | while | until | ! | time | command | exec | nohup | builtin) i=$((i + 1)) ;;
-      env)
-        i=$((i + 1))
-        while [ "$i" -lt "${#words[@]}" ] && printf '%s' "${words[$i]}" | grep -qE '^(-|[A-Za-z_][A-Za-z0-9_]*=)'; do i=$((i + 1)); done
-        ;;
-      timeout)
-        i=$((i + 1))
-        while [ "$i" -lt "${#words[@]}" ] && [ "${words[$i]#-}" != "${words[$i]}" ]; do i=$((i + 1)); done
-        i=$((i + 1)) # the duration
-        ;;
-      *)
-        if printf '%s' "${words[$i]}" | grep -qE '^[A-Za-z_][A-Za-z0-9_]*='; then i=$((i + 1)); else return 0; fi
-        ;;
-    esac
-  done
-}
-
 # Pushes that come after a branch-moving command in the same call.
 moved_then() { # what
   block "verify-gate: $1 runs in the same Bash call as a command that moves the branch ($MOVED), so this hook can't see what it would push. Run the push in its own Bash call, after verify --full."
@@ -256,22 +210,12 @@ moved_then() { # what
 
 DIR=$CWD MOVED="" SWITCHED=false
 while IFS= read -r seg; do
-  read -ra toks <<<"$seg" || true
-  [ "${#toks[@]}" -gt 0 ] || continue
-  # Strip quotes around each word, and VAR=value prefixes.
-  words=()
-  for t in "${toks[@]}"; do
-    t=${t#[\"\']}
-    t=${t%[\"\']}
-    words+=("$t")
-  done
-  i=0
-  skip_wrappers
+  hc_words "$seg"
   [ "$i" -lt "${#words[@]}" ] || continue
   cmd=${words[$i]##*/}
   case "$cmd" in
     cd)
-      [ $((i + 1)) -lt "${#words[@]}" ] && DIR=$(resolve "${words[$((i + 1))]}" "$DIR")
+      [ $((i + 1)) -lt "${#words[@]}" ] && DIR=$(hc_resolve "${words[$((i + 1))]}" "$DIR")
       ;;
     git)
       gdir=$DIR
@@ -279,7 +223,7 @@ while IFS= read -r seg; do
       while [ "$i" -lt "${#words[@]}" ]; do
         case "${words[$i]}" in
           -C)
-            gdir=$(resolve "${words[$((i + 1))]:-.}" "$gdir")
+            gdir=$(hc_resolve "${words[$((i + 1))]:-.}" "$gdir")
             i=$((i + 2))
             ;;
           -c) i=$((i + 2)) ;;
@@ -311,7 +255,9 @@ while IFS= read -r seg; do
       esac
       ;;
     gh)
-      sub="${words[$((i + 1))]:-} ${words[$((i + 2))]:-}"
+      # -R between pr and the verb (gh pr -R o/r create) still makes a PR.
+      hc_gh_command
+      sub=$gh_sub
       [ "$sub" != "pr new" ] || sub="pr create"
       if [ -n "$MOVED" ] && { [ "$SWITCHED" = true ] || gate_root "$DIR" >/dev/null; }; then
         case "$sub" in "pr create" | "stack push" | "stack submit")
@@ -323,14 +269,14 @@ while IFS= read -r seg; do
       case "$sub" in
         "pr create")
           rest=()
-          [ $((i + 3)) -ge "${#words[@]}" ] || rest=("${words[@]:$((i + 3))}")
+          [ "$gh_args" -ge "${#words[@]}" ] || rest=("${words[@]:$gh_args}")
           check_pr_create "$DIR" ${rest[@]+"${rest[@]}"}
           ;;
-        "stack push" | "stack submit" | "stack sync") check_stack "$DIR" "${words[$((i + 2))]}" ;;
+        "stack push" | "stack submit" | "stack sync") check_stack "$DIR" "${sub#* }" ;;
       esac
       ;;
   esac
-done <<<"$SEGMENTS"
+done < <(hc_segments "$COMMAND")
 
 if [ -n "$REASONS" ]; then
   printf '%s' "$REASONS" >&2
