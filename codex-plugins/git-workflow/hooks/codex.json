@@ -1,0 +1,23 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "^Bash$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${PLUGIN_ROOT}/hooks/preprod-pr-check.sh\"",
+            "timeout": 30,
+            "statusMessage": "preprod-pr-check"
+          },
+          {
+            "type": "command",
+            "command": "\"${PLUGIN_ROOT}/hooks/verify-gate.sh\"",
+            "timeout": 15,
+            "statusMessage": "verify-gate"
+          }
+        ]
+      }
+    ]
+  }
+}

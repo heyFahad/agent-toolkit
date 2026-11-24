@@ -27,6 +27,7 @@ def discover(cwd, env):
         },
         {"method": "initialized"},
         {"id": 2, "method": "skills/list", "params": {"cwds": [str(cwd)], "forceReload": True}},
+        {"id": 3, "method": "hooks/list", "params": {"cwds": [str(cwd)]}},
     ]
     with subprocess.Popen(
         ["codex", "app-server", "--listen", "stdio://"],
@@ -39,6 +40,7 @@ def discover(cwd, env):
         def send(request):
             print(json.dumps({"jsonrpc": "2.0", **request}), file=server.stdin, flush=True)
 
+        replies = {}
         try:
             send(requests[0])
             for line in server.stdout:
@@ -49,11 +51,13 @@ def discover(cwd, env):
                         raise SystemExit(response["error"])
                     for request in requests[1:]:
                         send(request)
-                elif request_id == 2:
+                elif request_id in (2, 3):
                     if "error" in response:
                         raise SystemExit(response["error"])
-                    return response["result"]["data"][0]
-            raise SystemExit("Codex app server exited before returning the skill inventory.")
+                    replies[request_id] = response["result"]["data"][0]
+                    if len(replies) == 2:
+                        return replies[2], replies[3]
+            raise SystemExit("Codex app server exited before returning the skill and hook inventories.")
         finally:
             server.terminate()
 
@@ -64,6 +68,23 @@ def expected_skills(plugins):
         for plugin in plugins
         for link in (ROOT / "plugins" / plugin / "skills").glob("*")
     }
+
+
+def expected_hooks(plugins):
+    hooks = set()
+    for plugin in plugins:
+        config = ROOT / "plugins" / plugin / "hooks/hooks.json"
+        if not config.is_file():
+            continue
+        for event, entries in json.loads(config.read_text())["hooks"].items():
+            runtime_event = event[0].lower() + event[1:]
+            hooks.update(
+                (f"{plugin}@{MARKETPLACE}", Path(hook["command"]).stem, runtime_event)
+                for entry in entries
+                for hook in entry["hooks"]
+                if hook["type"] == "command"
+            )
+    return hooks
 
 
 def check_set(component, expected, actual):
@@ -93,17 +114,24 @@ def main():
         installed = codex(["plugin", "list", "--marketplace", MARKETPLACE], workspace, env)
         check_set("enabled plugins", expected, {plugin["name"] for plugin in installed["installed"] if plugin["enabled"]})
 
-        skills = discover(workspace, env)
-        for issue in skills["errors"]:
-            if str(codex_home) in json.dumps(issue):
-                raise SystemExit(issue)
-        declared = expected_skills(expected)
-        check_set("runtime skills", declared, {
+        skills, hooks = discover(workspace, env)
+        for diagnostics in (skills["errors"], hooks["errors"], hooks.get("warnings", [])):
+            for issue in diagnostics:
+                if MARKETPLACE in json.dumps(issue):
+                    raise SystemExit(issue)
+        declared_skills = expected_skills(expected)
+        declared_hooks = expected_hooks(expected)
+        check_set("runtime skills", declared_skills, {
             (skill["pluginId"], skill["name"])
             for skill in skills["skills"]
             if (skill.get("pluginId") or "").endswith(f"@{MARKETPLACE}") and skill["enabled"]
         })
-        print(f"Codex discovered {len(declared)} skills from {len(expected)} plugins.")
+        check_set("runtime hooks", declared_hooks, {
+            (hook["pluginId"], hook["statusMessage"], hook["eventName"])
+            for hook in hooks["hooks"]
+            if (hook.get("pluginId") or "").endswith(f"@{MARKETPLACE}") and hook["enabled"]
+        })
+        print(f"Codex discovered {len(declared_skills)} skills and {len(declared_hooks)} hooks from {len(expected)} plugins.")
 
 
 if __name__ == "__main__":

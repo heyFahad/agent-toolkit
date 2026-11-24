@@ -33,7 +33,7 @@ jobs:
       - name: Check Codex package files
         run: python3 scripts/sync-codex-packages.py --check
 
-      - name: Install Codex plugins and verify skill discovery
+      - name: Install Codex plugins and verify skill and hook discovery
         timeout-minutes: 3
         run: python3 scripts/check-codex-plugins.py
 

@@ -30,13 +30,17 @@ Edit canonical skills under `skills/`. The links in `plugins/<name>/skills/` det
 
 Claude Code follows the existing symlinks during plugin loading. Its validator may report that it skipped symlinks while checking a plugin directory. The canonical skills are validated separately.
 
+Claude Code reads `plugins/<name>/hooks/hooks.json`. For Codex, register command hooks in `codex-plugins/<name>/hooks/codex.json`. The sync script copies their shared scripts and support files from the Claude Code package. CI checks that each shared command hook is discovered by Codex for the same event.
+
+Check the event payload and decision when porting a hook. Codex command hooks accept `PreToolUse` denials and `PostToolUse` context. Success-only Bash reminders must check the tool result because Codex also sends `PostToolUse` on a failed command. Codex continues a tool call after an unsupported `permissionDecision: "ask"` response. For a hook that must enforce human approval, explicitly deny the action and give the user the command to run if there is no supported approval path. The Claude Code agent handlers stay in its config. [Codex hook reference](https://learn.chatgpt.com/docs/hooks)
+
 ## CI
 
 Every push and PR to `main` (`.github/workflows/validate.yml`) checks:
 
 - the Claude Code marketplace manifest, with `claude plugin validate --strict`
 - Codex package files against their canonical sources
-- the Codex marketplace catalog, enabled plugins, and discovered skills in an isolated settings directory
+- the Codex marketplace catalog, enabled plugins, and discovered skills and command hooks in an isolated settings directory
 - every plugin directory, with plain (non-strict) `claude plugin validate`, since the symlink notice above would otherwise fail a strict check
 - the canonical `skills/` directory, with `claude plugin validate --strict` (no symlinks there to trip that check)
 - every shell script under `plugins/` and `skills/` (hooks and skill helper scripts), for valid bash syntax and the executable bit

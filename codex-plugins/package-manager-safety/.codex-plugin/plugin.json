@@ -19,5 +19,6 @@
     "name": "Fahad Javed",
     "email": "fahad@heyfahad.dev",
     "url": "https://heyfahad.dev"
-  }
+  },
+  "hooks": "./hooks/codex.json"
 }

@@ -9,6 +9,7 @@ import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
 CODEX_MARKETPLACE = ROOT / ".agents/plugins/marketplace.json"
+NATIVE_HOOKS = Path("hooks/codex.json")
 
 
 def files_in_checkout(*options):
@@ -34,6 +35,18 @@ def skill_files(plugin, files):
                 yield Path("skills") / link.name / relative, path
 
 
+def hook_files(plugin, files):
+    for path in files:
+        if plugin / "hooks" not in path.parents or not path.is_file():
+            continue
+        relative = path.relative_to(plugin)
+        if relative != Path("hooks/hooks.json") and "tests" not in relative.parts[:-1]:
+            yield relative, path
+    eslint_config = plugin / "eslint.config.js"
+    if eslint_config in files and eslint_config.is_file():
+        yield Path("eslint.config.js"), eslint_config
+
+
 def needs_copy(source, destination):
     return (
         destination.is_symlink()
@@ -57,9 +70,13 @@ def main():
         package = ROOT / plugin["source"]["path"]
         source = ROOT / "plugins" / plugin["name"]
         expected = dict(skill_files(source, files))
+        if (package / NATIVE_HOOKS).is_file():
+            expected.update(hook_files(source, files))
         existing = {
             path.relative_to(package) for path in files
-            if package / "skills" in path.parents and (path.is_file() or path.is_symlink())
+            if (package / "skills" in path.parents or package / "hooks" in path.parents
+                or path == package / "eslint.config.js")
+            and path != package / NATIVE_HOOKS and (path.is_file() or path.is_symlink())
         }
         remove.extend(package / relative for relative in sorted(existing - expected.keys()))
         for relative, source in sorted(expected.items()):

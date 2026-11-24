@@ -21,5 +21,6 @@
     "email": "fahad@heyfahad.dev",
     "url": "https://heyfahad.dev"
   },
-  "skills": "./skills/"
+  "skills": "./skills/",
+  "hooks": "./hooks/codex.json"
 }

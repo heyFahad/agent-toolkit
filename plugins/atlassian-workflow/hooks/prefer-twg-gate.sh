@@ -1,7 +1,7 @@
 #!/bin/bash
 # PreToolUse hook: blocks Atlassian MCP tools (Jira, Confluence, Teamwork
 # Graph) when the twg CLI is installed, so `twg` is the one route to Atlassian
-# data in Claude Code. See the prefer-twg-cli skill for why. The MCP server
+# data in the host session. See the prefer-twg-cli skill for why. The MCP server
 # usually stays connected because it's a claude.ai connector that's meant for
 # claude.ai sessions, so a skill asking nicely isn't enough: an agent that
 # hasn't loaded the skill sees getJiraIssue in its tool list and calls it.
@@ -71,6 +71,7 @@ deny() {
 
 # The closest twg command for the blocked tool, where there's an obvious one.
 suggestion() {
+  # shellcheck disable=SC2016 # literal Markdown backticks
   case "$TOOL" in
     getJiraIssue | listJiraIssueComments | getJiraIssueRemoteIssueLinks)
       echo '`twg jira workitem get <KEY> --full -o json`, then read the file named under output_files.stdout (and `twg jira workitem changelog query --issue-id <KEY>` for history)' ;;
@@ -95,4 +96,4 @@ if auth_cached || "$TWG" whoami >/dev/null 2>&1; then
 fi
 
 rm -f "$AUTH_CACHE" 2>/dev/null || true
-deny "prefer-twg gate: $TOOL_NAME is an Atlassian MCP tool. The twg CLI is installed but \`twg whoami\` fails, so its login has probably lapsed. Don't fall back to the MCP silently: tell the user and ask them to run \`twg login\` (and \`twg doctor\` if that doesn't fix it), then retry with twg. If they want the MCP used anyway, they can set AGENT_TOOLKIT_ALLOW_ATLASSIAN_MCP=1 in their Claude Code settings' env."
+deny "prefer-twg gate: $TOOL_NAME is an Atlassian MCP tool. The twg CLI is installed but \`twg whoami\` fails, so its login has probably lapsed. Don't fall back to the MCP silently: tell the user and ask them to run \`twg login\` (and \`twg doctor\` if that doesn't fix it), then retry with twg. If they want the MCP used anyway, they can set AGENT_TOOLKIT_ALLOW_ATLASSIAN_MCP=1 in the agent environment."

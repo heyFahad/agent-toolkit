@@ -15,6 +15,7 @@ if ! printf '%s' "$COMMAND" | grep -qE '\bgh\s+(pr|issue)\s+(comment|review|crea
   exit 0
 fi
 
+# shellcheck disable=SC2016 # literal Markdown backticks
 MATCHES=$(printf '%s' "$COMMAND" | grep -oE '`https?://github\.com/[^`]+`|`[0-9a-f]{7,40}`|`#[0-9]+( \(comment\))?`' || true)
 
 if [ -z "$MATCHES" ]; then
