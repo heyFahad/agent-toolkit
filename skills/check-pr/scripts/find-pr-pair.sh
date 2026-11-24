@@ -4,8 +4,16 @@
 # Finds a ticket's open PRs from its feature branch (default: the branch
 # checked out) without assuming any branch names:
 #   main     the open PR from the feature branch into the repo's default branch
-#   preprod  every open PR into any other branch whose head is the feature
+#   preprod  every open PR into the pre-prod branch whose head is the feature
 #            branch, or a conflicts/... branch that belongs to it
+#   stacked  the feature branch's open PRs into any other branch: a stacked
+#            subtask PR into the branch below it
+#
+# git-workflow's resolve-preprod-branch.sh names the pre-prod branch, run in
+# the current checkout (so only when that's the repo being asked about).
+# Without an answer from it (not installed, ambiguous, another repo), every
+# PR into a non-default branch counts as pre-prod, stacked is empty, and
+# preprodBranch is null.
 #
 # A conflicts/... branch belongs to the feature branch when its name is the
 # feature branch's name (with or without the type prefix: conflicts/x for
@@ -13,9 +21,10 @@
 # it already contains the feature branch's tip commit.
 #
 # Prints JSON:
-#   {repo, branch, defaultBranch,
+#   {repo, branch, defaultBranch, preprodBranch (string, "" when the repo has
+#    none, or null when unknown),
 #    main: {number, url, title, isDraft, headRefName, baseRefName, headRefOid} | null,
-#    preprod: [{...same fields..., matchedBy}]}
+#    preprod: [{...same fields..., matchedBy}], stacked: [{...same fields..., matchedBy}]}
 # matchedBy is one of: head, conflicts-name, conflicts-ticket, conflicts-ancestry.
 # More than one preprod entry means the pair is ambiguous; ask, don't guess.
 # shellcheck source-path=SCRIPTDIR source=lib.sh
@@ -44,7 +53,18 @@ QUERY='query($owner: String!, $name: String!) {
 
 DATA=$(gh api graphql -f query="$QUERY" -f owner="$OWNER" -f name="$NAME")
 
-RESULT=$(printf '%s' "$DATA" | jq --arg repo "$REPO" --arg branch "$BRANCH" '
+PREPROD=null
+RESOLVER=$(find_preprod_resolver)
+if [ -n "$RESOLVER" ] && [ "$(printf '%s' "$REPO" | tr '[:upper:]' '[:lower:]')" = "$(checkout_repo_key)" ]; then
+  rc=0
+  b=$(bash "$RESOLVER" 2>/dev/null) || rc=$?
+  case "$rc" in
+    0) [ -z "$b" ] || PREPROD=$(jq -n --arg b "$b" '$b') ;;
+    3) PREPROD='""' ;;
+  esac
+fi
+
+RESULT=$(printf '%s' "$DATA" | jq --arg repo "$REPO" --arg branch "$BRANCH" --argjson pp "$PREPROD" '
   def tickets: [scan("[A-Z][A-Z0-9]+-[0-9]+")];
   def fields: {number, url, title, isDraft, headRefName, baseRefName, headRefOid};
   .data.repository as $r
@@ -56,9 +76,13 @@ RESULT=$(printf '%s' "$DATA" | jq --arg repo "$REPO" --arg branch "$BRANCH" '
       repo: $repo,
       branch: $branch,
       defaultBranch: $default,
+      preprodBranch: $pp,
+      stacked: (if $pp == null then []
+        else [$others[] | select(.headRefName == $branch and .baseRefName != $pp) | fields + {matchedBy: "head"}] end),
       main: ([$r.pullRequests.nodes[] | select(.headRefName == $branch and .baseRefName == $default) | fields] | first),
       preprod: [
         $others[]
+        | select($pp == null or .baseRefName == $pp)
         | (.headRefName | sub("^conflicts/"; "")) as $c
         | if .headRefName == $branch then fields + {matchedBy: "head"}
           elif (.headRefName | startswith("conflicts/")) | not then empty

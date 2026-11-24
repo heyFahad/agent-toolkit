@@ -151,6 +151,77 @@ GITHUB_TOKEN=env-token run find-pr-pair.sh feat/ATC-1-thing
 check "pair: ignores an exported GITHUB_TOKEN" 0 "$(calls 'GH_TOKEN=env-token')"
 check "pair: used the keyring token" 0 "$(grep -v '^GH_TOKEN=stub-token ' "$GH_CALLS" | grep -vc ' auth token' || true)"
 
+# ---------------------------------------- find-pr-pair: pre-prod vs stacked
+# A checkout of o/r, so the resolver gets asked, and a stub resolver.
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
+OR="$TMP/o-r"
+git init -q "$OR"
+git -C "$OR" remote add origin git@github.com:O/R.git
+cat >"$TMP/resolver" <<'EOF'
+#!/bin/bash
+case "$RESOLVE" in
+  2) echo "ambiguous" >&2; exit 2 ;;
+  3) exit 3 ;;
+  *) echo "$RESOLVE" ;;
+esac
+EOF
+chmod +x "$TMP/resolver"
+cat >"$FX/pulls.json" <<'EOF'
+{"data":{"repository":{"defaultBranchRef":{"name":"main"},"pullRequests":{"nodes":[
+ {"number":21,"url":"u21","title":"t","isDraft":true,"headRefName":"feat/PROJ-9-x","baseRefName":"main","headRefOid":"a9"},
+ {"number":22,"url":"u22","title":"t","isDraft":true,"headRefName":"feat/PROJ-9-x","baseRefName":"staging","headRefOid":"a9"},
+ {"number":23,"url":"u23","title":"t","isDraft":true,"headRefName":"feat/PROJ-9-x","baseRefName":"feat/PROJ-8-base","headRefOid":"a9"},
+ {"number":24,"url":"u24","title":"t","isDraft":true,"headRefName":"conflicts/PROJ-9-x","baseRefName":"staging","headRefOid":"c24"},
+ {"number":25,"url":"u25","title":"t","isDraft":true,"headRefName":"feat/PROJ-9-x","baseRefName":"dev","headRefOid":"a9"}
+]}}}}
+EOF
+cd "$OR" || exit 1
+export AGENT_TOOLKIT_PREPROD_RESOLVER="$TMP/resolver" CLAUDE_CONFIG_DIR="$TMP/claude-config"
+
+RESOLVE=staging run find-pr-pair.sh -R o/r feat/PROJ-9-x
+check "stack: exit 0" 0 "$CODE"
+check "stack: pre-prod branch" '"staging"' "$(q .preprodBranch)"
+check "stack: only PRs into staging are pre-prod" '[22,24]' "$(q '[.preprod[].number]')"
+check "stack: the rest are stacked" '[[23,"head"],[25,"head"]]' "$(q '[.stacked[] | [.number, .matchedBy]]')"
+check "stack: main PR" 21 "$(q .main.number)"
+
+RESOLVE=staging run find-pr-pair.sh feat/PROJ-9-x
+check "stack: repo from gh repo view still asks the resolver" '"staging"' "$(q .preprodBranch)"
+
+RESOLVE=3 run find-pr-pair.sh -R o/r feat/PROJ-9-x
+check "stack: no pre-prod branch" '""' "$(q .preprodBranch)"
+check "stack: no pre-prod branch, no pre-prod PRs" '[]' "$(q '[.preprod[].number]')"
+check "stack: no pre-prod branch, feature PRs are stacked" '[22,23,25]' "$(q '[.stacked[].number]')"
+
+RESOLVE=2 run find-pr-pair.sh -R o/r feat/PROJ-9-x
+check "stack: ambiguous resolver" null "$(q .preprodBranch)"
+check "stack: ambiguous keeps every non-default base" '[22,23,24,25]' "$(q '[.preprod[].number]')"
+check "stack: ambiguous stacks nothing" '[]' "$(q .stacked)"
+
+AGENT_TOOLKIT_PREPROD_RESOLVER=/nonexistent RESOLVE=staging run find-pr-pair.sh -R o/r feat/PROJ-9-x
+check "stack: missing resolver" '[null,[22,23,24,25]]' "$(q '[.preprodBranch, [.preprod[].number]]')"
+
+RESOLVE=staging run find-pr-pair.sh -R other/repo feat/PROJ-9-x
+check "stack: -R another repo doesn't ask this checkout's resolver" null "$(q .preprodBranch)"
+cd "$HERE" || exit 1
+
+# find_preprod_resolver: an installed git-workflow plugin's copy, when
+# neither the variable nor a sibling skill has one.
+INST="$TMP/plugins-cache/git-workflow/9.9.9"
+mkdir -p "$INST/skills/branching-pr-workflow/scripts" "$CLAUDE_CONFIG_DIR/plugins" "$TMP/lonely"
+: >"$INST/skills/branching-pr-workflow/scripts/resolve-preprod-branch.sh"
+jq -n --arg p "$INST" '{plugins: {"git-workflow@agent-toolkit": [{installPath: $p}]}}' >"$CLAUDE_CONFIG_DIR/plugins/installed_plugins.json"
+# shellcheck disable=SC1091 # lib.sh, sourced by path
+check "resolver: from installed_plugins.json" "$INST/skills/branching-pr-workflow/scripts/resolve-preprod-branch.sh" \
+  "$(unset AGENT_TOOLKIT_PREPROD_RESOLVER; . "$S/lib.sh"; find_preprod_resolver "$TMP/lonely")"
+# shellcheck disable=SC1091 # lib.sh, sourced by path
+check "resolver: the sibling skill first" "$S/../../branching-pr-workflow/scripts/resolve-preprod-branch.sh" \
+  "$(unset AGENT_TOOLKIT_PREPROD_RESOLVER; . "$S/lib.sh"; find_preprod_resolver "$S")"
+# shellcheck disable=SC1091 # lib.sh, sourced by path
+check "resolver: none" "" \
+  "$(unset AGENT_TOOLKIT_PREPROD_RESOLVER; CLAUDE_CONFIG_DIR="$TMP/empty"; . "$S/lib.sh"; find_preprod_resolver "$TMP/lonely")"
+unset AGENT_TOOLKIT_PREPROD_RESOLVER
+
 # --------------------------------------------------------------- review-threads
 cat >"$FX/threads-1.json" <<'EOF'
 {"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":true,"endCursor":"x"},"nodes":[
