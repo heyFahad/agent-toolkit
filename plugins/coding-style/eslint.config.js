@@ -8,7 +8,8 @@
 
 function tryRequire(name) {
   try {
-    return require(name);
+    const resolved = require.resolve(name, { paths: [process.cwd(), __dirname] });
+    return require(resolved);
   } catch {
     return null;
   }
