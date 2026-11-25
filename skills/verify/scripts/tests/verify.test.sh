@@ -117,6 +117,90 @@ R=$(mkrepo args '{"lint":"l","test":"t","audit:deps":"a"}' "" \
 run_verify "$R" --list
 check "list: CI's arguments are kept" '["CI=true npm run lint -- --max-warnings=0","CI=true npm run test -- --run"]' "$(q '[.[].run]')"
 
+# A step or job with `continue-on-error: true` is advisory: CI ignores its
+# result, so it isn't a check. An expression there isn't literally true.
+R=$(mkrepo advisory '{"lint":"l","test":"t","typecheck":"tc","docs":"d","e2e":"e","build":"b"}' pnpm-lock.yaml "")
+mkdir -p "$R/.github/workflows"
+cat >"$R/.github/workflows/ci.yml" <<'YML'
+name: CI
+on:
+  pull_request:
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Lint
+        run: pnpm run lint
+      - name: Test
+        continue-on-error: true # flaky for now
+        run: pnpm test
+      # Advisory until the backlog is cleared.
+      - name: Typecheck
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        run: |
+          pnpm run typecheck
+      - continue-on-error: 'true'
+        run: pnpm run docs
+      - name: E2E
+        continue-on-error: ${{ matrix.experimental }}
+        run: pnpm run e2e
+  advisory:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - run: pnpm run build
+YML
+git -C "$R" add -A && git -C "$R" -c user.email=t@t -c user.name=t commit -q -m wf
+run_verify "$R" --list
+check "list: continue-on-error steps and jobs are advisory, not checks" '["lint","e2e"]' "$(q '[.[].name]')"
+
+# A PR-checks workflow whose blocking steps call tools through `pnpm exec`
+# and whose only package script is an advisory typecheck: nothing verify can
+# read, so it says to set the checks by hand rather than gate on typecheck.
+R=$(mkrepo execonly '{"lint":"eslint .","test":"jest","typecheck":"tsc --noEmit"}' pnpm-lock.yaml "")
+mkdir -p "$R/.github/workflows"
+cat >"$R/.github/workflows/pr-checks.yml" <<'YML'
+name: PR Checks
+on:
+  pull_request:
+    branches: [main, dev]
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    if: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install Node.js dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Apply patches
+        run: pnpm exec patch-package
+      - name: Lint changed files
+        if: ${{ steps.changed.outputs.any == 'true' }}
+        run: |
+          mapfile -d '' -t files < "$RUNNER_TEMP/changed-files.txt"
+          pnpm exec eslint "${files[@]}"
+      - name: Test
+        run: pnpm exec jest --ci --forceExit
+      - name: Metro bundle check (iOS)
+        run: |
+          pnpm exec react-native bundle \
+            --platform ios \
+            --bundle-output "${{ runner.temp }}/ios-bundle-check.js"
+      # Advisory only: a backlog of type errors.
+      - name: Typecheck
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        run: pnpm run typecheck
+YML
+git -C "$R" add -A && git -C "$R" -c user.email=t@t -c user.name=t commit -q -m wf
+run_verify "$R" --list
+check "list: an advisory typecheck isn't the repo's only check" '[]' "$OUT"
+run_verify "$R" --full
+check "run: and says to set the repo's checks by hand" true "$(printf '%s' "$OUT" | grep -q 'verify.local.json' && echo true || echo false)"
+
 for pair in "yarn.lock:yarn" ":npm" "bun.lock:bun" "package-lock.json:npm"; do
   lock=${pair%%:*} pm=${pair#*:}
   R=$(mkrepo "pm-$pm-${lock:-none}" '{"lint":"l"}' "$lock" 'npm run lint')

@@ -103,7 +103,7 @@ CHECKS=$(vf_checks "$ROOT" "$LEVEL" ${FILES[@]+"${FILES[@]}"})
 # related ones) still records a pass.
 if [ "$(vf_checks "$ROOT" full | jq length)" -eq 0 ]; then
   if [ -z "$(vf_override "$ROOT")" ] && [ -n "$(vf_pr_workflows "$ROOT")" ]; then
-    echo "verify: no checks for $(vf_repo_key "$ROOT") (gate off): its pull_request workflows run nothing verify can read (no package.json scripts). Ask the user to set this repo's checks in $(vf_config_file) (see the verify skill)."
+    echo "verify: no checks for $(vf_repo_key "$ROOT") (gate off): its pull_request workflows run nothing verify can read (no package.json scripts outside advisory continue-on-error steps; tools called through pnpm exec or npx aren't read). Ask the user to set this repo's checks in $(vf_config_file) (see the verify skill)."
   else
     echo "verify: no checks for $(vf_repo_key "$ROOT") (gate off): CI runs none and there's no override"
   fi

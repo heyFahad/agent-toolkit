@@ -56,11 +56,11 @@ A check that changes tracked files fails the run. A `format` script that writes,
 
 ## Where the checks come from
 
-By default, from what CI runs: the root `package.json` scripts that a workflow triggered by `pull_request` invokes, with the arguments CI passes after `--`. `--full` runs all of them; `--related` runs those whose names start with `format`, `lint` or `type`, plus jest or vitest on the changed files when CI runs a `test` script. Install-time scripts like `prepare` are left out, and so is a step CI ignores (`|| true`). `npm ci` installs; it doesn't count as running a `ci` script. They run with `CI=true`, through the package manager whose lockfile is committed, under the Node version `.nvmrc` names. CI is green on the default branch, so those checks pass before your change, and a failure is yours. A script CI never runs may already be failing, so it isn't used.
+By default, from what CI runs: the root `package.json` scripts that a workflow triggered by `pull_request` invokes, with the arguments CI passes after `--`. `--full` runs all of them; `--related` runs those whose names start with `format`, `lint` or `type`, plus jest or vitest on the changed files when CI runs a `test` script. Install-time scripts like `prepare` are left out, and so is a step CI ignores: one run with `|| true`, or a step or job with `continue-on-error: true`. `npm ci` installs; it doesn't count as running a `ci` script. They run with `CI=true`, through the package manager whose lockfile is committed, under the Node version `.nvmrc` names. CI is green on the default branch, so those checks pass before your change, and a failure is yours. A script CI never runs may already be failing, so it isn't used.
 
 `verify --list` prints what it would run, and `verify --list --related <files>` does the same for the quick level.
 
-A repo whose CI runs none of its scripts has the gate off. `verify` says so, and the hook lets everything through. In such a repo, ask the user before pushing or opening PRs: nothing checked the code. When the repo does have `pull_request` workflows, just not package scripts `verify` can read (a shell test suite, a Makefile), `verify` says that instead: ask the user to set the repo's checks by hand (below).
+A repo whose CI runs none of its scripts has the gate off. `verify` says so, and the hook lets everything through. In such a repo, ask the user before pushing or opening PRs: nothing checked the code. When the repo does have `pull_request` workflows, just not package scripts `verify` can read (a shell test suite, a Makefile, tools called through `pnpm exec` or `npx`), `verify` says that instead: ask the user to set the repo's checks by hand (below).
 
 ## Setting a repo's checks by hand
 

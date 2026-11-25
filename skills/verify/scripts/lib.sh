@@ -18,7 +18,8 @@
 #      by pull_request invokes, with the arguments CI passes after `--`. CI
 #      is green on the default branch, so these pass before a change and a
 #      failure is the change's fault; a script CI doesn't run, or runs with
-#      `|| true`, may already be failing. No such script: the gate is off.
+#      `|| true` or in a step or job with `continue-on-error: true`, may
+#      already be failing. No such script: the gate is off.
 #      The related level is the format, lint and type scripts plus jest or
 #      vitest on the tests related to the changed files. Jest and vitest run
 #      with at most half the cores (--maxWorkers=50%), so one run leaves room
@@ -70,11 +71,58 @@ vf_pm() {
   fi
 }
 
-# vf_pr_workflows ROOT: the text of every workflow triggered by pull_request.
+# vf_drop_advisory: a workflow on stdin, without the jobs and steps that set
+# `continue-on-error: true`. CI ignores their result, so they may already be
+# failing, the same as a step run with `|| true`. An expression there
+# (`${{ matrix.experimental }}`) isn't literally true, so that step stays.
+# Indentation decides what belongs to a job or step; comments and blank
+# lines go with the block they sit in.
+vf_drop_advisory() {
+  local coe='continue-on-error:[ ]*["'"'"']?true["'"'"']?[ ]*(#.*)?$'
+  awk -v coe="$coe" '
+    function flush() { if (buf != "" && !bad) printf "%s", buf; buf = ""; bad = 0 }
+    {
+      if ($0 ~ /^[ ]*(#.*)?$/) { if (injob) buf = buf $0 "\n"; else print; next }
+      match($0, /^ */); ind = RLENGTH
+      if (ind == 0) { flush(); injob = 0; jobind = -1; injobs = ($0 ~ /^jobs:[ ]*$/); print; next }
+      if (injobs) {
+        if (jobind < 0) jobind = ind
+        if (ind == jobind) { flush(); injob = 1; buf = $0 "\n"; next }
+        if (injob) {
+          if (ind == jobind + 2 && $0 ~ ("^ *" coe)) bad = 1
+          buf = buf $0 "\n"
+          next
+        }
+      }
+      print
+    }
+    END { flush() }' | awk -v coe="$coe" '
+    function flush() { if (have && !bad) printf "%s", buf; buf = ""; bad = 0; have = 0 }
+    {
+      if ($0 ~ /^[ ]*(#.*)?$/) { if (have) buf = buf $0 "\n"; else print; next }
+      match($0, /^ */); ind = RLENGTH
+      if (have && ind > sind) {
+        if (ind == sind + 2 && $0 ~ ("^ *" coe)) bad = 1
+        buf = buf $0 "\n"
+        next
+      }
+      flush()
+      if ($0 ~ /^ *- /) {
+        have = 1; sind = ind; buf = $0 "\n"
+        if ($0 ~ ("^ *- +" coe)) bad = 1
+        next
+      }
+      print
+    }
+    END { flush() }'
+}
+
+# vf_pr_workflows ROOT: the text of every workflow triggered by pull_request,
+# without its advisory jobs and steps (vf_drop_advisory).
 vf_pr_workflows() {
   local f
   for f in "$1"/.github/workflows/*.yml "$1"/.github/workflows/*.yaml; do
-    [ -f "$f" ] && grep -q 'pull_request' "$f" && cat "$f" && echo
+    [ -f "$f" ] && grep -q 'pull_request' "$f" && vf_drop_advisory <"$f" && echo
   done
   return 0
 }
