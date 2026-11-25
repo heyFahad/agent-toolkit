@@ -31,6 +31,7 @@ case "$args" in
     yq -o=json . "$cfg" > "$PCS/cfg.json" ;;
   *" process list "*)
     [ -f "$PCS/alive" ] || exit 1
+    [ -f "$PCS/list-fails" ] && exit 1
     cat "$PCS"/procs/*.json 2>/dev/null | jq -s . ;;
   *" process start "*|*" process restart "*)
     n=$(sed -E "s/.* process (start|restart) ([^ ]+).*/\2/" <<<"$args")
@@ -52,6 +53,7 @@ case "$1" in
     n=${!#}
     if [[ " $* " == *StartedAt* ]]; then
       [ -f "$PCS/docker-broken" ] && exit 1
+      [ -f "$PCS/docker-hang" ] && sleep 30
       echo "id-$n $(cat "$PCS/docker-started.$n" 2>/dev/null || echo before)"; exit 0
     fi
     if [[ " $* " == *Image* ]]; then

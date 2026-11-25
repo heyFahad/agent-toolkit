@@ -256,6 +256,28 @@ check "...while the busy service runs on" running ti-api
 : > "$PCS/established"; ds down >/dev/null 2>&1
 yq -i 'del(.idle)' "$TMP/ws/stack.yaml"
 
+# --- a hung Docker doesn't hold the lock; the record is kept ---
+yq -i '.idle = {"stop_infra": true}' "$TMP/ws/stack.yaml"
+rm -f "$PCS"/docker-started.* "$DEVSTACK_STATE_DIR/infra-started"; : > "$TMP/calls.log"
+STUB_CONTAINERS="redis:false mongodb:true" DEVSTACK_DOCKER_TIMEOUT=1 ds up bsa >/dev/null 2>&1
+touch "$PCS/docker-hang"
+check "the quiet stack goes down" wait_for 15 down_now
+check "...and the lock is let go despite Docker hanging" wait_for 8 bash -c '[ ! -d "$1/lock" ] && [ -f "$1/idle/stopped.bsa" ]' _ "$DEVSTACK_STATE_DIR"
+check "...with the container still on record" grep -q "^redis " "$DEVSTACK_STATE_DIR/infra-started"
+rm -f "$PCS/docker-hang" "$DEVSTACK_STATE_DIR/infra-started"
+
+# --- a failing process list stops nothing: not a service, not a container ---
+rm -f "$PCS"/docker-started.*; : > "$TMP/calls.log"
+echo 3100 > "$PCS/established"
+STUB_CONTAINERS="redis:false mongodb:true" ds up bsa ti-api >/dev/null 2>&1
+touch "$PCS/list-fails"
+sleep 6
+check "nothing stops while the process list fails" bash -c '! grep -qE "process stop|process-compose down|^docker stop" "$1"' _ "$TMP/calls.log"
+rm -f "$PCS/list-fails"
+check "...and the quiet one stops once it answers" wait_for 15 stopped bsa
+: > "$PCS/established"; ds down >/dev/null 2>&1
+yq -i 'del(.idle)' "$TMP/ws/stack.yaml"
+
 # --- a loop of optional dependencies doesn't hang status ---
 yq -i '.services."wl-atc".optional_deps = ["connect-metro"] | .services."connect-metro".optional_deps = ["wl-atc"]' "$TMP/ws/stack.yaml"
 ds up wl-atc >/dev/null 2>&1; ds up connect-metro >/dev/null 2>&1

@@ -43,8 +43,9 @@ _ds_infra_hint() {
   echo "$1" >> "$mark"
 }
 
-# _ds_infra_identity <container>: "<id> <start time>".
-_ds_infra_identity() { docker inspect -f '{{.Id}} {{.State.StartedAt}}' "$1" 2>/dev/null; }
+# _ds_infra_identity <container>: "<id> <start time>". Bounded, so a hung
+# Docker can't hold the devstack lock (the idle watchdog asks under it).
+_ds_infra_identity() { _ds_timeout "${DEVSTACK_DOCKER_TIMEOUT:-20}" docker inspect -f '{{.Id}} {{.State.StartedAt}}' "$1" 2>/dev/null; }
 
 # ds_infra_stop_unused <used>: stop each container devstack started that isn't
 # in <used> (one name per line) and is still the same container, started at
@@ -65,7 +66,13 @@ ds_infra_stop_unused() {
     # Recreated, restarted by someone else, or removed: not devstack's to stop.
     [ "$now" = "$id $started" ] || continue
     # By id, so a container recreated under the name since can't be hit.
-    if docker stop "$id" >/dev/null 2>&1; then out="$out $c"; else keep+="$c $id $started"$'\n'; fi
+    # docker stop waits up to 10 seconds before killing; a hung Docker keeps
+    # the record for the next sweep.
+    if _ds_timeout $(( ${DEVSTACK_DOCKER_TIMEOUT:-20} + 10 )) docker stop "$id" >/dev/null 2>&1; then
+      out="$out $c"
+    else
+      keep+="$c $id $started"$'\n'
+    fi
   done < <(sort -u "$f")
   printf '%s' "$keep" > "$f"
   echo "${out# }"
