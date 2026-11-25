@@ -18,10 +18,13 @@ _ds_timeout() {
   shift
   out=$(mktemp "${TMPDIR:-/tmp}/devstack-out.XXXXXX") || return 1
   "$@" > "$out" & p=$!
-  ( sleep "$t"; kill "$p" 2>/dev/null; sleep 2; kill -9 "$p" 2>/dev/null ) >/dev/null 2>&1 & w=$!
+  # The marker is written before the first signal, so a command that exits
+  # cleanly on SIGTERM still reads as timed out.
+  ( sleep "$t"; : > "$out.expired"; kill "$p" 2>/dev/null; sleep 2; kill -9 "$p" 2>/dev/null ) >/dev/null 2>&1 & w=$!
   wait "$p" 2>/dev/null; rc=$?
-  if kill "$w" 2>/dev/null; then wait "$w" 2>/dev/null; else rc=124; fi
-  cat "$out"; rm -f "$out"
+  kill "$w" 2>/dev/null && wait "$w" 2>/dev/null
+  [ -e "$out.expired" ] && rc=124
+  cat "$out"; rm -f "$out" "$out.expired"
   return $rc
 }
 

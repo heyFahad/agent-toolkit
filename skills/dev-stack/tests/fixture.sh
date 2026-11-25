@@ -51,6 +51,9 @@ case "$1" in
   info) [ -z "${STUB_DOCKER_DOWN:-}" ] ;;
   inspect)
     n=${!#}
+    if [[ " $* " == *StopTimeout* ]]; then
+      cat "$PCS/grace" 2>/dev/null || echo 10; exit 0
+    fi
     if [[ " $* " == *StartedAt* ]]; then
       [ -f "$PCS/docker-broken" ] && exit 1
       [ -f "$PCS/docker-hang" ] && sleep 30
