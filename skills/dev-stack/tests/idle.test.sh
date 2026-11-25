@@ -228,7 +228,10 @@ ds up bsa ti-api >/dev/null 2>&1
 touch "$PCS/list-fails"
 sleep 6
 check "nothing stops while the process list fails" bash -c '! grep -qE "process stop|process-compose down" "$1"' _ "$TMP/calls.log"
-rm -f "$PCS/list-fails"
+rm -f "$PCS/list-fails"; touch "$PCS/list-object"
+sleep 6
+check "...or answers with something other than a list" bash -c '! grep -qE "process stop|process-compose down" "$1"' _ "$TMP/calls.log"
+rm -f "$PCS/list-object"
 check "...and the quiet one stops once it answers" wait_for 15 stopped bsa
 : > "$PCS/established"; ds down >/dev/null 2>&1
 

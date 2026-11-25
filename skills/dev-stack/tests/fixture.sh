@@ -32,6 +32,7 @@ case "$args" in
   *" process list "*)
     [ -f "$PCS/alive" ] || exit 1
     [ -f "$PCS/list-fails" ] && { echo "[]"; exit 1; }
+    [ -f "$PCS/list-object" ] && { echo "{}"; exit 0; }
     cat "$PCS"/procs/*.json 2>/dev/null | jq -s . ;;
   *" process start "*|*" process restart "*)
     n=$(sed -E "s/.* process (start|restart) ([^ ]+).*/\2/" <<<"$args")

@@ -180,7 +180,7 @@ _ds_connections() {
 _ds_idle_running_json() {
   local out
   out=$(_ds_pc process list -o json) || return 1
-  jq -ce '[.[] | select(.is_running == true) | .name]' <<<"$out" 2>/dev/null
+  jq -ce 'if type == "array" then [.[] | select(.is_running == true) | .name] else error end' <<<"$out" 2>/dev/null
 }
 
 # _ds_idle_active <running_json>: print each running service that had a
@@ -273,8 +273,9 @@ _ds_idle_sweep() {
   if [ "$running" = "[]" ]; then
     # The server is up with nothing running in it (each service was stopped
     # by name, or failed). It goes too, after the same quiet time.
-    [ -f "$dir/empty_since" ] || echo "$now" > "$dir/empty_since"
-    [ $((now - $(cat "$dir/empty_since"))) -ge "$limit" ] || return 1
+    # Timed from when it's first seen empty, not from this round's start.
+    [ -f "$dir/empty_since" ] || date +%s > "$dir/empty_since"
+    [ $(( $(date +%s) - $(cat "$dir/empty_since") )) -ge "$limit" ] || return 1
     _ds_try_lock || return 1
     if ! _ds_idle_limit_now limit || [ "$(_ds_idle_running_json)" != "[]" ]; then
       rm -f "$dir/empty_since"; _ds_unlock; return 1
