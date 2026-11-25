@@ -31,6 +31,13 @@ keep_busy() {
 }
 trap 'p=$(wd_pid); [ -n "$p" ] && kill "$p" 2>/dev/null; rm -rf "$TMP"' EXIT
 
+# --- _ds_timeout: a command that ignores SIGTERM is killed anyway ---
+start=$(date +%s)
+out=$(bash -c '. "$1/common.sh"; _ds_timeout 1 bash -c "trap \"\" TERM; echo partial; sleep 30"' _ "$LIB"); code=$?
+check "a TERM-ignoring command ends within the deadline plus grace (took $(( $(date +%s) - start ))s)" [ $(( $(date +%s) - start )) -le 5 ]
+check "...with exit 124 (got $code)" [ "$code" -eq 124 ]
+check "...and its output so far is kept (got: $out)" [ "$out" = partial ]
+
 # --- one quiet service: it stops, and the stack with it ---
 out=$(ds up bsa 2>&1); code=$?
 check "up exits 0 (got $code: $out)" [ "$code" -eq 0 ]
@@ -210,11 +217,11 @@ rm -f "$PCS"/docker-started.*; : > "$TMP/calls.log"
 echo 3100 > "$PCS/established"   # ti-api (mongodb) is in use, bsa (redis) isn't
 STUB_CONTAINERS="redis:false mongodb:false" ds up bsa ti-api >/dev/null 2>&1
 check "the quiet service stops" wait_for 15 stopped bsa
-check "...then the container only it used" wait_for 5 grep -q "^docker stop id-redis" "$TMP/calls.log"
-check "...but not one a running service still uses" bash -c '! grep -q "^docker stop id-mongodb" "$1"' _ "$TMP/calls.log"
+check "...then the container only it used" wait_for 5 grep -q "^docker stop -t 10 id-redis" "$TMP/calls.log"
+check "...but not one a running service still uses" bash -c '! grep -q "^docker stop -t 10 id-mongodb" "$1"' _ "$TMP/calls.log"
 : > "$PCS/established"
 check "the last service stops" wait_for 15 down_now
-check "...then its container" wait_for 5 grep -q "^docker stop id-mongodb" "$TMP/calls.log"
+check "...then its container" wait_for 5 grep -q "^docker stop -t 10 id-mongodb" "$TMP/calls.log"
 : > "$TMP/calls.log"
 STUB_CONTAINERS="redis:true mongodb:true" ds up bsa >/dev/null 2>&1
 check "a container that was already running is never stopped" bash -c 'sleep 6; ! grep -q "^docker stop" "$1"' _ "$TMP/calls.log"
@@ -228,7 +235,7 @@ STUB_CONTAINERS="redis:false mongodb:true" ds up bsa >/dev/null 2>&1
 echo recreated > "$PCS/docker-started.redis"   # the user recreated it
 check "the quiet stack goes down" wait_for 15 down_now
 sleep 2
-check "a container recreated since is left running" bash -c '! grep -q "^docker stop id-redis" "$1"' _ "$TMP/calls.log"
+check "a container recreated since is left running" bash -c '! grep -q "^docker stop -t 10 id-redis" "$1"' _ "$TMP/calls.log"
 yq -i 'del(.idle)' "$TMP/ws/stack.yaml"
 
 # --- a Docker that doesn't answer keeps the record for the next sweep ---
@@ -251,7 +258,7 @@ check "the quiet service stops" wait_for 15 stopped bsa
 sleep 2
 check "...its container waits while Docker can't be asked" bash -c '! grep -q "^docker stop" "$1"' _ "$TMP/calls.log"
 rm -f "$PCS/docker-broken"
-check "...and stops once Docker answers" wait_for 10 grep -q "^docker stop id-redis" "$TMP/calls.log"
+check "...and stops once Docker answers" wait_for 10 grep -q "^docker stop -t 10 id-redis" "$TMP/calls.log"
 check "...while the busy service runs on" running ti-api
 : > "$PCS/established"; ds down >/dev/null 2>&1
 yq -i 'del(.idle)' "$TMP/ws/stack.yaml"

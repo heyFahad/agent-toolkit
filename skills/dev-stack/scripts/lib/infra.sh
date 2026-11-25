@@ -66,9 +66,11 @@ ds_infra_stop_unused() {
     # Recreated, restarted by someone else, or removed: not devstack's to stop.
     [ "$now" = "$id $started" ] || continue
     # By id, so a container recreated under the name since can't be hit.
-    # docker stop waits up to 10 seconds before killing; a hung Docker keeps
-    # the record for the next sweep.
-    if _ds_timeout $(( ${DEVSTACK_DOCKER_TIMEOUT:-20} + 10 )) docker stop "$id" >/dev/null 2>&1; then
+    # -t 10 overrides a longer stop grace configured on the container, so
+    # Docker finishes the stop well inside the deadline: cutting the client
+    # off mid-stop would let a new up reuse a container that's about to stop.
+    # A hung Docker keeps the record for the next sweep.
+    if _ds_timeout $(( ${DEVSTACK_DOCKER_TIMEOUT:-20} + 10 )) docker stop -t 10 "$id" >/dev/null 2>&1; then
       out="$out $c"
     else
       keep+="$c $id $started"$'\n'

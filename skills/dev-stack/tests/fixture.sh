@@ -31,7 +31,7 @@ case "$args" in
     yq -o=json . "$cfg" > "$PCS/cfg.json" ;;
   *" process list "*)
     [ -f "$PCS/alive" ] || exit 1
-    [ -f "$PCS/list-fails" ] && exit 1
+    [ -f "$PCS/list-fails" ] && { echo "[]"; exit 1; }
     cat "$PCS"/procs/*.json 2>/dev/null | jq -s . ;;
   *" process start "*|*" process restart "*)
     n=$(sed -E "s/.* process (start|restart) ([^ ]+).*/\2/" <<<"$args")
@@ -65,7 +65,7 @@ case "$1" in
       if [ -f "$PCS/docker-started.$n" ]; then echo true; else echo "${c#*:}"; fi; exit 0
     done; exit 1 ;;
   start) echo "started-$RANDOM" > "$PCS/docker-started.$2"; echo "$2" ;;
-  stop) rm -f "$PCS/docker-started.${2#id-}"; echo "$2" ;;
+  stop) [ "$2" = -t ] && shift 2; rm -f "$PCS/docker-started.${2#id-}"; echo "$2" ;;
   *) exit 1 ;;
 esac'
 # --- stub lsof: STUB_LSOF="3010:node:4242" holds a port; a port listed in
