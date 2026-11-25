@@ -51,14 +51,6 @@ case "$1" in
   info) [ -z "${STUB_DOCKER_DOWN:-}" ] ;;
   inspect)
     n=${!#}
-    if [[ " $* " == *StopTimeout* ]]; then
-      cat "$PCS/grace" 2>/dev/null || echo 10; exit 0
-    fi
-    if [[ " $* " == *StartedAt* ]]; then
-      [ -f "$PCS/docker-broken" ] && exit 1
-      [ -f "$PCS/docker-hang" ] && sleep 30
-      echo "id-$n $(cat "$PCS/docker-started.$n" 2>/dev/null || echo before)"; exit 0
-    fi
     if [[ " $* " == *Image* ]]; then
       for e in ${STUB_IMAGES:-}; do [ "${e%%=*}" = "$n" ] && { echo "${e#*=}" | tr , " "; exit 0; }; done
       echo "$n:latest|"; exit 0
@@ -67,8 +59,7 @@ case "$1" in
       [ "${c%%:*}" = "$n" ] || continue
       if [ -f "$PCS/docker-started.$n" ]; then echo true; else echo "${c#*:}"; fi; exit 0
     done; exit 1 ;;
-  start) echo "started-$RANDOM" > "$PCS/docker-started.$2"; echo "$2" ;;
-  stop) [ "$2" = -t ] && shift 2; rm -f "$PCS/docker-started.${2#id-}"; echo "$2" ;;
+  start) touch "$PCS/docker-started.$2"; echo "$2" ;;
   *) exit 1 ;;
 esac'
 # --- stub lsof: STUB_LSOF="3010:node:4242" holds a port; a port listed in
@@ -76,6 +67,7 @@ esac'
 # process-compose'"'"'s readiness probe connected ---
 stub_bin lsof '
 if [[ " $* " == *ESTABLISHED* ]]; then
+  [ -f "$PCS/slow-lsof" ] && sleep 4
   for p in $(cat "$PCS/established" 2>/dev/null); do
     printf "p1\ncbrowser\nf20\nn127.0.0.1:5%s->127.0.0.1:%s\n" "$p" "$p"
   done

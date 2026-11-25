@@ -31,30 +31,22 @@ keep_busy() {
 }
 trap 'p=$(wd_pid); [ -n "$p" ] && kill "$p" 2>/dev/null; rm -rf "$TMP"' EXIT
 
-# --- _ds_timeout: a command that ignores SIGTERM is killed anyway ---
-start=$(date +%s)
-out=$(bash -c '. "$1/common.sh"; _ds_timeout 1 bash -c "trap \"\" TERM; echo partial; sleep 30"' _ "$LIB"); code=$?
-check "a TERM-ignoring command ends within the deadline plus grace (took $(( $(date +%s) - start ))s)" [ $(( $(date +%s) - start )) -le 5 ]
-check "...with exit 124 (got $code)" [ "$code" -eq 124 ]
-check "...and its output so far is kept (got: $out)" [ "$out" = partial ]
-out=$(bash -c '. "$1/common.sh"; _ds_timeout 1 bash -c "trap \"exit 0\" TERM; sleep 30 & wait"' _ "$LIB"); code=$?
-check "a command that exits 0 on SIGTERM still reads as timed out (got $code)" [ "$code" -eq 124 ]
-out=$(bash -c '. "$1/common.sh"; _ds_timeout 5 echo done' _ "$LIB"); code=$?
-check "a command that finishes in time keeps its status and output (got $code: $out)" bash -c '[ "$1" -eq 0 ] && [ "$2" = done ]' _ "$code" "$out"
-
 # --- one quiet service: it stops, and the stack with it ---
+echo 3010 > "$PCS/established"   # held while status is read, so it can't stop first
 out=$(ds up bsa 2>&1); code=$?
 check "up exits 0 (got $code: $out)" [ "$code" -eq 0 ]
 check "up prints nothing about the watchdog (got: $out)" [ "$(wc -l <<<"$out" | tr -d ' ')" = 1 ]
 check "up starts a watchdog" wait_for 5 wd_up
 pid=$(wd_pid)
-check "status shows the countdown (got: $(ds status | tail -1))" grep -qE "^idle stop in: bsa [0-9]+ s$" <<<"$(ds status)"
+out=$(ds status)
+check "status shows the countdown (got: $(tail -1 <<<"$out"))" grep -qE "^idle stop in: bsa [0-9]+ s$" <<<"$out"
+: > "$PCS/established"
 check "the last quiet service takes the stack down" wait_for 15 down_now
 check "the stop is recorded" wait_for 5 [ -f "$IDLE/stopped.bsa" ]
 check "the watchdog exits after stopping the stack" wait_for 5 pid_gone "$pid"
 out=$(ds status)
 check "status says what stopped (got: $out)" grep -qE "^stopped while idle: bsa \([0-9]{2}:[0-9]{2}\)$" <<<"$out"
-check "containers are left alone without idle.stop_infra" bash -c '! grep -q "^docker stop" "$1"' _ "$TMP/calls.log"
+check "the watchdog never touches containers" bash -c '! grep -q "^docker stop" "$1"' _ "$TMP/calls.log"
 
 # --- quiet services stop one by one; a busy one and its dependencies stay ---
 : > "$TMP/calls.log"
@@ -94,6 +86,14 @@ echo 3010 > "$PCS/probe"
 ds up bsa >/dev/null 2>&1
 check "a service with only the probe connected still stops" wait_for 15 down_now
 : > "$PCS/probe"
+
+# --- a round slower than the limit doesn't read a service it just saw used as quiet ---
+echo 3010 > "$PCS/established"; touch "$PCS/slow-lsof"
+ds up bsa >/dev/null 2>&1
+sleep 12
+check "a busy service survives rounds that take longer than the limit" alive
+rm -f "$PCS/slow-lsof"; : > "$PCS/established"
+ds down >/dev/null 2>&1
 
 # --- a large burst of log lines counts (no SIGPIPE under pipefail) ---
 ds up bsa >/dev/null 2>&1
@@ -215,90 +215,22 @@ env -u DEVSTACK_IDLE_SECONDS bash -c 'cd "$1" && bash "$2" up bsa' _ "$TMP/ws" "
 check "idle.minutes: 0 in the registry turns it off" grep -q "^idle shutdown: off" <<<"$(ds status)"
 ds down >/dev/null 2>&1
 
-# --- idle.stop_infra stops a container devstack started once nothing uses it ---
-yq -i '.idle = {"stop_infra": true}' "$TMP/ws/stack.yaml"
-rm -f "$PCS"/docker-started.*; : > "$TMP/calls.log"
-echo 3100 > "$PCS/established"   # ti-api (mongodb) is in use, bsa (redis) isn't
-STUB_CONTAINERS="redis:false mongodb:false" ds up bsa ti-api >/dev/null 2>&1
-check "the quiet service stops" wait_for 15 stopped bsa
-check "...then the container only it used" wait_for 5 grep -q "^docker stop id-redis" "$TMP/calls.log"
-check "...but not one a running service still uses" bash -c '! grep -q "^docker stop id-mongodb" "$1"' _ "$TMP/calls.log"
-: > "$PCS/established"
-check "the last service stops" wait_for 15 down_now
-check "...then its container" wait_for 5 grep -q "^docker stop id-mongodb" "$TMP/calls.log"
+# --- a running service the registry snapshot doesn't list still stops ---
+ds up wl-atc >/dev/null 2>&1
+jq 'del(."wl-atc")' "$IDLE/services.json" > "$IDLE/s.tmp" && mv "$IDLE/s.tmp" "$IDLE/services.json"
+rm -f "$IDLE/active.wl-atc"
+check "a service missing from the snapshot isn't kept up forever" wait_for 15 down_now
+
+# --- a failing process list stops nothing ---
 : > "$TMP/calls.log"
-STUB_CONTAINERS="redis:true mongodb:true" ds up bsa >/dev/null 2>&1
-check "a container that was already running is never stopped" bash -c 'sleep 6; ! grep -q "^docker stop" "$1"' _ "$TMP/calls.log"
-ds down >/dev/null 2>&1
-yq -i 'del(.idle)' "$TMP/ws/stack.yaml"
-
-# --- ...and never one recreated under the same name since devstack started it ---
-yq -i '.idle = {"stop_infra": true}' "$TMP/ws/stack.yaml"
-rm -f "$PCS"/docker-started.*; : > "$TMP/calls.log"
-STUB_CONTAINERS="redis:false mongodb:true" ds up bsa >/dev/null 2>&1
-echo recreated > "$PCS/docker-started.redis"   # the user recreated it
-check "the quiet stack goes down" wait_for 15 down_now
-sleep 2
-check "a container recreated since is left running" bash -c '! grep -q "^docker stop id-redis" "$1"' _ "$TMP/calls.log"
-yq -i 'del(.idle)' "$TMP/ws/stack.yaml"
-
-# --- a container whose stop has no time limit is left running ---
-yq -i '.idle = {"stop_infra": true}' "$TMP/ws/stack.yaml"
-rm -f "$PCS"/docker-started.* "$DEVSTACK_STATE_DIR/infra-started"; : > "$TMP/calls.log"
-echo -1 > "$PCS/grace"
-STUB_CONTAINERS="redis:false mongodb:true" ds up bsa >/dev/null 2>&1
-check "the quiet stack goes down" wait_for 15 down_now
-sleep 2
-check "a container with no bounded stop grace isn't stopped" bash -c '! grep -q "^docker stop" "$1"' _ "$TMP/calls.log"
-rm -f "$PCS/grace" "$DEVSTACK_STATE_DIR/infra-started"
-yq -i 'del(.idle)' "$TMP/ws/stack.yaml"
-
-# --- a Docker that doesn't answer keeps the record for the next sweep ---
-yq -i '.idle = {"stop_infra": true}' "$TMP/ws/stack.yaml"
-rm -f "$PCS"/docker-started.*; : > "$TMP/calls.log"
-STUB_CONTAINERS="redis:false mongodb:true" ds up bsa >/dev/null 2>&1
-touch "$PCS/docker-broken"
-check "the quiet stack goes down" wait_for 15 down_now
-sleep 2
-check "nothing is stopped while Docker can't be asked" bash -c '! grep -q "^docker stop" "$1"' _ "$TMP/calls.log"
-check "...and redis is still on record" grep -q "^redis " "$DEVSTACK_STATE_DIR/infra-started"
-rm -f "$PCS/docker-broken" "$DEVSTACK_STATE_DIR/infra-started"
-
-# --- ...and tries again once Docker answers, even with nothing else due to stop ---
-rm -f "$PCS"/docker-started.*; : > "$TMP/calls.log"
-echo 3100 > "$PCS/established"   # ti-api stays busy throughout
-STUB_CONTAINERS="redis:false mongodb:true" ds up bsa ti-api >/dev/null 2>&1
-touch "$PCS/docker-broken"
-check "the quiet service stops" wait_for 15 stopped bsa
-sleep 2
-check "...its container waits while Docker can't be asked" bash -c '! grep -q "^docker stop" "$1"' _ "$TMP/calls.log"
-rm -f "$PCS/docker-broken"
-check "...and stops once Docker answers" wait_for 10 grep -q "^docker stop id-redis" "$TMP/calls.log"
-check "...while the busy service runs on" running ti-api
-: > "$PCS/established"; ds down >/dev/null 2>&1
-yq -i 'del(.idle)' "$TMP/ws/stack.yaml"
-
-# --- a hung Docker doesn't hold the lock; the record is kept ---
-yq -i '.idle = {"stop_infra": true}' "$TMP/ws/stack.yaml"
-rm -f "$PCS"/docker-started.* "$DEVSTACK_STATE_DIR/infra-started"; : > "$TMP/calls.log"
-STUB_CONTAINERS="redis:false mongodb:true" DEVSTACK_DOCKER_TIMEOUT=1 ds up bsa >/dev/null 2>&1
-touch "$PCS/docker-hang"
-check "the quiet stack goes down" wait_for 15 down_now
-check "...and the lock is let go despite Docker hanging" wait_for 8 bash -c '[ ! -d "$1/lock" ] && [ -f "$1/idle/stopped.bsa" ]' _ "$DEVSTACK_STATE_DIR"
-check "...with the container still on record" grep -q "^redis " "$DEVSTACK_STATE_DIR/infra-started"
-rm -f "$PCS/docker-hang" "$DEVSTACK_STATE_DIR/infra-started"
-
-# --- a failing process list stops nothing: not a service, not a container ---
-rm -f "$PCS"/docker-started.*; : > "$TMP/calls.log"
 echo 3100 > "$PCS/established"
-STUB_CONTAINERS="redis:false mongodb:true" ds up bsa ti-api >/dev/null 2>&1
+ds up bsa ti-api >/dev/null 2>&1
 touch "$PCS/list-fails"
 sleep 6
-check "nothing stops while the process list fails" bash -c '! grep -qE "process stop|process-compose down|^docker stop" "$1"' _ "$TMP/calls.log"
+check "nothing stops while the process list fails" bash -c '! grep -qE "process stop|process-compose down" "$1"' _ "$TMP/calls.log"
 rm -f "$PCS/list-fails"
 check "...and the quiet one stops once it answers" wait_for 15 stopped bsa
 : > "$PCS/established"; ds down >/dev/null 2>&1
-yq -i 'del(.idle)' "$TMP/ws/stack.yaml"
 
 # --- a loop of optional dependencies doesn't hang status ---
 yq -i '.services."wl-atc".optional_deps = ["connect-metro"] | .services."connect-metro".optional_deps = ["wl-atc"]' "$TMP/ws/stack.yaml"

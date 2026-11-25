@@ -53,7 +53,7 @@ Connections are sampled, not counted. An API that only gets short requests and d
 - Change the limit with `idle: {minutes: 30}` in `stack.yaml`, or `DEVSTACK_IDLE_MINUTES` for one `up`; `0` turns it off. The setting from the latest `up` applies.
 - If the user comes back to a stopped service, run `devstack up` for it again. It starts cold, so a URL handed over earlier answers again only once it's Ready.
 
-Docker containers stay running unless the registry sets `idle: {stop_infra: true}`. Then, once no running service lists a container in its `infra`, the watchdog stops it, but only if devstack itself started it (never one that was already running). Suggest it to a user whose Docker VM is short of memory.
+The watchdog never touches Docker containers: they stay running after their services stop, as they do after `devstack down`.
 
 MongoDB sizes its WiredTiger cache to about half the Docker VM's memory unless told otherwise: 3.6 GB of a 7.8 GB VM has been seen. devstack doesn't create containers, so it can't set that, but `up` says once when a MongoDB container it relies on has no cap. Tell the user that whoever creates the container should add `--wiredTigerCacheSizeGB 1` to the `mongod` command (`docker run … mongo:7 --wiredTigerCacheSizeGB 1`, or `command:` in a compose file); the container has to be recreated for it to apply.
 

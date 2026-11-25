@@ -66,10 +66,9 @@ else (.services | to_entries[] | problems(.key; .value)),
        | "\(.): name: use lowercase letters, digits and dashes") end,
 (if (.targets // {} | type) != "object" then "registry: targets: must be a map" else empty end),
 (if (.idle // {} | type) != "object" then "registry: idle: must be a map"
- else ((.idle.minutes // 15) as $m | if ($m | type) != "number" or $m < 0 or ($m | floor) != $m
-         then "registry: idle.minutes: must be a whole number of minutes, 0 to turn the idle shutdown off" else empty end),
-      (if (.idle.stop_infra // false | type) != "boolean" then "registry: idle.stop_infra: must be true or false" else empty end)
- end),
+ elif ((.idle.minutes // 15) as $m | ($m | type) != "number" or $m < 0 or ($m | floor) != $m)
+   then "registry: idle.minutes: must be a whole number of minutes, 0 to turn the idle shutdown off"
+ else empty end),
 ((.targets // {} | keys) - ((.targets // {} | keys) - (.services // {} | keys)) | .[]
   | "\(.): target: a target cannot share its name with a service")
 '

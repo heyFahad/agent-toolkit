@@ -8,12 +8,11 @@
 #
 # Files in $STATE/idle:
 #   limit          seconds of quiet before a service stops (0: off), set by each up
-#   services.json  each service's port, health-check path, dependencies and containers
+#   services.json  each service's port, health-check path and dependencies
 #   active.<svc>   epoch seconds of the service's last activity (or up / restart)
 #   size.<svc>     the service log's size at the last check
 #   stopped.<svc>  when the watchdog stopped the service
 #   empty_since    when the server was first seen running no service at all
-#   stop_infra     true when the registry asks to stop containers devstack started
 #   watchdog/pid   the running watchdog (a directory, so only one can claim it)
 #   watch.log      the watchdog's own output
 DS_LIB=${DS_LIB:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}
@@ -46,8 +45,9 @@ _ds_idle_pid() { cat "$(_ds_idle_dir)/watchdog/pid" 2>/dev/null; }
 _ds_is_watchdog() {
   local cmd
   kill -0 "$1" 2>/dev/null || return 1
-  # A zombie (killed, never reaped) answers kill -0 but is gone.
-  [ "$(awk '{ print $3 }' "/proc/$1/stat" 2>/dev/null)" = Z ] && return 1
+  # A zombie (killed, never reaped) answers kill -0 but is gone. The state
+  # follows the last ")", since the process name in parentheses can hold spaces.
+  [ "$(sed 's/.*) //' "/proc/$1/stat" 2>/dev/null | cut -d' ' -f1)" = Z ] && return 1
   if [ -r "/proc/$1/cmdline" ]; then cmd=$(tr '\0' ' ' < "/proc/$1/cmdline" 2>/dev/null)
   elif command -v ps >/dev/null 2>&1; then cmd=$(ps -p "$1" -o command= 2>/dev/null)
   fi
@@ -83,10 +83,9 @@ _ds_idle_arm() {
   shift
   dir=$(_ds_idle_dir); mkdir -p "$dir"
   echo "$limit" > "$dir/limit"
-  jq -r '.idle.stop_infra // false' "$DS_REG" > "$dir/stop_infra"
   jq '.services | map_values({port,
       hp: (if .health == "tcp" then "" else (.health | capture("^http://[^/?#]+(?<p>[/?][^#]*)?$").p // "") end),
-      needs: ((.depends_on // []) + (.optional_deps // [])), infra: (.infra // [])})' "$DS_REG" > "$dir/services.json"
+      needs: ((.depends_on // []) + (.optional_deps // []))})' "$DS_REG" > "$dir/services.json"
   _ds_idle_touch "$@"
   rm -f "$dir/empty_since"
   [ "$limit" -gt 0 ] || return 0
@@ -176,8 +175,8 @@ _ds_connections() {
 
 # _ds_idle_running_json: the running services, as a JSON array of names.
 # Fails, rather than answering [], when process-compose doesn't give a good
-# answer: an empty list would let the watchdog stop the server or containers
-# that busy services still use.
+# answer: an empty list would let the watchdog take the server down while
+# services still run in it.
 _ds_idle_running_json() {
   local out
   out=$(_ds_pc process list -o json) || return 1
@@ -215,7 +214,9 @@ _ds_idle_active() {
       fi
       [ "${n:-0}" -gt 0 ] && echo "$svc"
     fi
-  done < <(jq -r --argjson r "$1" '. as $all | $r[] | select($all[.]) | [., ($all[.].port | tostring), $all[.].hp] | @tsv' "$dir/services.json")
+  # Every running service, including one the registry no longer lists: it
+  # still needs an activity time, or it (and the server) would never stop.
+  done < <(jq -r --argjson r "$1" '. as $all | $r[] | [., ($all[.].port // "" | tostring), ($all[.].hp // "")] | @tsv' "$dir/services.json")
   return 0
 }
 
@@ -247,34 +248,27 @@ def left($s; $seen): ([$limit - quiet($s)]
 def left($s): left($s; [$s]);
 '
 
-# _ds_idle_jq <limit> <running_json> <program>: run <program> with the rules above.
+# _ds_idle_jq <limit> <running_json> <program> [now]: run <program> with the
+# rules above, as of [now] (default: the current time).
 _ds_idle_jq() {
   local svcs
   svcs=$(cat "$(_ds_idle_dir)/services.json" 2>/dev/null) || return 0
-  jq -nr --argjson limit "$1" --argjson running "$2" --argjson now "$(date +%s)" \
+  jq -nr --argjson limit "$1" --argjson running "$2" --argjson now "${4:-$(date +%s)}" \
     --argjson active "$(_ds_idle_times)" --argjson svcs "$svcs" "$_DS_IDLE_JQ $3"
 }
 
-# _ds_idle_plan <limit> <running_json>: the services to stop now, in order.
-_ds_idle_plan() { _ds_idle_jq "$1" "$2" 'order(shrink([$running[] | select(quiet(.) >= $limit)])) | .[]'; }
+# _ds_idle_plan <limit> <running_json> <now>: the services to stop, in order.
+_ds_idle_plan() { _ds_idle_jq "$1" "$2" 'order(shrink([$running[] | select(quiet(.) >= $limit)])) | .[]' "$3"; }
 
-# _ds_idle_infra <running_json>: with idle.stop_infra, stop the containers
-# devstack started that no running service lists any more.
-_ds_idle_infra() {
-  local dir
-  dir=$(_ds_idle_dir)
-  [ "$(cat "$dir/stop_infra" 2>/dev/null)" = true ] || return 0
-  # Without a good list of what still runs, every container would look unused.
-  jq -e 'type == "array"' <<<"$1" >/dev/null 2>&1 || return 0
-  ds_infra_stop_unused "$(jq -r --argjson r "$1" '. as $all | [$r[] | $all[.].infra // [] | .[]] | unique | .[]' "$dir/services.json")"
-}
-
-# _ds_idle_sweep <limit>: stop what's been quiet long enough. Returns 0 once
-# the whole stack is down, 1 while anything is still running. Skips the round
-# while another devstack command holds the lock: that's someone using it.
+# _ds_idle_sweep <limit> <now>: stop what's been quiet long enough as of
+# <now>, the time this round's activity was stamped with: a round that takes
+# longer than the limit must not read a service it just saw used as quiet.
+# Returns 0 once the whole stack is down, 1 while anything is still running.
+# Skips the round while another devstack command holds the lock: that's
+# someone using it.
 _ds_idle_sweep() {
-  local dir limit=$1 running plan now stamp s stopped="" left containers
-  dir=$(_ds_idle_dir); now=$(date +%s)
+  local dir limit=$1 now=$2 running plan stamp s stopped="" left t0
+  dir=$(_ds_idle_dir)
   running=$(_ds_idle_running_json) || return 1
   if [ "$running" = "[]" ]; then
     # The server is up with nothing running in it (each service was stopped
@@ -286,25 +280,26 @@ _ds_idle_sweep() {
       rm -f "$dir/empty_since"; _ds_unlock; return 1
     fi
     _ds_down_all
-    containers=$(_ds_idle_infra '[]')
-    echo "$(date '+%F %T') stopped the empty server${containers:+, then containers $containers}"
+    echo "$(date '+%F %T') stopped the empty server"
     rm -f "$dir/empty_since"
     _ds_unlock
     return 0
   fi
   rm -f "$dir/empty_since"
-  [ -n "$(_ds_idle_plan "$limit" "$running")" ] || { _ds_idle_infra_retry; return 1; }
+  [ -n "$(_ds_idle_plan "$limit" "$running" "$now")" ] || return 1
   _ds_try_lock || return 1
   # Plan again under the lock: an up or restart may have run since, and
   # changed the limit or turned the shutdown off.
   _ds_idle_limit_now limit || { _ds_unlock; return 1; }
   running=$(_ds_idle_running_json) || { _ds_unlock; return 1; }
-  plan=$(_ds_idle_plan "$limit" "$running")
+  plan=$(_ds_idle_plan "$limit" "$running" "$now")
   [ -n "$plan" ] || { _ds_unlock; return 1; }
-  stamp=$(date '+%Y-%m-%d %H:%M')
+  stamp=$(date '+%Y-%m-%d %H:%M'); t0=$(date +%s)
   # Dependants first. If one won't stop, stop nothing after it: what it
-  # depends on comes later in the plan. The next check tries again.
+  # depends on comes later in the plan. The next check tries again. No new
+  # stop after 120 seconds under the lock (an up waits 300 for it).
   while IFS= read -r s; do
+    [ $(( $(date +%s) - t0 )) -lt 120 ] || break
     _ds_pc process stop "$s" >/dev/null || break
     # process-compose can answer before the process has exited; what it
     # depends on stays up until it has, so its own shutdown can still use it.
@@ -312,7 +307,7 @@ _ds_idle_sweep() {
     _ds_owner_del "$s"
     stopped+="$s"$'\n'
   done <<<"$plan"
-  # No good answer: neither the server nor any container goes this round.
+  # No good answer: the server stays this round.
   left=$(_ds_idle_running_json) || left=""
   # The last service is down: take the server with it.
   [ "$left" = "[]" ] && _ds_down_all
@@ -320,37 +315,18 @@ _ds_idle_sweep() {
     [ -n "$s" ] || continue
     echo "$stamp" > "$dir/stopped.$s"; rm -f "$dir/active.$s" "$dir/size.$s"
   done <<<"$stopped"
-  containers=$(_ds_idle_infra "$left")
-  echo "$stamp stopped $(tr '\n' ' ' <<<"$stopped")${containers:+then containers $containers}"
+  [ -n "$stopped" ] && echo "$stamp stopped $(tr '\n' ' ' <<<"$stopped")"
   _ds_unlock
   [ "$left" = "[]" ]
-}
-
-# _ds_idle_infra_retry: with stop_infra, a container a past sweep couldn't
-# stop (Docker didn't answer) is tried again on a later check, even when no
-# service is due to stop then. Under the lock, so an up that's starting it
-# for a service isn't undercut.
-_ds_idle_infra_retry() {
-  local f containers running
-  f="$(ds_state_dir)/infra-started"
-  [ -s "$f" ] && [ "$(cat "$(_ds_idle_dir)/stop_infra" 2>/dev/null)" = true ] || return 0
-  _ds_try_lock || return 0
-  # Under the lock, the latest up's settings and a good list of what runs.
-  if _ds_idle_limit_now _ && running=$(_ds_idle_running_json); then
-    containers=$(_ds_idle_infra "$running")
-    [ -n "$containers" ] && echo "$(date '+%F %T') stopped containers $containers"
-  fi
-  _ds_unlock
 }
 
 # _ds_idle_wait_exit <svc>: wait up to 30 seconds for it to stop running.
 # Only a good answer counts: a failed or garbled process list keeps it waiting.
 _ds_idle_wait_exit() {
-  local ps
+  local r
   for _ in $(seq 1 60); do
-    ps=$(_ds_ps)
-    if jq -e 'type == "array"' <<<"$ps" >/dev/null 2>&1 && [ "$(_ds_proc "$ps" "$1" is_running)" != true ]; then
-      return 0
+    if r=$(_ds_idle_running_json); then
+      jq -e --arg s "$1" 'index($s) == null' <<<"$r" >/dev/null && return 0
     fi
     sleep 0.5
   done
@@ -387,7 +363,7 @@ cmd_idle_watch() {
     _ds_alive || { echo "$(date '+%F %T') the stack is down"; exit 0; }
     now=$(date +%s)
     for s in $(_ds_idle_active "$(_ds_idle_running_json)"); do echo "$now" > "$dir/active.$s"; done
-    _ds_idle_sweep "$limit" && exit 0
+    _ds_idle_sweep "$limit" "$now" && exit 0
   done
 }
 

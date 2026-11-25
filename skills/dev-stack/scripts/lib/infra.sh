@@ -1,8 +1,6 @@
 #!/bin/bash
 # Docker containers a service relies on. devstack only ever starts a stopped
-# container; it never creates, recreates or removes one. The one exception to
-# "never stops one": with the registry's idle.stop_infra, the idle watchdog
-# stops the containers devstack itself started once no running service uses them.
+# container; it never creates, stops or removes one.
 DS_LIB=${DS_LIB:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}
 # shellcheck source=common.sh
 . "$DS_LIB/common.sh"
@@ -21,9 +19,6 @@ ds_infra_ensure() {
       state=$(docker inspect -f '{{.State.Running}}' "$c" 2>/dev/null)
       [ "$state" = true ] || ds_die 1 "container $c didn't stay running"
       echo "started container $c" >&2
-      # Its id and start time too: a container recreated or restarted under
-      # the same name since isn't the one devstack started.
-      echo "$c $(_ds_infra_identity "$c")" >> "$(ds_state_dir)/infra-started"
     fi
     _ds_infra_hint "$c"
   done
@@ -41,48 +36,4 @@ _ds_infra_hint() {
   case $info in *wiredTigerCacheSizeGB*) return 0 ;; esac
   echo "devstack: container $1 runs MongoDB without a cache cap, so it can take about half of Docker's memory; recreate it with --wiredTigerCacheSizeGB 1 (devstack never recreates containers)" >&2
   echo "$1" >> "$mark"
-}
-
-# _ds_infra_grace <container>: the seconds Docker gives it to stop before
-# killing it (10 unless the container sets its own; -1 means no limit).
-_ds_infra_grace() { _ds_timeout "${DEVSTACK_DOCKER_TIMEOUT:-20}" docker inspect -f '{{if .Config.StopTimeout}}{{.Config.StopTimeout}}{{else}}10{{end}}' "$1" 2>/dev/null; }
-
-# _ds_infra_identity <container>: "<id> <start time>". Bounded, so a hung
-# Docker can't hold the devstack lock (the idle watchdog asks under it).
-_ds_infra_identity() { _ds_timeout "${DEVSTACK_DOCKER_TIMEOUT:-20}" docker inspect -f '{{.Id}} {{.State.StartedAt}}' "$1" 2>/dev/null; }
-
-# ds_infra_stop_unused <used>: stop each container devstack started that isn't
-# in <used> (one name per line) and is still the same container, started at
-# the same time, and print their names. Only the idle watchdog calls it, and
-# only with idle.stop_infra.
-ds_infra_stop_unused() {
-  local f c id started now grace out="" keep=""
-  f="$(ds_state_dir)/infra-started"
-  [ -f "$f" ] || return 0
-  command -v docker >/dev/null 2>&1 || return 0
-  while read -r c id started; do
-    [ -n "$c" ] || continue
-    if grep -qxF "$c" <<<"$1"; then keep+="$c $id $started"$'\n'; continue; fi
-    [ -n "$id" ] || continue
-    now=$(_ds_infra_identity "$c")
-    # Docker didn't answer: keep the record and try at the next sweep.
-    [ -n "$now" ] || { keep+="$c $id $started"$'\n'; continue; }
-    # Recreated, restarted by someone else, or removed: not devstack's to stop.
-    [ "$now" = "$id $started" ] || continue
-    # By id, so a container recreated under the name since can't be hit.
-    # The deadline is the container's own stop grace plus some slack, so
-    # Docker finishes the stop (a database flushing its writes keeps its
-    # grace) before the client is cut off: one cut off mid-stop could let a
-    # new up reuse a container that's about to stop. A container with no
-    # bounded grace, or a Docker that hangs, keeps the record.
-    grace=$(_ds_infra_grace "$id")
-    [[ $grace =~ ^[0-9]+$ ]] || { keep+="$c $id $started"$'\n'; continue; }
-    if _ds_timeout $(( 10#$grace + ${DEVSTACK_DOCKER_TIMEOUT:-20} )) docker stop "$id" >/dev/null 2>&1; then
-      out="$out $c"
-    else
-      keep+="$c $id $started"$'\n'
-    fi
-  done < <(sort -u "$f")
-  printf '%s' "$keep" > "$f"
-  echo "${out# }"
 }
