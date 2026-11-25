@@ -50,6 +50,9 @@ case "$1" in
   info) [ -z "${STUB_DOCKER_DOWN:-}" ] ;;
   inspect)
     n=${!#}
+    if [[ " $* " == *StartedAt* ]]; then
+      echo "id-$n $(cat "$PCS/docker-started.$n" 2>/dev/null || echo before)"; exit 0
+    fi
     if [[ " $* " == *Image* ]]; then
       for e in ${STUB_IMAGES:-}; do [ "${e%%=*}" = "$n" ] && { echo "${e#*=}" | tr , " "; exit 0; }; done
       echo "$n:latest|"; exit 0
@@ -58,16 +61,21 @@ case "$1" in
       [ "${c%%:*}" = "$n" ] || continue
       if [ -f "$PCS/docker-started.$n" ]; then echo true; else echo "${c#*:}"; fi; exit 0
     done; exit 1 ;;
-  start) touch "$PCS/docker-started.$2"; echo "$2" ;;
+  start) echo "started-$RANDOM" > "$PCS/docker-started.$2"; echo "$2" ;;
   stop) rm -f "$PCS/docker-started.$2"; echo "$2" ;;
   *) exit 1 ;;
 esac'
 # --- stub lsof: STUB_LSOF="3010:node:4242" holds a port; a port listed in
-# $PCS/established has an open connection ---
+# $PCS/established has a browser connected; one in $PCS/probe has
+# process-compose'"'"'s readiness probe connected ---
 stub_bin lsof '
 if [[ " $* " == *ESTABLISHED* ]]; then
   for p in $(cat "$PCS/established" 2>/dev/null); do
     printf "p1\ncbrowser\nf20\nn127.0.0.1:5%s->127.0.0.1:%s\n" "$p" "$p"
+  done
+  for p in $(cat "$PCS/probe" 2>/dev/null); do
+    printf "p2\ncprocess-compose\nf9\nn127.0.0.1:6%s->127.0.0.1:%s\n" "$p" "$p"
+    printf "p3\ncnode\nf11\nn127.0.0.1:%s->127.0.0.1:6%s\n" "$p" "$p"
   done
   exit 0
 fi

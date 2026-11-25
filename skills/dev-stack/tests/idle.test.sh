@@ -71,6 +71,25 @@ check "the busy dependency stays" running bsa
 : > "$PCS/established"
 check "once the last one is quiet the stack goes down" wait_for 15 down_now
 
+# --- when everything is quiet, dependants still stop first, then the server ---
+: > "$TMP/calls.log"
+ds up connect-api >/dev/null 2>&1
+check "a whole quiet stack goes down" wait_for 15 down_now
+check "...its dependant stopped before its dependencies" bash -c 'a=$(grep -n "process stop connect-api" "$1" | cut -d: -f1); b=$(grep -n "process stop bsa" "$1" | cut -d: -f1); [ -n "$a" ] && [ -n "$b" ] && [ "$a" -lt "$b" ]' _ "$TMP/calls.log"
+check "...and the server went last" bash -c 'b=$(grep -n "process stop ti-api" "$1" | cut -d: -f1); d=$(grep -n "process-compose down" "$1" | cut -d: -f1); [ -n "$b" ] && [ -n "$d" ] && [ "$b" -lt "$d" ]' _ "$TMP/calls.log"
+
+# --- process-compose's own readiness-probe connection isn't activity ---
+echo 3010 > "$PCS/probe"
+ds up bsa >/dev/null 2>&1
+check "a service with only the probe connected still stops" wait_for 15 down_now
+: > "$PCS/probe"
+
+# --- a large burst of log lines counts (no SIGPIPE under pipefail) ---
+ds up bsa >/dev/null 2>&1
+for _ in 1 2 3 4 5 6 7 8; do seq 1 200000 | sed 's/^/GET \/api\/row /' >> "$DEVSTACK_STATE_DIR/logs/bsa.log"; sleep 1; done
+check "a service writing large bursts stays up" alive
+ds down >/dev/null 2>&1
+
 # --- new log lines keep a service up; health-check lines don't ---
 ds up bsa >/dev/null 2>&1
 keep_busy 6 "GET /api/things 200"
@@ -104,6 +123,19 @@ LP=$(sh -c 'echo $$')   # the pid of a process that has already exited
 mkdir -p "$IDLE/watchdog" && echo "$LP" > "$IDLE/watchdog/pid"
 ds up bsa >/dev/null 2>&1
 check "up replaces a dead watchdog" wait_for 5 bash -c 'p=$(cat "$1" 2>/dev/null); [ -n "$p" ] && [ "$p" != "$2" ] && kill -0 "$p"' _ "$IDLE/watchdog/pid" "$LP"
+
+# --- a live process that reused a dead watchdog's pid is neither trusted nor killed ---
+pid=$(wd_pid); kill "$pid"; wait_for 5 pid_gone "$pid"
+sleep 60 & OTHER=$!
+mkdir -p "$IDLE/watchdog" && echo "$OTHER" > "$IDLE/watchdog/pid"
+ds up bsa >/dev/null 2>&1
+check "up starts a watchdog despite a reused pid" wait_for 5 bash -c 'p=$(cat "$1" 2>/dev/null); [ -n "$p" ] && [ "$p" != "$2" ] && kill -0 "$p"' _ "$IDLE/watchdog/pid" "$OTHER"
+ds down >/dev/null 2>&1
+mkdir -p "$IDLE/watchdog" && echo "$OTHER" > "$IDLE/watchdog/pid"
+ds down >/dev/null 2>&1
+check "down doesn't signal an unrelated process" kill -0 "$OTHER"
+kill "$OTHER" 2>/dev/null; wait "$OTHER" 2>/dev/null
+ds up bsa >/dev/null 2>&1; wait_for 5 wd_up
 
 # --- it exits after a manual down ---
 pid=$(wd_pid)
@@ -141,6 +173,10 @@ out=$(env -u DEVSTACK_IDLE_SECONDS DEVSTACK_IDLE_MINUTES=soon bash -c 'cd "$1" &
 check "a bad DEVSTACK_IDLE_MINUTES exits 2 (got $code: $out)" [ "$code" -eq 2 ]
 check "...before starting anything" down_now
 
+env -u DEVSTACK_IDLE_SECONDS DEVSTACK_IDLE_MINUTES=08 bash -c 'cd "$1" && bash "$2" up bsa' _ "$TMP/ws" "$DEVSTACK" >/dev/null 2>&1
+check "DEVSTACK_IDLE_MINUTES=08 is eight minutes, not an octal error (got $(cat "$IDLE/limit"))" [ "$(cat "$IDLE/limit")" = 480 ]
+ds down >/dev/null 2>&1
+
 # --- the registry sets the default; a bad value is a registry problem ---
 yq -i '.idle = {"minutes": "15"}' "$TMP/ws/stack.yaml"
 out=$(ds status 2>&1); code=$?
@@ -167,6 +203,26 @@ STUB_CONTAINERS="redis:true mongodb:true" ds up bsa >/dev/null 2>&1
 check "a container that was already running is never stopped" bash -c 'sleep 6; ! grep -q "^docker stop" "$1"' _ "$TMP/calls.log"
 ds down >/dev/null 2>&1
 yq -i 'del(.idle)' "$TMP/ws/stack.yaml"
+
+# --- ...and never one recreated under the same name since devstack started it ---
+yq -i '.idle = {"stop_infra": true}' "$TMP/ws/stack.yaml"
+rm -f "$PCS"/docker-started.*; : > "$TMP/calls.log"
+STUB_CONTAINERS="redis:false mongodb:true" ds up bsa >/dev/null 2>&1
+echo recreated > "$PCS/docker-started.redis"   # the user recreated it
+check "the quiet stack goes down" wait_for 15 down_now
+sleep 2
+check "a container recreated since is left running" bash -c '! grep -q "^docker stop redis" "$1"' _ "$TMP/calls.log"
+yq -i 'del(.idle)' "$TMP/ws/stack.yaml"
+
+# --- a loop of optional dependencies doesn't hang status ---
+yq -i '.services."wl-atc".optional_deps = ["connect-metro"] | .services."connect-metro".optional_deps = ["wl-atc"]' "$TMP/ws/stack.yaml"
+ds up wl-atc >/dev/null 2>&1; ds up connect-metro >/dev/null 2>&1
+ds status > "$TMP/status.out" 2>&1 & sp=$!
+check "status returns with a dependency loop" wait_for 10 pid_gone "$sp"
+kill "$sp" 2>/dev/null
+check "...and shows both countdowns (got: $(tail -1 "$TMP/status.out"))" grep -qE "^idle stop in: .*connect-metro.*wl-atc|^idle stop in: .*wl-atc.*connect-metro" "$TMP/status.out"
+ds down >/dev/null 2>&1
+yq -i 'del(.services."wl-atc".optional_deps) | del(.services."connect-metro".optional_deps)' "$TMP/ws/stack.yaml"
 
 # --- an uncapped MongoDB container gets one hint per state folder ---
 rm -f "$PCS"/docker-started.*

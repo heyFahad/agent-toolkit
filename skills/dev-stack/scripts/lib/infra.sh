@@ -21,7 +21,9 @@ ds_infra_ensure() {
       state=$(docker inspect -f '{{.State.Running}}' "$c" 2>/dev/null)
       [ "$state" = true ] || ds_die 1 "container $c didn't stay running"
       echo "started container $c" >&2
-      echo "$c" >> "$(ds_state_dir)/infra-started"
+      # Its id and start time too: a container recreated or restarted under
+      # the same name since isn't the one devstack started.
+      echo "$c $(_ds_infra_identity "$c")" >> "$(ds_state_dir)/infra-started"
     fi
     _ds_infra_hint "$c"
   done
@@ -41,19 +43,25 @@ _ds_infra_hint() {
   echo "$1" >> "$mark"
 }
 
+# _ds_infra_identity <container>: "<id> <start time>".
+_ds_infra_identity() { docker inspect -f '{{.Id}} {{.State.StartedAt}}' "$1" 2>/dev/null; }
+
 # ds_infra_stop_unused <used>: stop each container devstack started that isn't
-# in <used> (one name per line), and print their names. Only the idle watchdog
-# calls it, and only with idle.stop_infra.
+# in <used> (one name per line) and is still the same container, started at
+# the same time, and print their names. Only the idle watchdog calls it, and
+# only with idle.stop_infra.
 ds_infra_stop_unused() {
-  local f c out="" keep=""
+  local f c id started out="" keep=""
   f="$(ds_state_dir)/infra-started"
   [ -f "$f" ] || return 0
   command -v docker >/dev/null 2>&1 || return 0
-  for c in $(sort -u "$f"); do
-    if grep -qxF "$c" <<<"$1"; then keep+="$c"$'\n'
-    elif docker stop "$c" >/dev/null 2>&1; then out="$out $c"
-    else keep+="$c"$'\n'; fi
-  done
+  while read -r c id started; do
+    [ -n "$c" ] || continue
+    if grep -qxF "$c" <<<"$1"; then keep+="$c $id $started"$'\n'; continue; fi
+    # Recreated, restarted by someone else, or removed: not devstack's to stop.
+    [ -n "$id" ] && [ "$(_ds_infra_identity "$c")" = "$id $started" ] || continue
+    if docker stop "$c" >/dev/null 2>&1; then out="$out $c"; else keep+="$c $id $started"$'\n'; fi
+  done < <(sort -u "$f")
   printf '%s' "$keep" > "$f"
   echo "${out# }"
 }

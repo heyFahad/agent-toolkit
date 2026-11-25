@@ -29,22 +29,35 @@ _ds_idle_limit() {
   local m s
   m=${DEVSTACK_IDLE_MINUTES:-$(jq -r '.idle.minutes // 15' "$1")}
   [[ $m =~ ^[0-9]+$ ]] || ds_die 2 "DEVSTACK_IDLE_MINUTES must be a whole number of minutes (0 turns the idle shutdown off), got $m"
-  s=${DEVSTACK_IDLE_SECONDS:-$((m * 60))}
+  s=${DEVSTACK_IDLE_SECONDS:-$((10#$m * 60))}
   [[ $s =~ ^[0-9]+$ ]] || ds_die 2 "DEVSTACK_IDLE_SECONDS must be a whole number, got $s"
-  echo "$s"
+  echo $((10#$s))
 }
 
 # _ds_dur <seconds>: "15 min", "1 min" or "40 s".
 _ds_dur() { if [ "$1" -ge 60 ]; then echo "$(( ($1 + 30) / 60 )) min"; else echo "$1 s"; fi; }
 
 _ds_idle_pid() { cat "$(_ds_idle_dir)/watchdog/pid" 2>/dev/null; }
-_ds_idle_running() { local p; p=$(_ds_idle_pid); [ -n "$p" ] && kill -0 "$p" 2>/dev/null; }
 
-# _ds_idle_touch <svc...>: count now as activity for each (up and restart call it).
+# _ds_is_watchdog <pid>: that pid is alive and is a devstack watchdog, not an
+# unrelated process that reused the pid of one killed without cleaning up.
+_ds_is_watchdog() {
+  local cmd
+  kill -0 "$1" 2>/dev/null || return 1
+  if [ -r "/proc/$1/cmdline" ]; then cmd=$(tr '\0' ' ' < "/proc/$1/cmdline" 2>/dev/null)
+  elif command -v ps >/dev/null 2>&1; then cmd=$(ps -p "$1" -o command= 2>/dev/null)
+  else return 0; fi
+  [[ $cmd == *devstack*idle-watch* ]]
+}
+_ds_idle_running() { local p; p=$(_ds_idle_pid); [ -n "$p" ] && _ds_is_watchdog "$p"; }
+
+# _ds_idle_touch <svc...>: count now as activity for each (up and restart call
+# it). Its log is read from the start at the next check: up and restart start
+# a service with an empty log, so nothing it writes before that check is missed.
 _ds_idle_touch() {
   local dir now s
   dir=$(_ds_idle_dir); mkdir -p "$dir"; now=$(date +%s)
-  for s in "$@"; do echo "$now" > "$dir/active.$s"; rm -f "$dir/stopped.$s"; done
+  for s in "$@"; do echo "$now" > "$dir/active.$s"; echo 0 > "$dir/size.$s"; rm -f "$dir/stopped.$s"; done
 }
 
 # _ds_idle_forget: clear the per-service records (a manual down of everything).
@@ -91,7 +104,7 @@ _ds_idle_claim() {
     if mkdir "$dir/watchdog" 2>/dev/null; then echo $$ > "$dir/watchdog/pid"; return 0; fi
     holder=$(cat "$dir/watchdog/pid" 2>/dev/null)
     # No pid yet: another watchdog is mid-claim.
-    { [ -z "$holder" ] || kill -0 "$holder" 2>/dev/null; } && return 1
+    { [ -z "$holder" ] || _ds_is_watchdog "$holder"; } && return 1
     mkdir "$dir/watchdog.reclaim" 2>/dev/null || return 1
     [ "$(cat "$dir/watchdog/pid" 2>/dev/null)" = "$holder" ] && rm -rf "$dir/watchdog"
     rmdir "$dir/watchdog.reclaim"
@@ -109,6 +122,7 @@ _ds_idle_stop() {
   local p
   p=$(_ds_idle_pid)
   [ -n "$p" ] && [ "$p" != $$ ] || return 0
+  _ds_is_watchdog "$p" || { rm -rf "$(_ds_idle_dir)/watchdog"; return 0; }
   kill "$p" 2>/dev/null || return 0
   # Wait for it to let go, so an up right after this starts a new one.
   for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
@@ -120,11 +134,26 @@ _ds_idle_stop() {
 # _ds_connections: every established TCP connection as "<addr>:<port>-><addr>:<port>",
 # from one lsof (or ss) call: on a machine where security agents inspect
 # every process launch, one call per check is cheaper than one per port.
+# Connections with process-compose at one end are left out: its HTTP
+# readiness probe keeps a keep-alive connection to the service open for good.
 _ds_connections() {
+  # shellcheck disable=SC2016 # an awk program, not shell
+  local drop_probes='
+    END {
+      for (i = 1; i <= n; i++) {
+        split(conn[i], e, "->")
+        if (!(e[1] in probe) && !(e[2] in probe)) print conn[i]
+      }
+    }'
   if command -v lsof >/dev/null 2>&1; then
-    lsof -nP -iTCP -sTCP:ESTABLISHED -Fn 2>/dev/null | sed -n 's/^n//p'
+    lsof -nP -iTCP -sTCP:ESTABLISHED -Fcn 2>/dev/null | awk '
+      /^c/ { cmd = substr($0, 2); next }
+      /^n/ { c = substr($0, 2); conn[++n] = c; split(c, e, "->"); if (cmd == "process-compose") probe[e[1]] = 1 }
+      '"$drop_probes"
   elif command -v ss >/dev/null 2>&1; then
-    ss -Htn state established 2>/dev/null | awk '{ print $3 "->" $4 }'
+    ss -Htnp state established 2>/dev/null | awk '
+      { conn[++n] = $3 "->" $4; if ($0 ~ /"process-compose"/) probe[$3] = 1 }
+      '"$drop_probes"
   fi
 }
 
@@ -136,7 +165,7 @@ _ds_idle_running_json() { jq -c '[.[] | select(.is_running == true) | .name]' <<
 # no activity on record yet. Lines naming the service's health-check path are
 # process-compose's own probes, not someone using the service.
 _ds_idle_active() {
-  local dir svc port hp log size prev conns
+  local dir svc port hp log size prev conns n
   dir=$(_ds_idle_dir)
   conns=$(_ds_connections)
   while IFS=$'\t' read -r svc port hp; do
@@ -153,11 +182,14 @@ _ds_idle_active() {
     if [ "$size" -lt "$prev" ]; then
       echo "$svc"   # the log was cleared: the service was restarted
     elif [ "$size" -gt "$prev" ]; then
+      # grep -c reads to the end: grep -q would stop at the first match and,
+      # under pipefail, tail's SIGPIPE would fail the pipeline.
       if [ -n "$hp" ] && [ "$hp" != / ]; then
-        tail -c +$((prev + 1)) "$log" | grep -vF -- "$hp" | grep -q '[^[:space:]]' && echo "$svc"
+        n=$(tail -c +$((prev + 1)) "$log" | grep -vF -- "$hp" | grep -c '[^[:space:]]')
       else
-        tail -c +$((prev + 1)) "$log" | grep -q '[^[:space:]]' && echo "$svc"
+        n=$(tail -c +$((prev + 1)) "$log" | grep -c '[^[:space:]]')
       fi
+      [ "${n:-0}" -gt 0 ] && echo "$svc"
     fi
   done < <(jq -r --argjson r "$1" '. as $all | $r[] | select($all[.]) | [., ($all[.].port | tostring), $all[.].hp] | @tsv' "$dir/services.json")
   return 0
@@ -184,8 +216,11 @@ def shrink($q): [$q[] | . as $s | select(all(dependants($s)[]; . as $d | any($q[
 def order($q): if ($q | length) == 0 then []
   else [$q[] | . as $s | select(any($q[]; . as $d | any(needs($d)[]; . == $s)) | not)] as $l
     | if ($l | length) == 0 then $q else $l + order($q - $l) end end;
-# Seconds until a service stops: its own quiet time, or its longest-lived dependant.
-def left($s): ([$limit - quiet($s)] + [dependants($s)[] | left(.)]) | max;
+# Seconds until a service stops: its own quiet time, or its longest-lived
+# dependant. $seen stops a loop of optional dependencies from recursing forever.
+def left($s; $seen): ([$limit - quiet($s)]
+  + [dependants($s)[] | . as $d | select(any($seen[]; . == $d) | not) | left($d; $seen + [$d])]) | max;
+def left($s): left($s; [$s]);
 '
 
 # _ds_idle_jq <limit> <running_json> <program>: run <program> with the rules above.
@@ -205,6 +240,8 @@ _ds_idle_infra() {
   local dir
   dir=$(_ds_idle_dir)
   [ "$(cat "$dir/stop_infra" 2>/dev/null)" = true ] || return 0
+  # Without a good list of what still runs, every container would look unused.
+  jq -e 'type == "array"' <<<"$1" >/dev/null 2>&1 || return 0
   ds_infra_stop_unused "$(jq -r --argjson r "$1" '. as $all | [$r[] | $all[.].infra // [] | .[]] | unique | .[]' "$dir/services.json")"
 }
 
@@ -212,42 +249,45 @@ _ds_idle_infra() {
 # the whole stack is down, 1 while anything is still running. Skips the round
 # while another devstack command holds the lock: that's someone using it.
 _ds_idle_sweep() {
-  local dir running plan now stamp s stopped="" left containers
+  local dir limit=$1 running plan now stamp s stopped="" left containers
   dir=$(_ds_idle_dir); now=$(date +%s)
   running=$(_ds_idle_running_json)
   if [ "$running" = "[]" ]; then
     # The server is up with nothing running in it (each service was stopped
     # by name, or failed). It goes too, after the same quiet time.
     [ -f "$dir/empty_since" ] || echo "$now" > "$dir/empty_since"
-    [ $((now - $(cat "$dir/empty_since"))) -ge "$1" ] || return 1
+    [ $((now - $(cat "$dir/empty_since"))) -ge "$limit" ] || return 1
     _ds_try_lock || return 1
-    [ "$(_ds_idle_running_json)" = "[]" ] || { rm -f "$dir/empty_since"; _ds_unlock; return 1; }
+    if ! _ds_idle_limit_now limit || [ "$(_ds_idle_running_json)" != "[]" ]; then
+      rm -f "$dir/empty_since"; _ds_unlock; return 1
+    fi
     _ds_down_all
     containers=$(_ds_idle_infra '[]')
-    echo "$(date '+%F %T') stopped the empty server${containers:+ and containers $containers}"
+    echo "$(date '+%F %T') stopped the empty server${containers:+, then containers $containers}"
     rm -f "$dir/empty_since"
     _ds_unlock
     return 0
   fi
   rm -f "$dir/empty_since"
-  [ -n "$(_ds_idle_plan "$1" "$running")" ] || return 1
+  [ -n "$(_ds_idle_plan "$limit" "$running")" ] || return 1
   _ds_try_lock || return 1
-  # Plan again under the lock: an up or restart may have run since.
+  # Plan again under the lock: an up or restart may have run since, and
+  # changed the limit or turned the shutdown off.
+  _ds_idle_limit_now limit || { _ds_unlock; return 1; }
   running=$(_ds_idle_running_json)
-  plan=$(_ds_idle_plan "$1" "$running")
+  plan=$(_ds_idle_plan "$limit" "$running")
   [ -n "$plan" ] || { _ds_unlock; return 1; }
   stamp=$(date '+%Y-%m-%d %H:%M')
-  if [ "$(jq length <<<"$running")" = "$(grep -c . <<<"$plan")" ]; then
-    _ds_down_all
-    stopped=$plan; left='[]'
-  else
-    while IFS= read -r s; do
-      _ds_pc process stop "$s" >/dev/null || continue
-      _ds_owner_del "$s"
-      stopped+="$s"$'\n'
-    done <<<"$plan"
-    left=$(_ds_idle_running_json)
-  fi
+  # Dependants first. If one won't stop, stop nothing after it: what it
+  # depends on comes later in the plan. The next check tries again.
+  while IFS= read -r s; do
+    _ds_pc process stop "$s" >/dev/null || break
+    _ds_owner_del "$s"
+    stopped+="$s"$'\n'
+  done <<<"$plan"
+  left=$(_ds_idle_running_json)
+  # The last service is down: take the server with it.
+  [ "$left" = "[]" ] && _ds_down_all
   while IFS= read -r s; do
     [ -n "$s" ] || continue
     echo "$stamp" > "$dir/stopped.$s"; rm -f "$dir/active.$s" "$dir/size.$s"
@@ -258,8 +298,18 @@ _ds_idle_sweep() {
   [ "$left" = "[]" ]
 }
 
+# _ds_idle_limit_now <var>: set <var> to the current limit; 1 when it's off.
+_ds_idle_limit_now() {
+  local l
+  l=$(cat "$(_ds_idle_dir)/limit" 2>/dev/null)
+  [[ $l =~ ^[0-9]+$ ]] && [ "$l" -gt 0 ] || return 1
+  printf -v "$1" '%s' "$l"
+}
+
 # cmd_idle_watch: the watchdog loop (devstack idle-watch; up starts it).
-# DEVSTACK_IDLE_TICK sets the seconds between checks (default 60).
+# DEVSTACK_IDLE_TICK sets the seconds between checks (default 30: connections
+# are sampled, so a check every half minute catches short-lived ones far more
+# often than once a minute would, for one lsof call each time).
 cmd_idle_watch() {
   local dir tick limit now s
   DS_SOCK=$(_ds_sock) || exit $?
@@ -268,8 +318,7 @@ cmd_idle_watch() {
   DS_IDLE_OWNED=1
   trap _ds_exit EXIT
   trap 'exit 0' TERM INT
-  tick=${DEVSTACK_IDLE_TICK:-60}
-  rm -f "$dir"/size.*
+  tick=${DEVSTACK_IDLE_TICK:-30}
   echo "$(date '+%F %T') watching (pid $$)"
   while :; do
     sleep "$tick" & DS_SLEEP=$!

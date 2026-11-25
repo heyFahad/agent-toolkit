@@ -45,7 +45,9 @@ Running services cost memory and CPU the whole time they're up, so start them la
 
 `up` starts a watchdog that stops each service nobody has used for 15 minutes: no connection on its port and no new line in its log. Working on one target, the others you started earlier stop on their own. A quiet service stays up while a running service depends on it (a shared API stays while either app that uses it runs), and dependants stop before what they depend on. When the last service stops, the whole stack goes down.
 
-The watchdog checks once a minute, runs once per state folder (one for the whole stack), and exits when the stack goes down any other way. Lines that name a service's health-check path don't count: those are process-compose's own probes. An app that keeps a connection open (the Simulator's link to Metro, a browser tab holding a websocket) keeps its service up; that's someone using it. So does a service that logs on a timer.
+The watchdog checks every 30 seconds, runs once per state folder (one for the whole stack), and exits when the stack goes down any other way. process-compose's own health checks don't count: neither its probe's connection nor log lines that name the health-check path. An app that keeps a connection open (the Simulator's link to Metro, a dev server's hot-reload websocket in a browser tab) keeps its service up; that's someone using it. So does a service that logs on a timer.
+
+Connections are sampled, not counted. An API that only gets short requests and doesn't log them (called with curl now and then, say) can stop while someone is still using it. An API behind a running app is safe either way, because it stays up while the app does. For one called directly, raise `idle.minutes`, or turn on its request logging.
 
 - `devstack status` ends with each running service's countdown (`idle stop in: …`) and lists what the watchdog stopped (`stopped while idle: …`). A stopped service shows as `Stopped`.
 - Change the limit with `idle: {minutes: 30}` in `stack.yaml`, or `DEVSTACK_IDLE_MINUTES` for one `up`; `0` turns it off. The setting from the latest `up` applies.
