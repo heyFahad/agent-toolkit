@@ -180,7 +180,8 @@ _ds_connections() {
 _ds_idle_running_json() {
   local out
   out=$(_ds_pc process list -o json) || return 1
-  jq -ce 'if type == "array" then [.[] | select(.is_running == true) | .name] else error end' <<<"$out" 2>/dev/null
+  # Exactly one JSON value, and it's an array: anything else is a failure.
+  jq -sce 'if length == 1 and (.[0] | type) == "array" then [.[0][] | select(.is_running == true) | .name] else error end' <<<"$out" 2>/dev/null
 }
 
 # _ds_idle_active <running_json>: print each running service that had a
