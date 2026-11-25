@@ -39,17 +39,24 @@ _ds_dur() { if [ "$1" -ge 60 ]; then echo "$(( ($1 + 30) / 60 )) min"; else echo
 
 _ds_idle_pid() { cat "$(_ds_idle_dir)/watchdog/pid" 2>/dev/null; }
 
-# _ds_is_watchdog <pid>: that pid is alive and is a devstack watchdog, not an
-# unrelated process that reused the pid of one killed without cleaning up.
+# _ds_is_watchdog <pid>: 0 when that pid is alive and is a devstack watchdog,
+# 1 when it's dead or another process that reused a killed watchdog's pid, 2
+# when it's alive but its command can't be read (a sandbox that blocks ps):
+# then the claim is kept, but the pid is never signalled.
 _ds_is_watchdog() {
   local cmd
   kill -0 "$1" 2>/dev/null || return 1
   if [ -r "/proc/$1/cmdline" ]; then cmd=$(tr '\0' ' ' < "/proc/$1/cmdline" 2>/dev/null)
   elif command -v ps >/dev/null 2>&1; then cmd=$(ps -p "$1" -o command= 2>/dev/null)
-  else return 0; fi
+  fi
+  [ -n "$cmd" ] || return 2
   [[ $cmd == *devstack*idle-watch* ]]
 }
-_ds_idle_running() { local p; p=$(_ds_idle_pid); [ -n "$p" ] && _ds_is_watchdog "$p"; }
+_ds_idle_running() {
+  local p
+  p=$(_ds_idle_pid); [ -n "$p" ] || return 1
+  _ds_is_watchdog "$p"; [ $? -ne 1 ]
+}
 
 # _ds_idle_touch <svc...>: count now as activity for each (up and restart call
 # it). Its log is read from the start at the next check: up and restart start
@@ -104,7 +111,8 @@ _ds_idle_claim() {
     if mkdir "$dir/watchdog" 2>/dev/null; then echo $$ > "$dir/watchdog/pid"; return 0; fi
     holder=$(cat "$dir/watchdog/pid" 2>/dev/null)
     # No pid yet: another watchdog is mid-claim.
-    { [ -z "$holder" ] || _ds_is_watchdog "$holder"; } && return 1
+    [ -z "$holder" ] && return 1
+    _ds_is_watchdog "$holder"; [ $? -eq 1 ] || return 1
     mkdir "$dir/watchdog.reclaim" 2>/dev/null || return 1
     [ "$(cat "$dir/watchdog/pid" 2>/dev/null)" = "$holder" ] && rm -rf "$dir/watchdog"
     rmdir "$dir/watchdog.reclaim"
@@ -122,7 +130,11 @@ _ds_idle_stop() {
   local p
   p=$(_ds_idle_pid)
   [ -n "$p" ] && [ "$p" != $$ ] || return 0
-  _ds_is_watchdog "$p" || { rm -rf "$(_ds_idle_dir)/watchdog"; return 0; }
+  _ds_is_watchdog "$p"
+  case $? in
+    1) rm -rf "$(_ds_idle_dir)/watchdog"; return 0 ;;   # not a watchdog
+    2) return 0 ;;   # can't tell: leave it; it exits on its own once the stack is down
+  esac
   kill "$p" 2>/dev/null || return 0
   # Wait for it to let go, so an up right after this starts a new one.
   for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
@@ -137,8 +149,11 @@ _ds_idle_stop() {
 # Connections with process-compose at one end are left out: its HTTP
 # readiness probe keeps a keep-alive connection to the service open for good.
 _ds_connections() {
+  # norm: an IPv4 address mapped into IPv6 ([::ffff:127.0.0.1]:3010) as the
+  # plain IPv4 one, so both ends of a connection read the same.
   # shellcheck disable=SC2016 # an awk program, not shell
   local drop_probes='
+    function norm(s) { gsub(/\[::ffff:/, "", s); gsub(/\]:/, ":", s); return s }
     END {
       for (i = 1; i <= n; i++) {
         split(conn[i], e, "->")
@@ -148,11 +163,11 @@ _ds_connections() {
   if command -v lsof >/dev/null 2>&1; then
     lsof -nP -iTCP -sTCP:ESTABLISHED -Fcn 2>/dev/null | awk '
       /^c/ { cmd = substr($0, 2); next }
-      /^n/ { c = substr($0, 2); conn[++n] = c; split(c, e, "->"); if (cmd == "process-compose") probe[e[1]] = 1 }
+      /^n/ { c = norm(substr($0, 2)); conn[++n] = c; split(c, e, "->"); if (cmd == "process-compose") probe[e[1]] = 1 }
       '"$drop_probes"
   elif command -v ss >/dev/null 2>&1; then
     ss -Htnp state established 2>/dev/null | awk '
-      { conn[++n] = $3 "->" $4; if ($0 ~ /"process-compose"/) probe[$3] = 1 }
+      { conn[++n] = norm($3 "->" $4); if ($0 ~ /"process-compose"/) probe[norm($3)] = 1 }
       '"$drop_probes"
   fi
 }
@@ -282,6 +297,9 @@ _ds_idle_sweep() {
   # depends on comes later in the plan. The next check tries again.
   while IFS= read -r s; do
     _ds_pc process stop "$s" >/dev/null || break
+    # process-compose can answer before the process has exited; what it
+    # depends on stays up until it has, so its own shutdown can still use it.
+    _ds_idle_wait_exit "$s" || break
     _ds_owner_del "$s"
     stopped+="$s"$'\n'
   done <<<"$plan"
@@ -296,6 +314,16 @@ _ds_idle_sweep() {
   echo "$stamp stopped $(tr '\n' ' ' <<<"$stopped")${containers:+then containers $containers}"
   _ds_unlock
   [ "$left" = "[]" ]
+}
+
+# _ds_idle_wait_exit <svc>: wait up to 30 seconds for it to stop running.
+_ds_idle_wait_exit() {
+  local i
+  for i in $(seq 1 60); do
+    [ "$(_ds_proc "$(_ds_ps)" "$1" is_running)" = true ] || return 0
+    sleep 0.5
+  done
+  return 1
 }
 
 # _ds_idle_limit_now <var>: set <var> to the current limit; 1 when it's off.

@@ -137,6 +137,23 @@ check "down doesn't signal an unrelated process" kill -0 "$OTHER"
 kill "$OTHER" 2>/dev/null; wait "$OTHER" 2>/dev/null
 ds up bsa >/dev/null 2>&1; wait_for 5 wd_up
 
+# --- where a live pid's command can't be read (ps blocked), its claim is kept
+# and it's never signalled. Linux reads /proc instead, so this is macOS-only. ---
+if [ ! -r /proc/self/cmdline ]; then
+  pid=$(wd_pid); kill "$pid"; wait_for 5 pid_gone "$pid"
+  sleep 60 & OTHER=$!
+  mkdir -p "$IDLE/watchdog" && echo "$OTHER" > "$IDLE/watchdog/pid"
+  stub_bin ps 'exit 1'
+  ds up bsa >/dev/null 2>&1
+  sleep 2
+  check "an unreadable live claim is kept" [ "$(wd_pid)" = "$OTHER" ]
+  ds down >/dev/null 2>&1
+  check "...and not signalled" kill -0 "$OTHER"
+  rm -f "$TMP/bin/ps"; kill "$OTHER" 2>/dev/null; wait "$OTHER" 2>/dev/null
+  rm -rf "$IDLE/watchdog"
+  ds up bsa >/dev/null 2>&1; wait_for 5 wd_up
+fi
+
 # --- it exits after a manual down ---
 pid=$(wd_pid)
 ds down >/dev/null 2>&1
@@ -193,11 +210,11 @@ rm -f "$PCS"/docker-started.*; : > "$TMP/calls.log"
 echo 3100 > "$PCS/established"   # ti-api (mongodb) is in use, bsa (redis) isn't
 STUB_CONTAINERS="redis:false mongodb:false" ds up bsa ti-api >/dev/null 2>&1
 check "the quiet service stops" wait_for 15 stopped bsa
-check "...then the container only it used" wait_for 5 grep -q "^docker stop redis" "$TMP/calls.log"
-check "...but not one a running service still uses" bash -c '! grep -q "^docker stop mongodb" "$1"' _ "$TMP/calls.log"
+check "...then the container only it used" wait_for 5 grep -q "^docker stop id-redis" "$TMP/calls.log"
+check "...but not one a running service still uses" bash -c '! grep -q "^docker stop id-mongodb" "$1"' _ "$TMP/calls.log"
 : > "$PCS/established"
 check "the last service stops" wait_for 15 down_now
-check "...then its container" wait_for 5 grep -q "^docker stop mongodb" "$TMP/calls.log"
+check "...then its container" wait_for 5 grep -q "^docker stop id-mongodb" "$TMP/calls.log"
 : > "$TMP/calls.log"
 STUB_CONTAINERS="redis:true mongodb:true" ds up bsa >/dev/null 2>&1
 check "a container that was already running is never stopped" bash -c 'sleep 6; ! grep -q "^docker stop" "$1"' _ "$TMP/calls.log"
@@ -211,7 +228,19 @@ STUB_CONTAINERS="redis:false mongodb:true" ds up bsa >/dev/null 2>&1
 echo recreated > "$PCS/docker-started.redis"   # the user recreated it
 check "the quiet stack goes down" wait_for 15 down_now
 sleep 2
-check "a container recreated since is left running" bash -c '! grep -q "^docker stop redis" "$1"' _ "$TMP/calls.log"
+check "a container recreated since is left running" bash -c '! grep -q "^docker stop id-redis" "$1"' _ "$TMP/calls.log"
+yq -i 'del(.idle)' "$TMP/ws/stack.yaml"
+
+# --- a Docker that doesn't answer keeps the record for the next sweep ---
+yq -i '.idle = {"stop_infra": true}' "$TMP/ws/stack.yaml"
+rm -f "$PCS"/docker-started.*; : > "$TMP/calls.log"
+STUB_CONTAINERS="redis:false mongodb:true" ds up bsa >/dev/null 2>&1
+touch "$PCS/docker-broken"
+check "the quiet stack goes down" wait_for 15 down_now
+sleep 2
+check "nothing is stopped while Docker can't be asked" bash -c '! grep -q "^docker stop" "$1"' _ "$TMP/calls.log"
+check "...and redis is still on record" grep -q "^redis " "$DEVSTACK_STATE_DIR/infra-started"
+rm -f "$PCS/docker-broken" "$DEVSTACK_STATE_DIR/infra-started"
 yq -i 'del(.idle)' "$TMP/ws/stack.yaml"
 
 # --- a loop of optional dependencies doesn't hang status ---

@@ -51,16 +51,21 @@ _ds_infra_identity() { docker inspect -f '{{.Id}} {{.State.StartedAt}}' "$1" 2>/
 # the same time, and print their names. Only the idle watchdog calls it, and
 # only with idle.stop_infra.
 ds_infra_stop_unused() {
-  local f c id started out="" keep=""
+  local f c id started now out="" keep=""
   f="$(ds_state_dir)/infra-started"
   [ -f "$f" ] || return 0
   command -v docker >/dev/null 2>&1 || return 0
   while read -r c id started; do
     [ -n "$c" ] || continue
     if grep -qxF "$c" <<<"$1"; then keep+="$c $id $started"$'\n'; continue; fi
+    [ -n "$id" ] || continue
+    now=$(_ds_infra_identity "$c")
+    # Docker didn't answer: keep the record and try at the next sweep.
+    [ -n "$now" ] || { keep+="$c $id $started"$'\n'; continue; }
     # Recreated, restarted by someone else, or removed: not devstack's to stop.
-    [ -n "$id" ] && [ "$(_ds_infra_identity "$c")" = "$id $started" ] || continue
-    if docker stop "$c" >/dev/null 2>&1; then out="$out $c"; else keep+="$c $id $started"$'\n'; fi
+    [ "$now" = "$id $started" ] || continue
+    # By id, so a container recreated under the name since can't be hit.
+    if docker stop "$id" >/dev/null 2>&1; then out="$out $c"; else keep+="$c $id $started"$'\n'; fi
   done < <(sort -u "$f")
   printf '%s' "$keep" > "$f"
   echo "${out# }"

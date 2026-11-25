@@ -51,6 +51,7 @@ case "$1" in
   inspect)
     n=${!#}
     if [[ " $* " == *StartedAt* ]]; then
+      [ -f "$PCS/docker-broken" ] && exit 1
       echo "id-$n $(cat "$PCS/docker-started.$n" 2>/dev/null || echo before)"; exit 0
     fi
     if [[ " $* " == *Image* ]]; then
@@ -62,7 +63,7 @@ case "$1" in
       if [ -f "$PCS/docker-started.$n" ]; then echo true; else echo "${c#*:}"; fi; exit 0
     done; exit 1 ;;
   start) echo "started-$RANDOM" > "$PCS/docker-started.$2"; echo "$2" ;;
-  stop) rm -f "$PCS/docker-started.$2"; echo "$2" ;;
+  stop) rm -f "$PCS/docker-started.${2#id-}"; echo "$2" ;;
   *) exit 1 ;;
 esac'
 # --- stub lsof: STUB_LSOF="3010:node:4242" holds a port; a port listed in
@@ -75,7 +76,7 @@ if [[ " $* " == *ESTABLISHED* ]]; then
   done
   for p in $(cat "$PCS/probe" 2>/dev/null); do
     printf "p2\ncprocess-compose\nf9\nn127.0.0.1:6%s->127.0.0.1:%s\n" "$p" "$p"
-    printf "p3\ncnode\nf11\nn127.0.0.1:%s->127.0.0.1:6%s\n" "$p" "$p"
+    printf "p3\ncnode\nf11\nn[::ffff:127.0.0.1]:%s->[::ffff:127.0.0.1]:6%s\n" "$p" "$p"
   done
   exit 0
 fi
