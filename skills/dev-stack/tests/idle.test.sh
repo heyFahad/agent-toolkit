@@ -231,7 +231,10 @@ check "nothing stops while the process list fails" bash -c '! grep -qE "process 
 touch "$PCS/list-object"; rm -f "$PCS/list-fails"   # never a good answer in between
 sleep 6
 check "...or answers with something other than a list" bash -c '! grep -qE "process stop|process-compose down" "$1"' _ "$TMP/calls.log"
-rm -f "$PCS/list-object"
+touch "$PCS/list-two"; rm -f "$PCS/list-object"
+sleep 6
+check "...or with more than one value" bash -c '! grep -qE "process stop|process-compose down" "$1"' _ "$TMP/calls.log"
+rm -f "$PCS/list-two"
 check "...and the quiet one stops once it answers" wait_for 15 stopped bsa
 : > "$PCS/established"; ds down >/dev/null 2>&1
 
