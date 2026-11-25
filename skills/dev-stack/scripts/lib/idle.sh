@@ -46,6 +46,8 @@ _ds_idle_pid() { cat "$(_ds_idle_dir)/watchdog/pid" 2>/dev/null; }
 _ds_is_watchdog() {
   local cmd
   kill -0 "$1" 2>/dev/null || return 1
+  # A zombie (killed, never reaped) answers kill -0 but is gone.
+  [ "$(awk '{ print $3 }' "/proc/$1/stat" 2>/dev/null)" = Z ] && return 1
   if [ -r "/proc/$1/cmdline" ]; then cmd=$(tr '\0' ' ' < "/proc/$1/cmdline" 2>/dev/null)
   elif command -v ps >/dev/null 2>&1; then cmd=$(ps -p "$1" -o command= 2>/dev/null)
   fi
@@ -284,7 +286,7 @@ _ds_idle_sweep() {
     return 0
   fi
   rm -f "$dir/empty_since"
-  [ -n "$(_ds_idle_plan "$limit" "$running")" ] || return 1
+  [ -n "$(_ds_idle_plan "$limit" "$running")" ] || { _ds_idle_infra_retry; return 1; }
   _ds_try_lock || return 1
   # Plan again under the lock: an up or restart may have run since, and
   # changed the limit or turned the shutdown off.
@@ -316,11 +318,29 @@ _ds_idle_sweep() {
   [ "$left" = "[]" ]
 }
 
+# _ds_idle_infra_retry: with stop_infra, a container a past sweep couldn't
+# stop (Docker didn't answer) is tried again on a later check, even when no
+# service is due to stop then. Under the lock, so an up that's starting it
+# for a service isn't undercut.
+_ds_idle_infra_retry() {
+  local f containers
+  f="$(ds_state_dir)/infra-started"
+  [ -s "$f" ] && [ "$(cat "$(_ds_idle_dir)/stop_infra" 2>/dev/null)" = true ] || return 0
+  _ds_try_lock || return 0
+  containers=$(_ds_idle_infra "$(_ds_idle_running_json)")
+  [ -n "$containers" ] && echo "$(date '+%F %T') stopped containers $containers"
+  _ds_unlock
+}
+
 # _ds_idle_wait_exit <svc>: wait up to 30 seconds for it to stop running.
+# Only a good answer counts: a failed or garbled process list keeps it waiting.
 _ds_idle_wait_exit() {
-  local i
-  for i in $(seq 1 60); do
-    [ "$(_ds_proc "$(_ds_ps)" "$1" is_running)" = true ] || return 0
+  local ps
+  for _ in $(seq 1 60); do
+    ps=$(_ds_ps)
+    if jq -e 'type == "array"' <<<"$ps" >/dev/null 2>&1 && [ "$(_ds_proc "$ps" "$1" is_running)" != true ]; then
+      return 0
+    fi
     sleep 0.5
   done
   return 1

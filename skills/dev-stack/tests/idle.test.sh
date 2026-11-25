@@ -241,6 +241,19 @@ sleep 2
 check "nothing is stopped while Docker can't be asked" bash -c '! grep -q "^docker stop" "$1"' _ "$TMP/calls.log"
 check "...and redis is still on record" grep -q "^redis " "$DEVSTACK_STATE_DIR/infra-started"
 rm -f "$PCS/docker-broken" "$DEVSTACK_STATE_DIR/infra-started"
+
+# --- ...and tries again once Docker answers, even with nothing else due to stop ---
+rm -f "$PCS"/docker-started.*; : > "$TMP/calls.log"
+echo 3100 > "$PCS/established"   # ti-api stays busy throughout
+STUB_CONTAINERS="redis:false mongodb:true" ds up bsa ti-api >/dev/null 2>&1
+touch "$PCS/docker-broken"
+check "the quiet service stops" wait_for 15 stopped bsa
+sleep 2
+check "...its container waits while Docker can't be asked" bash -c '! grep -q "^docker stop" "$1"' _ "$TMP/calls.log"
+rm -f "$PCS/docker-broken"
+check "...and stops once Docker answers" wait_for 10 grep -q "^docker stop id-redis" "$TMP/calls.log"
+check "...while the busy service runs on" running ti-api
+: > "$PCS/established"; ds down >/dev/null 2>&1
 yq -i 'del(.idle)' "$TMP/ws/stack.yaml"
 
 # --- a loop of optional dependencies doesn't hang status ---
