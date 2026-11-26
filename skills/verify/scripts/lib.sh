@@ -7,13 +7,14 @@
 #        {"repos": {"<owner/name>": {"checks": [{"name": "...", "run": "..."}],
 #                                    "related": "... {files} ..."}}}
 #      "checks": [] turns the gate off for that repo. In "related", {files}
-#      becomes the changed files, shell-quoted; without it, the related level
-#      runs the full list. "related" can also be an object,
-#        {"run": "... {files} ...", "paths": {"<glob>": "<command>", ...}},
-#      where each command whose glob matches a changed file runs once, with
-#      {files} as the files its glob matched ({file}: once per file), and
-#      "run" (optional) runs on every changed file. A glob can name a list
-#      of commands; the same command picked twice runs once.
+#      becomes the changed files, shell-quoted (with no changed files, a
+#      command that takes {files} doesn't run). "relatedPaths" maps globs
+#      to commands, {"<glob>": "<command>" or ["<command>", ...]}: each
+#      command whose glob matches a changed file runs once, with {files} as
+#      the files its glob matched ({file}: once per file), and the same
+#      command picked twice runs once. It's a key of its own so that older
+#      versions of verify, which read "related" only as a string, ignore it.
+#      With neither, the related level runs the full list.
 #   2. What CI runs: the root package.json scripts that a workflow triggered
 #      by pull_request invokes, with the arguments CI passes after `--`. CI
 #      is green on the default branch, so these pass before a change and a
@@ -84,12 +85,14 @@ vf_drop_advisory() {
     {
       if ($0 ~ /^[ ]*(#.*)?$/) { if (injob) buf = buf $0 "\n"; else print; next }
       match($0, /^ */); ind = RLENGTH
-      if (ind == 0) { flush(); injob = 0; jobind = -1; injobs = ($0 ~ /^jobs:[ ]*$/); print; next }
+      if (ind == 0) { flush(); injob = 0; jobind = -1; injobs = ($0 ~ /^jobs:[ ]*(#.*)?$/); print; next }
       if (injobs) {
         if (jobind < 0) jobind = ind
-        if (ind == jobind) { flush(); injob = 1; buf = $0 "\n"; next }
+        if (ind == jobind) { flush(); injob = 1; keyind = -1; buf = $0 "\n"; next }
         if (injob) {
-          if (ind == jobind + 2 && $0 ~ ("^ *" coe)) bad = 1
+          # The job'"'"'s own keys sit at the indent of its first line.
+          if (keyind < 0) keyind = ind
+          if (ind == keyind && $0 ~ ("^ *" coe)) bad = 1
           buf = buf $0 "\n"
           next
         }
@@ -102,12 +105,14 @@ vf_drop_advisory() {
       if ($0 ~ /^[ ]*(#.*)?$/) { if (have) buf = buf $0 "\n"; else print; next }
       match($0, /^ */); ind = RLENGTH
       if (have && ind > sind) {
-        if (ind == sind + 2 && $0 ~ ("^ *" coe)) bad = 1
+        if (ind == skey && $0 ~ ("^ *" coe)) bad = 1
         buf = buf $0 "\n"
         next
       }
       flush()
       if ($0 ~ /^ *- /) {
+        # The step'"'"'s keys line up with the first one, after the dash.
+        match($0, /^ *- +/); skey = RLENGTH
         have = 1; sind = ind; buf = $0 "\n"
         if ($0 ~ ("^ *- +" coe)) bad = 1
         next
@@ -230,22 +235,27 @@ vf_glob_re() {
     s#<DS>#(.*/)?#g; s#<DD>#.*#g; s#^#^#; s#$#$#'
 }
 
-# vf_related_map OVERRIDE FILES...: the checks an override's object-form
-# "related" picks for FILES, as JSON objects, one per line. "run" runs on
-# every file. A "paths" value is a command or a list of them; each runs once
-# on the files its glob matched ({files}), or once per file ({file}). The
-# same command picked twice runs once.
+# vf_related_map OVERRIDE FILES...: the checks an override picks for FILES
+# at the related level, as JSON objects, one per line: "related" (a string),
+# then each "relatedPaths" command whose glob matched. A relatedPaths value
+# is a command or a list of them; each runs once on the files its glob
+# matched ({files}), or once per file ({file}). The same command picked
+# twice runs once.
 vf_related_map() {
   local ov=$1 run n j g re f m q c cmds k nc
   shift
-  run=$(printf '%s' "$ov" | jq -r '.related.run // empty')
+  run=$(printf '%s' "$ov" | jq -r '.related // empty | strings')
   {
-    [ -z "$run" ] || jq -n --arg r "${run//\{files\}/$(vf_quote "$@")}" '{name: "related", run: $r}'
-    n=$(printf '%s' "$ov" | jq '.related.paths // {} | length')
+    case "$run" in
+      "") ;;
+      *'{files}'*) [ "$#" -eq 0 ] || jq -n --arg r "${run//\{files\}/$(vf_quote "$@")}" '{name: "related", run: $r}' ;;
+      *) jq -n --arg r "$run" '{name: "related", run: $r}' ;;
+    esac
+    n=$(printf '%s' "$ov" | jq '.relatedPaths // {} | length')
     j=0
     while [ "$j" -lt "$n" ]; do
-      g=$(printf '%s' "$ov" | jq -r --argjson j "$j" '.related.paths | keys_unsorted[$j]')
-      cmds=$(printf '%s' "$ov" | jq -c --argjson j "$j" '.related.paths | .[keys_unsorted[$j]] | if type == "array" then . else [.] end')
+      g=$(printf '%s' "$ov" | jq -r --argjson j "$j" '.relatedPaths | keys_unsorted[$j]')
+      cmds=$(printf '%s' "$ov" | jq -c --argjson j "$j" '.relatedPaths | .[keys_unsorted[$j]] | if type == "array" then . else [.] end')
       re=$(vf_glob_re "$g")
       m=()
       for f in "$@"; do
@@ -277,16 +287,12 @@ vf_related_map() {
 # for the related and branch levels, which run the same checks (branch just
 # on every file the branch changed). [] means the gate is off.
 vf_checks() {
-  local root=$1 level=$2 ov pm x names related rtype tests_ci dev runner flag
+  local root=$1 level=$2 ov pm x names tests_ci dev runner flag
   shift 2
   [ "$level" != branch ] || level=related
   ov=$(vf_override "$root")
   if [ -n "$ov" ]; then
-    rtype=$(printf '%s' "$ov" | jq -r '.related | type')
-    if [ "$level" = related ] && [ "$rtype" = string ]; then
-      related=$(printf '%s' "$ov" | jq -r '.related')
-      jq -n --arg r "${related//\{files\}/$(vf_quote "$@")}" '[{name: "related", run: $r}]'
-    elif [ "$level" = related ] && [ "$rtype" = object ]; then
+    if [ "$level" = related ] && printf '%s' "$ov" | jq -e '(.related | type) == "string" or has("relatedPaths")' >/dev/null; then
       vf_related_map "$ov" "$@" | jq -s -c .
     else
       printf '%s' "$ov" | jq -c '.checks // []'
@@ -468,11 +474,13 @@ _vf_lock_alive() {
 
 # _vf_lock_break LOCK: take a stale lock away. Renaming it is atomic, so only
 # one waiter wins; if what it renamed turns out to be a live lock another
-# waiter took in between, it goes back.
+# waiter took in between (one with a live owner, or one so new its owner
+# isn't written yet), it goes back.
 _vf_lock_break() {
   local lock=$1 stale="$1.stale.$$" pid repo
   mv "$lock" "$stale" 2>/dev/null || return 0
-  if [ -f "$stale/owner" ] && _vf_lock_alive "$stale/owner"; then
+  if { [ -f "$stale/owner" ] && _vf_lock_alive "$stale/owner"; } ||
+    { [ ! -f "$stale/owner" ] && [ -z "$(find "$stale" -maxdepth 0 -mmin +1 2>/dev/null)" ]; }; then
     [ -e "$lock" ] || mv "$stale" "$lock" 2>/dev/null || true
     rm -rf "$stale"
     return 0
@@ -480,6 +488,17 @@ _vf_lock_break() {
   pid=$(_vf_owner "$stale/owner" pid) repo=$(_vf_owner "$stale/owner" repo)
   echo "verify: took over a stale lock${pid:+ left by pid $pid}${repo:+ ($repo)}"
   rm -rf "$stale"
+}
+
+# _vf_lock_own LOCK REPO: write the owner file into a lock this run just
+# made. Fails when another waiter took the directory away in between (it
+# looked stale), and the run tries again.
+_vf_lock_own() {
+  {
+    printf 'pid=%s\nstart=%s\nrepo=%s\nat=%s\n' "$$" "$(_vf_proc_start $$)" "$2" \
+      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$1/owner.tmp" &&
+      mv "$1/owner.tmp" "$1/owner"
+  } 2>/dev/null
 }
 
 # vf_lock_acquire REPO: wait until no other verify run holds the lock, then
@@ -490,7 +509,7 @@ vf_lock_acquire() {
   lock=$(vf_lock_dir)
   [ "${VF_LOCK_HELD:-}" != "$lock" ] || return 0
   mkdir -p "$(dirname "$lock")"
-  while ! mkdir "$lock" 2>/dev/null; do
+  while ! { mkdir "$lock" 2>/dev/null && _vf_lock_own "$lock" "$1"; }; do
     f="$lock/owner"
     if [ -f "$f" ] && ! _vf_lock_alive "$f"; then
       _vf_lock_break "$lock"
@@ -510,9 +529,6 @@ vf_lock_acquire() {
     fi
     sleep "${VF_LOCK_POLL:-2}"
   done
-  printf 'pid=%s\nstart=%s\nrepo=%s\nat=%s\n' "$$" "$(_vf_proc_start $$)" "$1" \
-    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$lock/owner.tmp"
-  mv "$lock/owner.tmp" "$lock/owner"
   VF_LOCK_HELD=$lock VF_LOCK_MINE=1
   export VF_LOCK_HELD
   [ -z "$said" ] || echo "verify: the other run finished; starting"

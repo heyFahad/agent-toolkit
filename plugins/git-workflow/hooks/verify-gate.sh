@@ -130,9 +130,12 @@ push_remote() {
   echo origin
 }
 
-# push_dst ROOT REMOTE SRC: the branch a push of SRC with no destination
-# updates. HEAD is the current branch, pushed to its upstream when that's on
-# REMOTE.
+# push_dst ROOT REMOTE SRC [BARE]: the branch a push of SRC with no
+# destination updates. An explicit HEAD pushes the current branch to the
+# same name. A bare `git push` (BARE=true) does too, unless push.default is
+# upstream, which pushes to the branch's upstream when that's on REMOTE.
+# (Under the default, simple, git refuses a push whose upstream has another
+# name, so the same name is all it can create.)
 push_dst() {
   local cur merge
   case "$3" in
@@ -141,19 +144,21 @@ push_dst() {
         echo HEAD
         return 0
       }
-      merge=$(git -C "$1" config --get "branch.$cur.merge" 2>/dev/null || true)
-      if [ -n "$merge" ] && [ "$(git -C "$1" config --get "branch.$cur.remote" 2>/dev/null)" = "$2" ]; then
-        echo "${merge#refs/heads/}"
-      else
-        echo "$cur"
+      if [ "${4:-}" = true ] && [ "$(git -C "$1" config --get push.default 2>/dev/null)" = upstream ]; then
+        merge=$(git -C "$1" config --get "branch.$cur.merge" 2>/dev/null || true)
+        if [ -n "$merge" ] && [ "$(git -C "$1" config --get "branch.$cur.remote" 2>/dev/null)" = "$2" ]; then
+          echo "${merge#refs/heads/}"
+          return 0
+        fi
       fi
+      echo "$cur"
       ;;
     *) echo "${3#refs/heads/}" ;;
   esac
 }
 
 check_push() { # dir args...
-  local dir=$1 root remote="" delete=false tags=false skip=false t src dst tree level why
+  local dir=$1 root remote="" delete=false tags=false skip=false bare=false t src dst tree level why
   local refs=()
   shift
   root=$(gate_root "$dir") || return 0
@@ -187,6 +192,7 @@ check_push() { # dir args...
       return 0
     fi
     refs=(HEAD)
+    bare=true
   fi
   for t in "${refs[@]}"; do
     t=${t#+}
@@ -210,7 +216,7 @@ check_push() { # dir args...
         dst=${t#*:}
         dst=${dst#refs/heads/}
         ;;
-      *) dst=$(push_dst "$root" "$remote" "$src") ;;
+      *) dst=$(push_dst "$root" "$remote" "$src" "$bare") ;;
     esac
     push_level "$root" "$remote" "$dst" "${src#refs/heads/}"
     need "$tree" "$level" "$root" "git push of $src" "$src" "$why"
@@ -262,7 +268,7 @@ check_stack() {
   local root json err b tree level why
   root=$(gate_root "$1") || return 0
   if [ "$2" = sync ]; then
-    block "verify-gate: gh stack sync rebases the stack and pushes it in one go, so the rebased branches can't be verified first. Run gh stack rebase, then verify --full on each branch it changed, then gh stack push."
+    block "verify-gate: gh stack sync rebases the stack and pushes it in one go, so the rebased branches can't be verified first. Run gh stack rebase, then verify on each branch it changed (at the level this hook asks for), then gh stack push."
     return 0
   fi
   err=$(mktemp "${TMPDIR:-/tmp}/verify-gate.XXXXXX")

@@ -347,8 +347,10 @@ check "later push: to a branch the remote doesn't have needs --branch" 2 "$CODE"
 gate 'git push backup later'
 check "later push: to a remote without the branch needs --branch" 2 "$CODE"
 check "later push: and names that remote" true "$(said 'creates backup/later')"
-# Pushed to an upstream of another name: that name is what the remote has.
+# With push.default=upstream, a bare push goes to an upstream of another
+# name, so that name is what the remote must have.
 git -C "$R" config branch.later.merge refs/heads/later-up
+git -C "$R" config push.default upstream
 gate 'git push'
 check "later push: to an upstream the remote doesn't have yet needs --branch" 2 "$CODE"
 git -C "$R" update-ref refs/remotes/origin/later-up HEAD
@@ -356,7 +358,26 @@ gate 'git push'
 check "later push: to an upstream of another name it has, --related" 0 "$CODE"
 gate 'git push origin later'
 check "later push: by name goes to that name, which origin has" 0 "$CODE"
+git -C "$R" config --unset push.default
+git -C "$R" update-ref -d refs/remotes/origin/later
+gate 'git push origin HEAD'
+check "later push: an explicit HEAD goes to the same name, not the upstream" 2 "$CODE"
+git -C "$R" update-ref refs/remotes/origin/later HEAD
 git -C "$R" config branch.later.merge refs/heads/later
+# A branch cut from origin/main tracks it: its first push, git push -u
+# origin HEAD, creates origin/<branch> and needs --branch, whatever the
+# upstream says.
+git -C "$R" switch -q -c from-main
+git -C "$R" config branch.from-main.remote origin
+git -C "$R" config branch.from-main.merge refs/heads/main
+echo fm >"$R/fm.txt"
+verify --related
+commit "fm"
+gate 'git push -u origin HEAD'
+check "first push: HEAD on a branch tracking origin/main still needs --branch" '[2,true]' "[$CODE,$(said 'creates origin/from-main')]"
+gate 'git push'
+check "first push: a bare push of it too" 2 "$CODE"
+git -C "$R" switch -q later
 # pushRemote decides where a bare push goes.
 git -C "$R" config branch.later.pushRemote backup
 gate 'git push'

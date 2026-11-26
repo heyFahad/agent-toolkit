@@ -154,6 +154,26 @@ YML
 git -C "$R" add -A && git -C "$R" -c user.email=t@t -c user.name=t commit -q -m wf
 run_verify "$R" --list
 check "list: continue-on-error steps and jobs are advisory, not checks" '["lint","e2e"]' "$(q '[.[].name]')"
+# Indented by four, with keys after `-   `, and a comment after jobs:.
+cat >"$R/.github/workflows/ci.yml" <<'YML'
+on:
+    pull_request:
+jobs:  # all of them
+    checks:
+        steps:
+            -   name: Lint
+                run: pnpm run lint
+            -   name: Test
+                continue-on-error: true
+                run: pnpm test
+    advisory:
+        continue-on-error: true
+        steps:
+            -   run: pnpm run build
+YML
+git -C "$R" add -A && git -C "$R" -c user.email=t@t -c user.name=t commit -q -m wf4
+run_verify "$R" --list
+check "list: continue-on-error found at any indent" '["lint"]' "$(q '[.[].name]')"
 
 # A PR-checks workflow whose blocking steps call tools through `pnpm exec`
 # and whose only package script is an advisory typecheck: nothing verify can
@@ -267,6 +287,11 @@ check "list: override replaces inference" '[{"name":"t","run":"make t"}]' "$OUT"
 run_verify "$R" --list --related a 'b c.sh'
 check "list: override related with {files}" \
   "$(jq -nc --arg r "shellcheck $(printf '%q ' a 'b c.sh' | sed 's/ $//')" '[$r]')" "$(q '[.[].run]')"
+run_verify "$R" --list --related
+check "list: override related with {files} doesn't run with no changed files" '[]' "$OUT"
+echo '{"repos":{"owner/repo":{"checks":[{"name":"t","run":"make t"}],"related":"make quick"}}}' >"$CFG"
+run_verify "$R" --list --related
+check "list: override related without {files} runs with no changed files too" '["make quick"]' "$(q '[.[].run]')"
 echo '{"repos":{"owner/repo":{"checks":[{"name":"t","run":"make t"}]}}}' >"$CFG"
 run_verify "$R" --list --related a
 check "list: override with no related runs the full list" '["make t"]' "$(q '[.[].run]')"
@@ -274,14 +299,15 @@ echo '{"repos":{"owner/repo":{"checks":[]}}}' >"$CFG"
 run_verify "$R" --list
 check "list: empty checks turns the gate off" '[]' "$OUT"
 
-# An object-form related maps changed paths to the suites that cover them.
-jq -n '{repos: {"owner/repo": {checks: [{name: "all", run: "make all"}], related: {
-  run: "shellcheck {files}",
-  paths: {
+# relatedPaths maps changed paths to the suites that cover them, next to a
+# string related that runs on every changed file.
+jq -n '{repos: {"owner/repo": {checks: [{name: "all", run: "make all"}],
+  related: "shellcheck {files}",
+  relatedPaths: {
     "skills/check-pr/**": "bash skills/check-pr/tests/t.sh",
     "skills/*/SKILL.md": "lint-skill {files}",
     "**/*.json": "jq . {files}",
-    "plugins/x/**": "bash skills/check-pr/tests/t.sh"}}}}}' >"$CFG"
+    "plugins/x/**": "bash skills/check-pr/tests/t.sh"}}}}' >"$CFG"
 run_verify "$R" --list --related skills/check-pr/scripts/a.sh skills/verify/SKILL.md skills/verify/deep/SKILL.md README.md
 check "paths: each matching glob's command, {files} as the files it matched" \
   "$(jq -nc '[{name: "related", run: "shellcheck skills/check-pr/scripts/a.sh skills/verify/SKILL.md skills/verify/deep/SKILL.md README.md"},
@@ -291,7 +317,7 @@ run_verify "$R" --list --related a.json sub/dir/b.json
 check "paths: **/ matches no directory or many" '["shellcheck a.json sub/dir/b.json","jq . a.json sub/dir/b.json"]' "$(q '[.[].run]')"
 run_verify "$R" --list --related skills/check-pr/x plugins/x/y
 check "paths: two globs with the same command run it once" '["shellcheck skills/check-pr/x plugins/x/y","bash skills/check-pr/tests/t.sh"]' "$(q '[.[].run]')"
-jq '.repos["owner/repo"].related |= del(.run)' "$CFG" >"$CFG.tmp" && mv "$CFG.tmp" "$CFG"
+jq '.repos["owner/repo"] |= del(.related)' "$CFG" >"$CFG.tmp" && mv "$CFG.tmp" "$CFG"
 run_verify "$R" --list --related docs/x.md 'a b.json'
 check "paths: no run, only the matching globs, files quoted" \
   "$(jq -nc --arg r "jq . $(printf '%q' 'a b.json')" '[$r]')" "$(q '[.[].run]')"
@@ -301,12 +327,15 @@ run_verify "$R" --list
 check "paths: the full level is still the checks" '["make all"]' "$(q '[.[].run]')"
 # A list of commands per glob, and {file} for one run per file: a suite both
 # its source and its test file pick runs once.
-jq -n '{repos: {"owner/repo": {checks: [{name: "all", run: "make all"}], related: {paths: {
+jq -n '{repos: {"owner/repo": {checks: [{name: "all", run: "make all"}], relatedPaths: {
   "**/*.test.sh": "bash {file}",
-  "src/a.sh": ["bash tests/a.test.sh", "bash tests/b.test.sh"]}}}}}' >"$CFG"
+  "src/a.sh": ["bash tests/a.test.sh", "bash tests/b.test.sh"]}}}}' >"$CFG"
 run_verify "$R" --list --related src/a.sh tests/a.test.sh 'tests/c d.test.sh'
 check "paths: {file} runs per file, a list runs each, the same command once" \
   "$(jq -nc --arg c "bash $(printf '%q' 'tests/c d.test.sh')" '["bash tests/a.test.sh", $c, "bash tests/b.test.sh"]')" "$(q '[.[].run]')"
+# A verify that reads "related" only as a string (the released one) sees
+# relatedPaths as an unknown key and ignores it, rather than running JSON.
+check "paths: related stays a string next to relatedPaths" string "$(jq -r '.repos["owner/repo"].related // "absent" | type' "$CFG")"
 rm "$CFG"
 
 R=$(mkrepo nopkg '{}' "" "")
@@ -496,6 +525,17 @@ check "branch: no default branch falls back to --full, and says so" '[0,true,"fu
 
 rm "$TMP/bin/npx"
 
+# A branch with more changed files than one command line safely holds runs
+# every check instead.
+git -C "$R" update-ref refs/remotes/origin/main main
+mkdir -p "$R/many"
+for i in $(seq 501); do : >"$R/many/f$i.ts"; done
+run_verify "$R" --branch
+check "branch: over 500 changed files runs --full, and says so" '[0,true,"full"]' \
+  "[$CODE,$(printf '%s' "$OUT" | grep -q 'more than 500' && echo true || echo false),\"$(jq -r .level "$AGENT_TOOLKIT_STATE_DIR/verify/$(lib vf_tree "$R").json")\"]"
+rm -rf "$R/many"
+git -C "$R" update-ref -d refs/remotes/origin/main
+
 # firstPush in the config: per repo, or for every repo at the top.
 check "branch: the first push needs --branch by default" branch "$(lib vf_first_push_level "$R")"
 echo '{"firstPush": "full"}' >"$CFG"
@@ -522,6 +562,25 @@ check "lock: a second run waits for the first to finish" 0 "$CODE"
 check "lock: and says whose run it's queued behind" true "$(printf '%s' "$OUT" | grep -q 'queued behind the verify run for owner/locka' && echo true || echo false)"
 check "lock: released after the run" false "$([ -e "$LOCK" ] && echo true || echo false)"
 
+# The changed files are listed once the lock is held, not before the wait:
+# a file edited while a run is queued is still checked.
+jq -n --arg r "printf '%s\\n' {files} >$TMP/seen" '{repos: {"owner/lockb": {checks: [{name: "t", run: "true"}], related: $r}}}' >"$XDG_CONFIG_HOME/agent-toolkit/verify.local.json"
+sleep 30 &
+holder=$!
+mkdir -p "$LOCK"
+printf 'pid=%s\nstart=%s\nrepo=owner/other\nat=now\n' "$holder" "$(lib _vf_proc_start "$holder")" >"$LOCK/owner"
+echo a >"$B/first.txt"
+(cd "$B" && bash "$S/verify" --related >"$TMP/b-out" 2>&1) &
+bpid=$!
+for _ in $(seq 50); do grep -q queued "$TMP/b-out" 2>/dev/null && break; sleep 0.1; done
+echo b >"$B/during-wait.txt"
+kill "$holder" 2>/dev/null
+wait "$holder" 2>/dev/null
+wait "$bpid"
+check "lock: files changed while queued are checked" true "$(grep -qx during-wait.txt "$TMP/seen" && echo true || echo false)"
+rm -f "$B/first.txt" "$B/during-wait.txt" "$TMP/seen" "$XDG_CONFIG_HOME/agent-toolkit/verify.local.json"
+rm -rf "$LOCK"
+
 # A lock whose holder died is stale: the next run takes it over.
 sh -c 'exit 0' &
 dead=$!
@@ -541,6 +600,13 @@ if [ -n "$(lib _vf_proc_start $$)" ]; then
   run_verify "$B" --full
   check "lock: a reused PID's lock is stale" '[0,true]' "[$CODE,$(printf '%s' "$OUT" | grep -q 'stale lock' && echo true || echo false)]"
 fi
+
+# A lock with no owner yet, made moments ago, belongs to a run that's still
+# writing it: taking it over would leave that run with no lock.
+mkdir -p "$LOCK"
+lib _vf_lock_break "$LOCK" >/dev/null
+check "lock: a new lock with no owner yet is put back, not deleted" true "$([ -d "$LOCK" ] && echo true || echo false)"
+rm -rf "$LOCK"
 
 # A lock with no owner a minute after it was made is stale too.
 mkdir -p "$LOCK"

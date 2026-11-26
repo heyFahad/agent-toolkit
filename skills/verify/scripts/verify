@@ -14,7 +14,8 @@
 #   --full                run every check
 #   --status [--tree SHA] print the record for a tree (default: the working
 #                         tree); exit 1 when there is none
-#   --list [--related] [FILES...]  print the checks as JSON [{name, run}]
+#   --list [--related|--branch] [FILES...]  print the checks as JSON
+#                         [{name, run}]
 #
 # A run stops at the first failing check. It fails too when a check changes
 # tracked files (a format script that writes, a generated file that was out
@@ -70,17 +71,42 @@ ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || vf_die 2 "not in a git repo
 # useful while working, but it writes no record.
 EXPLICIT=false
 [ "${#FILES[@]}" -eq 0 ] || EXPLICIT=true
-if [ "$LEVEL" = branch ] && [ "$EXPLICIT" = false ] && [ "$MODE" != status ]; then
-  if BASE=$(vf_branch_base "$ROOT"); then
-    while IFS= read -r f; do FILES+=("$f"); done < <(vf_changed_files "$ROOT" "$BASE")
-    [ "$MODE" = list ] || echo "verify: --branch checks the ${#FILES[@]} files this branch changes since ${BASE:0:7}"
-  else
-    [ "$MODE" = list ] || echo "verify: no origin/HEAD, origin/main or origin/master to find where this branch started, so --branch runs every check"
-    LEVEL=full
+# More changed files than this and the commands holding them all can outgrow
+# what one argument may be, so the run checks everything instead.
+MAX_FILES=500
+
+say() { [ "$MODE" = list ] || echo "$@"; }
+
+# collect_files: fill FILES with the changed files the level checks: the
+# working tree against HEAD for related, against where the branch left the
+# default branch for branch. May move LEVEL to full.
+collect_files() {
+  local f base
+  [ "$EXPLICIT" = false ] || return 0
+  case "$LEVEL" in
+    related)
+      while IFS= read -r f; do FILES+=("$f"); done < <(vf_changed_files "$ROOT")
+      ;;
+    branch)
+      if base=$(vf_branch_base "$ROOT"); then
+        while IFS= read -r f; do FILES+=("$f"); done < <(vf_changed_files "$ROOT" "$base")
+        say "verify: --branch checks the ${#FILES[@]} files this branch changes since ${base:0:7}"
+      else
+        say "verify: no origin/HEAD, origin/main or origin/master to find where this branch started, so --branch runs every check"
+        LEVEL=full
+      fi
+      ;;
+  esac
+  if [ "$LEVEL" != full ] && [ "${#FILES[@]}" -gt "$MAX_FILES" ]; then
+    say "verify: ${#FILES[@]} changed files is more than $MAX_FILES, so this runs every check (--full)"
+    LEVEL=full FILES=()
   fi
-fi
+  return 0
+}
 
 if [ "$MODE" = list ]; then
+  # --list --related with no files lists the checks that need none.
+  [ "$LEVEL" != branch ] || collect_files
   vf_checks "$ROOT" "$LEVEL" ${FILES[@]+"${FILES[@]}"}
   exit 0
 fi
@@ -94,10 +120,6 @@ if [ "$MODE" = status ]; then
 fi
 
 # run
-if [ "$LEVEL" = related ] && [ "${#FILES[@]}" -eq 0 ]; then
-  while IFS= read -r f; do FILES+=("$f"); done < <(vf_changed_files "$ROOT")
-fi
-CHECKS=$(vf_checks "$ROOT" "$LEVEL" ${FILES[@]+"${FILES[@]}"})
 # The gate is off only when there are no full checks. A related level with
 # nothing quick to run (CI runs tests, but no jest or vitest to pick the
 # related ones) still records a pass.
@@ -113,11 +135,14 @@ NODE_BIN=$(vf_node_path "$ROOT") || exit $?
 STATE=$(vf_state_dir)
 mkdir -p "$STATE/logs"
 # One run at a time on this machine (see vf_lock_acquire). Taken before the
-# tree is hashed: the tree may change while this waits.
+# changed files are listed and the tree is hashed: both may change while
+# this waits.
 trap 'vf_lock_release' EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 vf_lock_acquire "$(vf_repo_key "$ROOT")"
+collect_files
+CHECKS=$(vf_checks "$ROOT" "$LEVEL" ${FILES[@]+"${FILES[@]}"})
 LOG=$(mktemp "$STATE/logs/run.XXXXXX")
 BEFORE=$(vf_tracked_tree "$ROOT") || vf_die 2 "could not hash the working tree"
 

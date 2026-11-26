@@ -9,7 +9,7 @@ metadata:
 
 `scripts/verify` runs a repo's checks and records the result against the exact tree it ran on. The `verify-gate` hook (`git-workflow` plugin) reads those records and blocks a commit, push or PR whose tree hasn't passed. So nothing unchecked leaves your machine, while the full suite runs on CI rather than here. CI runs everything on every push, and `check-pr` waits for it and fixes what fails. Locally, a branch's checks cover the code it changed.
 
-## The two levels
+## The levels
 
 | Command | Runs | When |
 | --- | --- | --- |
@@ -23,7 +23,7 @@ Run it from anywhere in the repo, as `bash <this skill>/scripts/verify --related
 
 A passing run never replaces a passing one at a higher level (`--full` over `--branch` over `--related`), so running `--related` before a commit doesn't cost you the bigger run you already did.
 
-`--branch` finds where the branch started from `origin/HEAD` (else `origin/main` or `origin/master`). With none of those, it says so and runs every check instead.
+`--branch` finds where the branch started from `origin/HEAD` (else `origin/main` or `origin/master`). With none of those, it says so and runs every check instead. So does a branch (or a `--related` run) with more than 500 changed files, whose file list could outgrow a command line.
 
 Never run the full suite on every turn, every small edit or every push. That's what `--related` and `--branch` are for.
 
@@ -84,18 +84,20 @@ When inference gets it wrong (a monorepo, checks in a shared workflow, tests tha
 
 `"firstPush": "full"` makes the push that creates a branch need `--full` instead of `--branch`. Set it in a repo's entry, or at the top of the file for every repo; a repo's own setting wins. It suits a repo whose related level misses a lot, so that PRs still open green.
 
-A repo without an import graph for `vitest related` to follow (a shell-test repo, say) can map changed paths to the suites that cover them instead. Make `related` an object:
+A repo without an import graph for `vitest related` to follow (a shell-test repo, say) can map changed paths to the suites that cover them, under `relatedPaths`:
 
 ```json
-"related": {
-  "run": "shellcheck {files}",
-  "paths": {
-    "skills/check-pr/**": "bash skills/check-pr/scripts/tests/check-pr.test.sh",
-    "skills/*/SKILL.md": "markdownlint {files}"
-  }
+"related": "shellcheck {files}",
+"relatedPaths": {
+  "skills/check-pr/**": "bash skills/check-pr/scripts/tests/check-pr.test.sh",
+  "skills/*/SKILL.md": "markdownlint {files}"
 }
 ```
 
-Each command whose glob matches a changed file runs once, with `{files}` as the files that glob matched, or once per matched file when it says `{file}` instead. A glob can name a list of commands rather than one. The same command picked twice runs once, so `"**/*.test.sh": "bash {file}"` next to `"src/lib.sh": "bash tests/lib.test.sh"` runs that suite once when both files change. `run` is optional and runs on every changed file. Globs are matched against paths from the repo root: `**/` matches any number of directories, `**` anything, and `*` and `?` stay within one directory, so `*.sh` matches only at the root and `**/*.sh` matches anywhere. A change no glob matches runs nothing beyond `run`.
+Each command whose glob matches a changed file runs once, with `{files}` as the files that glob matched, or once per matched file when it says `{file}` instead. A glob can name a list of commands rather than one. The same command picked twice runs once, so `"**/*.test.sh": "bash {file}"` next to `"src/lib.sh": "bash tests/lib.test.sh"` runs that suite once when both files change. `related`, if set too, still runs on every changed file. Globs are matched against paths from the repo root: `**/` matches any number of directories, `**` anything, and `*` and `?` stay within one directory, so `*.sh` matches only at the root and `**/*.sh` matches anywhere. A change no glob matches runs nothing beyond `related`.
+
+With no changed files (a clean tree after a rebase, say), a command that takes `{files}` doesn't run, in `related` or `relatedPaths`; one without `{files}` still does.
+
+`relatedPaths` is a key of its own, not part of `related`, because older versions of `verify` read `related` only as a string. They ignore `relatedPaths`, so sessions still running an older copy keep working from the same file.
 
 Never edit this file to get past a failing check. If a check fails for a reason that isn't your change, tell the user and let them decide.
