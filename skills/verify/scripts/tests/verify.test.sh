@@ -536,6 +536,38 @@ check "branch: over 500 changed files runs --full, and says so" '[0,true,"full"]
 rm -rf "$R/many"
 git -C "$R" update-ref -d refs/remotes/origin/main
 
+# A clean tree has nothing against HEAD; after a rebase its commits still
+# hold code no run saw, so --related checks what it changes against the
+# branch as the remote has it. A deleted file picks its suite without being
+# handed to any command.
+RC=$(mkrepo clean '{"lint":"l"}' "" 'npm run lint')
+mkdir -p "$RC/src" "$RC/tests"
+echo a >"$RC/src/a.sh"
+echo b >"$RC/src/gone.sh"
+git -C "$RC" add -A && git -C "$RC" -c user.email=t@t -c user.name=t commit -q -m src
+git -C "$RC" update-ref refs/remotes/origin/main HEAD
+git -C "$RC" switch -q -c feat
+git -C "$RC" update-ref refs/remotes/origin/feat HEAD
+echo a2 >"$RC/src/a.sh"
+git -C "$RC" rm -q src/gone.sh
+git -C "$RC" -c user.email=t@t -c user.name=t commit -q -am rebased
+jq -n --arg seen "$TMP/seen" '{repos: {"owner/clean": {checks: [{name: "all", run: "true"}],
+  related: ("printf \"%s\\n\" {files} >" + $seen),
+  relatedPaths: {"src/**": ["echo suite >>" + $seen, "printf \"[%s]\\n\" {files} >>" + $seen]}}}}' >"$CFG"
+rm -f "$TMP/seen"
+run_verify "$RC" --related
+check "clean: checks what HEAD changes against the remote's copy of the branch" '[0,true]' \
+  "[$CODE,$(printf '%s' "$OUT" | grep -q 'clean, so --related checks the 1 files it changes against origin/feat' && echo true || echo false)]"
+check "clean: the changed file reaches the commands, the deleted one picks the suite only" \
+  "$(printf 'src/a.sh\nsuite\n[src/a.sh]')" "$(cat "$TMP/seen" 2>/dev/null)"
+# Only the deleted file changed: the suite runs, the {files} commands don't.
+git -C "$RC" reset -q --hard origin/feat
+git -C "$RC" rm -q src/gone.sh
+rm -f "$TMP/seen"
+run_verify "$RC" --related
+check "clean: a deletion alone still runs its suite" suite "$(cat "$TMP/seen" 2>/dev/null)"
+rm -f "$TMP/seen" "$CFG"
+
 # firstPush in the config: per repo, or for every repo at the top.
 check "branch: the first push needs --branch by default" branch "$(lib vf_first_push_level "$R")"
 echo '{"firstPush": "full"}' >"$CFG"

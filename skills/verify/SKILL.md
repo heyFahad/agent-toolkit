@@ -19,6 +19,10 @@ metadata:
 
 Run it from anywhere in the repo, as `bash <this skill>/scripts/verify --related`. It prints `PASS` or `FAIL` per check, and the tail of a failing check's output. The full log path is in the record (`verify --status`).
 
+On a clean tree, after a rebase say, `--related` has nothing to diff against `HEAD`, so it checks what the branch changes against its copy on the remote (`origin/<branch>`) instead: those commits hold code no run saw.
+
+Deleted files count as changed: they pick their `relatedPaths` suites, but no command is handed a file that's gone.
+
 `verify --related <files>` checks only the files you name. That's handy while working, but it writes no record, since it didn't cover every change.
 
 A passing run never replaces a passing one at a higher level (`--full` over `--branch` over `--related`), so running `--related` before a commit doesn't cost you the bigger run you already did.
@@ -42,7 +46,7 @@ Jest and vitest run with `--maxWorkers=50%` too, so even one run leaves cores fr
 | `gh stack push`, `gh stack submit` | the same, for every open branch in the stack |
 | `gh stack sync` | blocked: it rebases and pushes in one go, so use `gh stack rebase`, verify each changed branch, then `gh stack push` |
 
-Whether a push creates the branch comes from the remote-tracking refs (`origin/<branch>`) the last fetch left, with no network call. A branch someone else pushed since your last fetch counts as new, which only asks for the bigger run. A `conflicts/...` branch always needs `--full`: its merge of the feature branch into the pre-prod branch is new code that no earlier run saw.
+Whether a push creates the branch comes from the remote-tracking refs (`origin/<branch>`) the last fetch left, with no network call. `gh stack push --remote <name>` is checked against that remote. A repo with `remote.<name>.push` set has to name the destination of a branch push (`git push origin feat:feat`), since that setting can send a branch under another name. A branch someone else pushed since your last fetch counts as new, which only asks for the bigger run. A `conflicts/...` branch always needs `--full`: its merge of the feature branch into the pre-prod branch is new code that no earlier run saw.
 
 Run a push, `gh pr create` or `gh stack push` in its own Bash call. Chained after a commit, merge or rebase (`git commit -m x && git push`), it's blocked: the hook runs before the call, so it can't see the commit the push would send.
 

@@ -271,6 +271,10 @@ git -C "$R" update-ref -d refs/remotes/origin/unv
 git -C "$R" config remote.origin.push 'refs/heads/*:refs/heads/*'
 gate 'git push'
 check "push: a configured remote.origin.push is blocked" 2 "$CODE"
+gate 'git push origin feat'
+check "push: a branch named alone under remote.origin.push is blocked" '[2,true]' "[$CODE,$(said 'Name the destination')]"
+gate 'git push origin feat:feat'
+check "push: with its destination named it's checked as usual" 0 "$CODE"
 git -C "$R" config --unset remote.origin.push
 git -C "$R" config remote.backup.push 'refs/heads/*:refs/heads/*'
 gate 'git push origin'
@@ -403,6 +407,11 @@ check "conflicts: a later push still needs --full, --branch isn't enough" 2 "$CO
 check "conflicts: and says why" true "$(said 'conflicts/ branch')"
 gate 'git push'
 check "conflicts: a bare push too" 2 "$CODE"
+# HEAD is the conflicts/ branch even when the destination has another name.
+git -C "$R" update-ref refs/remotes/origin/review HEAD
+gate 'git push origin HEAD:review'
+check "conflicts: HEAD:<other> from one still needs --full" '[2,true]' "[$CODE,$(said 'conflicts/ branch')]"
+git -C "$R" update-ref -d refs/remotes/origin/review
 git -C "$R" switch -q later
 gate 'git push origin later:conflicts/t-1-x'
 check "conflicts: pushing onto one needs --full" 2 "$CODE"
@@ -435,6 +444,11 @@ check "stack push: a new branch needs --branch" '[2,true,false]' "[$CODE,$(said 
 verify --full
 gate 'gh stack push'
 check "stack push: and a branch origin has, --related" 0 "$CODE"
+# --remote picks the remote the branches are checked against.
+gate 'gh stack push --remote backup'
+check "stack push: --remote <r> checks <r>, where later is new" '[2,true]' "[$CODE,$(said 'creates backup/later')]"
+gate 'gh stack submit --remote=origin'
+check "stack submit: --remote=origin, which has them" 0 "$CODE"
 rm -f "$FX/stack.json"
 git -C "$R" switch -q feat
 

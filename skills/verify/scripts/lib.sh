@@ -242,8 +242,11 @@ vf_glob_re() {
 # matched ({files}), or once per file ({file}). The same command picked
 # twice runs once.
 vf_related_map() {
-  local ov=$1 run n j g re f m q c cmds k nc
+  local ov=$1 run n j g re f m me q c cmds k nc del=()
   shift
+  # Files deleted since the base (VF_DELETED, one per line, from verify)
+  # still pick their suites, but aren't handed to any command.
+  while IFS= read -r f; do [ -z "$f" ] || del+=("$f"); done <<<"${VF_DELETED:-}"
   run=$(printf '%s' "$ov" | jq -r '.related // empty | strings')
   {
     case "$run" in
@@ -257,13 +260,16 @@ vf_related_map() {
       g=$(printf '%s' "$ov" | jq -r --argjson j "$j" '.relatedPaths | keys_unsorted[$j]')
       cmds=$(printf '%s' "$ov" | jq -c --argjson j "$j" '.relatedPaths | .[keys_unsorted[$j]] | if type == "array" then . else [.] end')
       re=$(vf_glob_re "$g")
-      m=()
+      m=() me=()
       for f in "$@"; do
+        [[ $f =~ $re ]] && m+=("$f") && me+=("$f")
+      done
+      for f in ${del[@]+"${del[@]}"}; do
         [[ $f =~ $re ]] && m+=("$f")
       done
       j=$((j + 1))
       [ "${#m[@]}" -gt 0 ] || continue
-      q=$(vf_quote "${m[@]}")
+      q=$(vf_quote ${me[@]+"${me[@]}"})
       nc=$(printf '%s' "$cmds" | jq length)
       k=0
       while [ "$k" -lt "$nc" ]; do
@@ -271,11 +277,12 @@ vf_related_map() {
         k=$((k + 1))
         case "$c" in
           *'{file}'*)
-            for f in "${m[@]}"; do
+            for f in ${me[@]+"${me[@]}"}; do
               jq -n --arg n "related $g" --arg r "${c//\{file\}/$(vf_quote "$f")}" '{name: $n, run: $r}'
             done
             ;;
-          *) jq -n --arg n "related $g" --arg r "${c//\{files\}/$q}" '{name: $n, run: $r}' ;;
+          *'{files}'*) [ "${#me[@]}" -eq 0 ] || jq -n --arg n "related $g" --arg r "${c//\{files\}/$q}" '{name: $n, run: $r}' ;;
+          *) jq -n --arg n "related $g" --arg r "$c" '{name: $n, run: $r}' ;;
         esac
       done
     done
@@ -304,6 +311,7 @@ vf_checks() {
     echo '[]'
     return 0
   fi
+
   pm=$(vf_pm "$root")
   if [ "$level" = related ]; then
     tests_ci=$(printf '%s\n' "$names" | grep -E '^test' || true)
@@ -422,6 +430,20 @@ vf_branch_base() {
   return 1
 }
 
+# vf_pushed_ref ROOT: the remote-tracking ref of the current branch on the
+# remote it pushes to (branch.<b>.pushRemote, remote.pushDefault,
+# branch.<b>.remote, else origin), or exit 1 when there's none.
+vf_pushed_ref() {
+  local cur r remote=""
+  cur=$(git -C "$1" symbolic-ref -q --short HEAD 2>/dev/null) || return 1
+  for r in "branch.$cur.pushRemote" remote.pushDefault "branch.$cur.remote"; do
+    remote=$(git -C "$1" config --get "$r" 2>/dev/null) && break
+  done
+  [ -n "$remote" ] || remote=origin
+  git -C "$1" rev-parse -q --verify "refs/remotes/$remote/$cur" >/dev/null 2>&1 || return 1
+  echo "$remote/$cur"
+}
+
 # vf_first_push_level ROOT: what the push that creates a branch on the
 # remote needs: branch, unless the override's "firstPush" (for the repo, or
 # at the top of the file for every repo) says full.
@@ -434,13 +456,14 @@ vf_first_push_level() {
 }
 
 # vf_changed_files ROOT [BASE]: files the working tree changes against BASE
-# (default HEAD), plus untracked files that aren't ignored, that still exist.
-# One per line, relative to ROOT.
+# (default HEAD), deleted ones included, plus untracked files that aren't
+# ignored. One per line, relative to ROOT. verify hands the ones that still
+# exist to the checks, and the deleted ones to relatedPaths (VF_DELETED),
+# where they pick suites without being passed to them.
 vf_changed_files() {
   (
     cd "$1" || exit 0
-    { git diff --name-only "${2:-HEAD}" 2>/dev/null; git ls-files --others --exclude-standard; } |
-      sort -u | while IFS= read -r f; do [ -e "$f" ] && printf '%s\n' "$f"; done
+    { git diff --name-only "${2:-HEAD}" 2>/dev/null; git ls-files --others --exclude-standard; } | sort -u
   )
 }
 

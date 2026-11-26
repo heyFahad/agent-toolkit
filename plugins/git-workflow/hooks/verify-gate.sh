@@ -158,7 +158,7 @@ push_dst() {
 }
 
 check_push() { # dir args...
-  local dir=$1 root remote="" delete=false tags=false skip=false bare=false t src dst tree level why
+  local dir=$1 root remote="" delete=false tags=false skip=false bare=false t s src dst tree level why
   local refs=()
   shift
   root=$(gate_root "$dir") || return 0
@@ -216,9 +216,20 @@ check_push() { # dir args...
         dst=${t#*:}
         dst=${dst#refs/heads/}
         ;;
-      *) dst=$(push_dst "$root" "$remote" "$src" "$bare") ;;
+      *)
+        # remote.<name>.push maps a branch named alone to another name the
+        # hook can't follow.
+        if [ "$bare" = false ] && git -C "$root" config --get "remote.$remote.push" >/dev/null 2>&1; then
+          block "verify-gate: git push $remote $t follows this repo's remote.$remote.push setting, which can send $src under another name. Name the destination (git push $remote $src:<branch>) after verifying it."
+          continue
+        fi
+        dst=$(push_dst "$root" "$remote" "$src" "$bare")
+        ;;
     esac
-    push_level "$root" "$remote" "$dst" "${src#refs/heads/}"
+    # HEAD counts as the branch it is, for the conflicts/ rule.
+    s=${src#refs/heads/}
+    [ "$s" != HEAD ] || s=$(git -C "$root" symbolic-ref -q --short HEAD 2>/dev/null || echo HEAD)
+    push_level "$root" "$remote" "$dst" "$s"
     need "$tree" "$level" "$root" "git push of $src" "$src" "$why"
   done
 }
@@ -261,12 +272,22 @@ check_pr_create() { # dir args...
   need "$tree" "$level" "$root" "gh pr create from $head" "$head" "$why"
 }
 
-# check_stack DIR SUB: every branch gh stack would push that isn't merged or
-# queued needs a record, at the level a push of it to origin would. sync is
-# blocked outright.
+# check_stack DIR SUB [ARGS...]: every branch gh stack would push that isn't
+# merged or queued needs a record, at the level a push of it to the remote
+# (--remote, else origin) would. sync is blocked outright.
 check_stack() {
-  local root json err b tree level why
+  local root json err b tree level why remote=origin next=false t
   root=$(gate_root "$1") || return 0
+  for t in "${@:3}"; do
+    if [ "$next" = true ]; then
+      remote=$t next=false
+      continue
+    fi
+    case "$t" in
+      --remote) next=true ;;
+      --remote=*) remote=${t#--remote=} ;;
+    esac
+  done
   if [ "$2" = sync ]; then
     block "verify-gate: gh stack sync rebases the stack and pushes it in one go, so the rebased branches can't be verified first. Run gh stack rebase, then verify on each branch it changed (at the level this hook asks for), then gh stack push."
     return 0
@@ -284,7 +305,7 @@ check_stack() {
   fi
   for b in $(printf '%s' "$json" | jq -r '.branches[] | select((.isMerged or .isQueued) | not) | .name'); do
     tree=$(tree_of "$root" "$b") || continue
-    push_level "$root" origin "$b"
+    push_level "$root" "$remote" "$b"
     need "$tree" "$level" "$root" "gh stack $2 of $b" "$b" "$why"
   done
 }
@@ -358,7 +379,11 @@ while IFS= read -r seg; do
           [ "$gh_args" -ge "${#words[@]}" ] || rest=("${words[@]:$gh_args}")
           check_pr_create "$DIR" ${rest[@]+"${rest[@]}"}
           ;;
-        "stack push" | "stack submit" | "stack sync") check_stack "$DIR" "${sub#* }" ;;
+        "stack push" | "stack submit" | "stack sync")
+          rest=()
+          [ "$gh_args" -ge "${#words[@]}" ] || rest=("${words[@]:$gh_args}")
+          check_stack "$DIR" "${sub#* }" ${rest[@]+"${rest[@]}"}
+          ;;
       esac
       ;;
   esac

@@ -81,16 +81,24 @@ say() { [ "$MODE" = list ] || echo "$@"; }
 # working tree against HEAD for related, against where the branch left the
 # default branch for branch. May move LEVEL to full.
 collect_files() {
-  local f base
+  local base up
   [ "$EXPLICIT" = false ] || return 0
   case "$LEVEL" in
     related)
-      while IFS= read -r f; do FILES+=("$f"); done < <(vf_changed_files "$ROOT")
+      add_changed
+      # A clean tree (after a rebase, say) has nothing against HEAD, but its
+      # commits may hold code no run saw: check what it changes against the
+      # branch as the remote has it.
+      if [ "${#FILES[@]}" -eq 0 ] && [ -z "$DELETED" ] && up=$(vf_pushed_ref "$ROOT") &&
+        [ "$(git -C "$ROOT" rev-parse "HEAD^{tree}")" != "$(git -C "$ROOT" rev-parse "$up^{tree}")" ]; then
+        add_changed "$up"
+        say "verify: the working tree is clean, so --related checks the ${#FILES[@]} files it changes against $up"
+      fi
       ;;
     branch)
       if base=$(vf_branch_base "$ROOT"); then
-        while IFS= read -r f; do FILES+=("$f"); done < <(vf_changed_files "$ROOT" "$base")
-        say "verify: --branch checks the ${#FILES[@]} files this branch changes since ${base:0:7}"
+        add_changed "$base"
+        say "verify: --branch checks the $((${#FILES[@]} + $(printf '%s' "$DELETED" | grep -c .))) files this branch changes since ${base:0:7}"
       else
         say "verify: no origin/HEAD, origin/main or origin/master to find where this branch started, so --branch runs every check"
         LEVEL=full
@@ -99,9 +107,21 @@ collect_files() {
   esac
   if [ "$LEVEL" != full ] && [ "${#FILES[@]}" -gt "$MAX_FILES" ]; then
     say "verify: ${#FILES[@]} changed files is more than $MAX_FILES, so this runs every check (--full)"
-    LEVEL=full FILES=()
+    LEVEL=full FILES=() DELETED=""
   fi
+  VF_DELETED=$DELETED
+  export VF_DELETED
   return 0
+}
+
+# add_changed [BASE]: add the files changed against BASE to FILES, and the
+# deleted ones to DELETED.
+DELETED=""
+add_changed() {
+  local f
+  while IFS= read -r f; do
+    if [ -e "$ROOT/$f" ]; then FILES+=("$f"); else DELETED="$DELETED$f"$'\n'; fi
+  done < <(vf_changed_files "$ROOT" ${1+"$1"})
 }
 
 if [ "$MODE" = list ]; then
