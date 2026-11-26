@@ -21,6 +21,9 @@ mkdir -p "$TMP/bin"
 export PATH="$TMP/bin:$PATH"
 export DEVSTACK_STATE_DIR="$TMP/state"
 unset DEVSTACK_REGISTRY
+# No idle watchdog unless a test asks for one.
+export DEVSTACK_IDLE_MINUTES=0
+unset DEVSTACK_IDLE_SECONDS DEVSTACK_IDLE_TICK
 
 pass=0
 fail=0

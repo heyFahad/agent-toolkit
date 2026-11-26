@@ -20,15 +20,19 @@ In a sandbox, devstack needs to reach its unix socket and write to its state fol
 | `devstack up <target or service…>` | Start what a change needs. Prints one line per service. |
 | `… --from <svc>=<worktree>` | Run that service from the ticket's worktree instead of the main checkout. Repeat per service. |
 | `… --with <svc>` | Also start an optional dependency. |
-| `devstack status [--json]` | See what's running, on which port, from which directory. |
+| `devstack status [--json]` | See what's running, on which port, from which directory, and when each service's idle stop is due. |
 | `devstack logs <svc> [--errors] [--tail N]` | Read one service's log (30 lines by default). |
 | `devstack restart <svc> [--from <path>]` | Restart one service, optionally from another checkout. |
 | `devstack urls` | Get what to hand the user: web URLs, APIs, Metro ports. |
-| `devstack down [svc…]` | Stop services. Docker containers are never touched. |
+| `devstack down [svc…]` | Stop services. Docker containers are left running. |
 | `devstack attach` | The live dashboard. This is for the user, in their own terminal. |
 | `devstack ports [--markdown]` | Print the port table. |
 
 Exit codes: 0 fine, 1 a service failed or wasn't healthy in time, 2 a usage, registry or ownership problem, 3 a missing tool or Node version.
+
+## When to start it
+
+Running services cost memory and CPU the whole time they're up, so start them late. Write the code, run the tests, lint and `verify` with nothing running: none of those need a live stack. Run `devstack up` only right before you check behaviour against running services or ask the user to try the change, and stop it (`devstack down`) once they've approved it.
 
 ## How to use it while verifying a change
 
@@ -37,10 +41,27 @@ Exit codes: 0 fine, 1 a service failed or wasn't healthy in time, 2 a usage, reg
 3. Check behaviour against the running services. In the Claude desktop app, open web URLs in the browser pane with `preview_start` and a `url`. Don't write `launch.json` files for this.
 4. When handing over to the user, give them the `devstack urls` output, and mention `devstack attach` if they want to watch the stack from iTerm2.
 
+## Idle shutdown
+
+`up` starts a watchdog that stops each service nobody has used for 15 minutes: no connection on its port and no new line in its log. Working on one target, the others you started earlier stop on their own. A quiet service stays up while a running service depends on it (a shared API stays while either app that uses it runs), and dependants stop before what they depend on. When the last service stops, the whole stack goes down.
+
+The watchdog checks every 30 seconds, runs once per state folder (one for the whole stack), and exits when the stack goes down any other way. process-compose's own health checks don't count: neither its probe's connection nor log lines that name the health-check path. An app that keeps a connection open (the Simulator's link to Metro, a dev server's hot-reload websocket in a browser tab) keeps its service up; that's someone using it. So does a service that logs on a timer.
+
+Connections are sampled, not counted. An API that only gets short requests and doesn't log them (called with curl now and then, say) can stop while someone is still using it. An API behind a running app is safe either way, because it stays up while the app does. For one called directly, raise `idle.minutes`, or turn on its request logging.
+
+- `devstack status` ends with each running service's countdown (`idle stop in: …`) and lists what the watchdog stopped (`stopped while idle: …`). A stopped service shows as `Stopped`.
+- Change the limit with `idle: {minutes: 30}` in `stack.yaml`, or `DEVSTACK_IDLE_MINUTES` for one `up`; `0` turns it off. The setting from the latest `up` applies.
+- If the user comes back to a stopped service, run `devstack up` for it again. It starts cold, so a URL handed over earlier answers again only once it's Ready.
+
+The watchdog never touches Docker containers: they stay running after their services stop, as they do after `devstack down`.
+
+MongoDB sizes its WiredTiger cache to about half the Docker VM's memory unless told otherwise: 3.6 GB of a 7.8 GB VM has been seen. devstack doesn't create containers, so it can't set that, but `up` says once when a MongoDB container it relies on has no cap. Tell the user that whoever creates the container should add `--wiredTigerCacheSizeGB 1` to the `mongod` command (`docker run … mongo:7 --wiredTigerCacheSizeGB 1`, or `command:` in a compose file); the container has to be recreated for it to apply.
+
 ## Rules
 
 - If `up` says a service "is running from" another directory, another session may be testing with it. Don't add `--takeover` unless the user says that session is done.
 - Don't `devstack down` while the user is still testing. Stopping the stack waits for their approval of the change.
+- Don't start services while you're still coding or running checks. Start them right before the user tests (see "When to start it").
 - Never stop, recreate or remove Docker containers to fix a failure. `up` only starts a stopped container that's listed in the registry's `infra`. If Docker itself is down, tell the user.
 - A port held by something else (`port 3010 for bsa is held by node (pid …)`) is the user's process. Tell them what's holding it rather than killing it.
 - If `up` says one service "can't run while" another runs from the same folder (two brands of one Next.js app, say), stop the other one or run this one from a worktree with `--from`. That limit comes from the app, not devstack.

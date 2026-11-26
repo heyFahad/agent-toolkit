@@ -151,7 +151,7 @@ When `pr-gate.sh` reports no `blocking` reason on any PR (a draft is only a warn
 What comes next depends on whether there's a pre-prod PR:
 
 - **There is one.** The user tests the change by hand before other developers see it. After step 8's report:
-  - if `devstack` is on `PATH` and `devstack status --json` shows services up, list their URLs;
+  - if the change needs running services and `devstack` is on `PATH`, start them now (this is when they start, never earlier while coding or running checks): `devstack up <target>`, with `--from <svc>=<worktree>` for every service whose repo this change touches, each worktree checked out at the pre-prod PR's head (the `conflicts/...` branch when the PR comes from one) with no uncommitted changes, so the user tests exactly the code they're approving. `up` leaves a service that's already Ready alone, so `devstack restart <svc>` each one that was already running from that worktree before the head changed. Once `up` and any restarts report each service Ready, list the URLs from `devstack urls`; if it fails, report that instead of asking for a test;
   - note the pre-prod PR's head SHA and base: that's the version the user tests;
   - ask the user to try the change and approve it, with the harness's question prompt if it has one (the question box in the Claude desktop app, `AskUserQuestion` in Claude Code), otherwise a plain question;
   - end the turn there.

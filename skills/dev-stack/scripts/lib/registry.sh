@@ -65,6 +65,10 @@ else (.services | to_entries[] | problems(.key; .value)),
      (.services | keys[] | select(test("^[a-z0-9][a-z0-9-]*$") | not)
        | "\(.): name: use lowercase letters, digits and dashes") end,
 (if (.targets // {} | type) != "object" then "registry: targets: must be a map" else empty end),
+(if (.idle // {} | type) != "object" then "registry: idle: must be a map"
+ elif ((.idle.minutes // 15) as $m | ($m | type) != "number" or $m < 0 or ($m | floor) != $m)
+   then "registry: idle.minutes: must be a whole number of minutes, 0 to turn the idle shutdown off"
+ else empty end),
 ((.targets // {} | keys) - ((.targets // {} | keys) - (.services // {} | keys)) | .[]
   | "\(.): target: a target cannot share its name with a service")
 '
