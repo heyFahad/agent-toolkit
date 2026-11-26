@@ -117,6 +117,110 @@ R=$(mkrepo args '{"lint":"l","test":"t","audit:deps":"a"}' "" \
 run_verify "$R" --list
 check "list: CI's arguments are kept" '["CI=true npm run lint -- --max-warnings=0","CI=true npm run test -- --run"]' "$(q '[.[].run]')"
 
+# A step or job with `continue-on-error: true` is advisory: CI ignores its
+# result, so it isn't a check. An expression there isn't literally true.
+R=$(mkrepo advisory '{"lint":"l","test":"t","typecheck":"tc","docs":"d","e2e":"e","build":"b"}' pnpm-lock.yaml "")
+mkdir -p "$R/.github/workflows"
+cat >"$R/.github/workflows/ci.yml" <<'YML'
+name: CI
+on:
+  pull_request:
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Lint
+        run: pnpm run lint
+      - name: Test
+        continue-on-error: true # flaky for now
+        run: pnpm test
+      # Advisory until the backlog is cleared.
+      - name: Typecheck
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        run: |
+          pnpm run typecheck
+      - continue-on-error: 'true'
+        run: pnpm run docs
+      - name: E2E
+        continue-on-error: ${{ matrix.experimental }}
+        run: pnpm run e2e
+  advisory:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - run: pnpm run build
+YML
+git -C "$R" add -A && git -C "$R" -c user.email=t@t -c user.name=t commit -q -m wf
+run_verify "$R" --list
+check "list: continue-on-error steps and jobs are advisory, not checks" '["lint","e2e"]' "$(q '[.[].name]')"
+# Indented by four, with keys after `-   `, and a comment after jobs:.
+cat >"$R/.github/workflows/ci.yml" <<'YML'
+on:
+    pull_request:
+jobs:  # all of them
+    checks:
+        steps:
+            -   name: Lint
+                run: pnpm run lint
+            -   name: Test
+                continue-on-error: true
+                run: pnpm test
+    advisory:
+        continue-on-error: true
+        steps:
+            -   run: pnpm run build
+YML
+git -C "$R" add -A && git -C "$R" -c user.email=t@t -c user.name=t commit -q -m wf4
+run_verify "$R" --list
+check "list: continue-on-error found at any indent" '["lint"]' "$(q '[.[].name]')"
+
+# A PR-checks workflow whose blocking steps call tools through `pnpm exec`
+# and whose only package script is an advisory typecheck: nothing verify can
+# read, so it says to set the checks by hand rather than gate on typecheck.
+R=$(mkrepo execonly '{"lint":"eslint .","test":"jest","typecheck":"tsc --noEmit"}' pnpm-lock.yaml "")
+mkdir -p "$R/.github/workflows"
+cat >"$R/.github/workflows/pr-checks.yml" <<'YML'
+name: PR Checks
+on:
+  pull_request:
+    branches: [main, dev]
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    if: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install Node.js dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Apply patches
+        run: pnpm exec patch-package
+      - name: Lint changed files
+        if: ${{ steps.changed.outputs.any == 'true' }}
+        run: |
+          mapfile -d '' -t files < "$RUNNER_TEMP/changed-files.txt"
+          pnpm exec eslint "${files[@]}"
+      - name: Test
+        run: pnpm exec jest --ci --forceExit
+      - name: Metro bundle check (iOS)
+        run: |
+          pnpm exec react-native bundle \
+            --platform ios \
+            --bundle-output "${{ runner.temp }}/ios-bundle-check.js"
+      # Advisory only: a backlog of type errors.
+      - name: Typecheck
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        run: pnpm run typecheck
+YML
+git -C "$R" add -A && git -C "$R" -c user.email=t@t -c user.name=t commit -q -m wf
+run_verify "$R" --list
+check "list: an advisory typecheck isn't the repo's only check" '[]' "$OUT"
+run_verify "$R" --full
+check "run: and says to set the repo's checks by hand" true "$(printf '%s' "$OUT" | grep -q 'verify.local.json' && echo true || echo false)"
+
 for pair in "yarn.lock:yarn" ":npm" "bun.lock:bun" "package-lock.json:npm"; do
   lock=${pair%%:*} pm=${pair#*:}
   R=$(mkrepo "pm-$pm-${lock:-none}" '{"lint":"l"}' "$lock" 'npm run lint')
@@ -132,14 +236,43 @@ check "list: an uncommitted lockfile doesn't count" '"CI=true npm run lint"' "$(
 R=$(mkrepo jest '{"lint":"l","test":"t"}' "" "$(printf 'npm run lint\nnpm test')" '{"jest":"^29"}')
 run_verify "$R" --list --related a.ts b.ts
 check "list: related with jest" \
-  '["CI=true npm run lint","CI=true npx --no-install jest --findRelatedTests --passWithNoTests a.ts b.ts"]' "$(q '[.[].run]')"
+  '["CI=true npm run lint","CI=true npx --no-install jest --maxWorkers=50% --findRelatedTests --passWithNoTests a.ts b.ts"]' "$(q '[.[].run]')"
 
 R=$(mkrepo vitest '{"lint":"l","test":"t","build":"b"}' pnpm-lock.yaml "$(printf 'pnpm lint\npnpm test\npnpm build')" '{"vitest":"^2"}')
 run_verify "$R" --list --related src/a.ts
 check "list: related with vitest" \
-  '["CI=true pnpm run lint","CI=true pnpm exec vitest related --run --passWithNoTests src/a.ts"]' "$(q '[.[].run]')"
+  '["CI=true pnpm run lint","CI=true pnpm exec vitest related --run --passWithNoTests --maxWorkers=50% src/a.ts"]' "$(q '[.[].run]')"
 run_verify "$R" --list --related
 check "list: related, no changed files" '["CI=true pnpm run lint"]' "$(q '[.[].run]')"
+
+# The related level runs the type scripts too, not only format and lint.
+R=$(mkrepo relty '{"lint":"l","typecheck":"tc","test":"t","build":"b"}' "" \
+  "$(printf 'npm run lint\nnpm run typecheck\nnpm test\nnpm run build')" '{"jest":"^29"}')
+run_verify "$R" --list --related a.ts
+check "list: related runs lint, typecheck and related tests" '["lint","typecheck","related-tests"]' "$(q '[.[].name]')"
+
+# ------------------------------------------------------------- worker caps
+# A script that is one jest or vitest call gets the cap at the full level;
+# npm needs `--` to pass it on, the others don't; after CI's own `--` it
+# comes last.
+R=$(mkrepo capnpm '{"test":"jest","test:e2e":"cross-env X=1 jest -c e2e.js"}' "" \
+  "$(printf 'npm test\nnpm run test:e2e -- --ci')" '{"jest":"^29"}')
+run_verify "$R" --list
+check "caps: jest under npm, with and without CI's arguments" \
+  '["CI=true npm run test -- --maxWorkers=50%","CI=true npm run test:e2e -- --ci --maxWorkers=50%"]' "$(q '[.[].run]')"
+R=$(mkrepo cappnpm '{"test":"vitest run"}' pnpm-lock.yaml 'pnpm test' '{"vitest":"^3.1.0"}')
+run_verify "$R" --list
+check "caps: vitest under pnpm, no --" '["CI=true pnpm run test --maxWorkers=50%"]' "$(q '[.[].run]')"
+R=$(mkrepo capnone '{"test":"jest && node after.js","test:serial":"jest --runInBand","test:w":"jest","test:node":"node t.js"}' "" \
+  "$(printf 'npm test\nnpm run test:serial\nnpm run test:w -- -w 2\nnpm run test:node')" '{"jest":"^29"}')
+run_verify "$R" --list
+check "caps: none for chained scripts, a worker count of their own, or no jest" \
+  '["CI=true npm run test","CI=true npm run test:node","CI=true npm run test:serial","CI=true npm run test:w -- -w 2"]' "$(q '[.[].run]')"
+R=$(mkrepo capold '{"lint":"l","test":"vitest run"}' "" "$(printf 'npm run lint\nnpm test')" '{"vitest":"^0.34.6"}')
+run_verify "$R" --list
+check "caps: vitest 0.x has no --maxWorkers" '["CI=true npm run lint","CI=true npm run test"]' "$(q '[.[].run]')"
+run_verify "$R" --list --related a.ts
+check "caps: nor for related tests" '"CI=true npx --no-install vitest related --run --passWithNoTests a.ts"' "$(q '.[1].run')"
 
 R=$(mkrepo notestci '{"lint":"l","test":"t"}' "" 'npm run lint' '{"jest":"^29"}')
 run_verify "$R" --list --related a.ts
@@ -154,12 +287,55 @@ check "list: override replaces inference" '[{"name":"t","run":"make t"}]' "$OUT"
 run_verify "$R" --list --related a 'b c.sh'
 check "list: override related with {files}" \
   "$(jq -nc --arg r "shellcheck $(printf '%q ' a 'b c.sh' | sed 's/ $//')" '[$r]')" "$(q '[.[].run]')"
+run_verify "$R" --list --related
+check "list: override related with {files} doesn't run with no changed files" '[]' "$OUT"
+echo '{"repos":{"owner/repo":{"checks":[{"name":"t","run":"make t"}],"related":"make quick"}}}' >"$CFG"
+run_verify "$R" --list --related
+check "list: override related without {files} runs with no changed files too" '["make quick"]' "$(q '[.[].run]')"
 echo '{"repos":{"owner/repo":{"checks":[{"name":"t","run":"make t"}]}}}' >"$CFG"
 run_verify "$R" --list --related a
 check "list: override with no related runs the full list" '["make t"]' "$(q '[.[].run]')"
 echo '{"repos":{"owner/repo":{"checks":[]}}}' >"$CFG"
 run_verify "$R" --list
 check "list: empty checks turns the gate off" '[]' "$OUT"
+
+# relatedPaths maps changed paths to the suites that cover them, next to a
+# string related that runs on every changed file.
+jq -n '{repos: {"owner/repo": {checks: [{name: "all", run: "make all"}],
+  related: "shellcheck {files}",
+  relatedPaths: {
+    "skills/check-pr/**": "bash skills/check-pr/tests/t.sh",
+    "skills/*/SKILL.md": "lint-skill {files}",
+    "**/*.json": "jq . {files}",
+    "plugins/x/**": "bash skills/check-pr/tests/t.sh"}}}}' >"$CFG"
+run_verify "$R" --list --related skills/check-pr/scripts/a.sh skills/verify/SKILL.md skills/verify/deep/SKILL.md README.md
+check "paths: each matching glob's command, {files} as the files it matched" \
+  "$(jq -nc '[{name: "related", run: "shellcheck skills/check-pr/scripts/a.sh skills/verify/SKILL.md skills/verify/deep/SKILL.md README.md"},
+    {name: "related skills/check-pr/**", run: "bash skills/check-pr/tests/t.sh"},
+    {name: "related skills/*/SKILL.md", run: "lint-skill skills/verify/SKILL.md"}]')" "$OUT"
+run_verify "$R" --list --related a.json sub/dir/b.json
+check "paths: **/ matches no directory or many" '["shellcheck a.json sub/dir/b.json","jq . a.json sub/dir/b.json"]' "$(q '[.[].run]')"
+run_verify "$R" --list --related skills/check-pr/x plugins/x/y
+check "paths: two globs with the same command run it once" '["shellcheck skills/check-pr/x plugins/x/y","bash skills/check-pr/tests/t.sh"]' "$(q '[.[].run]')"
+jq '.repos["owner/repo"] |= del(.related)' "$CFG" >"$CFG.tmp" && mv "$CFG.tmp" "$CFG"
+run_verify "$R" --list --related docs/x.md 'a b.json'
+check "paths: no run, only the matching globs, files quoted" \
+  "$(jq -nc --arg r "jq . $(printf '%q' 'a b.json')" '[$r]')" "$(q '[.[].run]')"
+run_verify "$R" --list --related docs/x.md
+check "paths: nothing matched, nothing to run" '[]' "$OUT"
+run_verify "$R" --list
+check "paths: the full level is still the checks" '["make all"]' "$(q '[.[].run]')"
+# A list of commands per glob, and {file} for one run per file: a suite both
+# its source and its test file pick runs once.
+jq -n '{repos: {"owner/repo": {checks: [{name: "all", run: "make all"}], relatedPaths: {
+  "**/*.test.sh": "bash {file}",
+  "src/a.sh": ["bash tests/a.test.sh", "bash tests/b.test.sh"]}}}}' >"$CFG"
+run_verify "$R" --list --related src/a.sh tests/a.test.sh 'tests/c d.test.sh'
+check "paths: {file} runs per file, a list runs each, the same command once" \
+  "$(jq -nc --arg c "bash $(printf '%q' 'tests/c d.test.sh')" '["bash tests/a.test.sh", $c, "bash tests/b.test.sh"]')" "$(q '[.[].run]')"
+# A verify that reads "related" only as a string (the released one) sees
+# relatedPaths as an unknown key and ignores it, rather than running JSON.
+check "paths: related stays a string next to relatedPaths" string "$(jq -r '.repos["owner/repo"].related // "absent" | type' "$CFG")"
 rm "$CFG"
 
 R=$(mkrepo nopkg '{}' "" "")
@@ -299,6 +475,221 @@ touch -t 202001010000 "$AGENT_TOOLKIT_STATE_DIR/verify/old.json" "$AGENT_TOOLKIT
 run_verify "$R" --full
 check "run: records and logs older than 14 days are pruned" false \
   "$([ -e "$AGENT_TOOLKIT_STATE_DIR/verify/old.json" ] || [ -e "$AGENT_TOOLKIT_STATE_DIR/verify/logs/old.log" ] && echo true || echo false)"
+
+# -------------------------------------------------------------------- branch
+# --branch runs the quick checks on every file the branch changes since it
+# left the default branch: committed, uncommitted and untracked, but not
+# what the default branch changed since.
+R=$(mkrepo br '{"lint":"echo l","test":"echo t"}' "" "$(printf 'npm run lint\nnpm test')" '{"jest":"^29"}')
+git -C "$R" branch -q -M main
+echo m >"$R/main-later.ts"
+git -C "$R" switch -q -c feat
+git -C "$R" switch -q main
+git -C "$R" add -A && git -C "$R" -c user.email=t@t -c user.name=t commit -q -m later
+git -C "$R" update-ref refs/remotes/origin/main main
+git -C "$R" switch -q feat
+echo c >"$R/committed.ts"
+echo e >"$R/edited.ts"
+git -C "$R" add -A && git -C "$R" -c user.email=t@t -c user.name=t commit -q -m c
+echo u >>"$R/edited.ts"
+echo n >"$R/new.ts"
+run_verify "$R" --list --branch
+check "branch: related checks over every file the branch changes" \
+  '["CI=true npm run lint","CI=true npx --no-install jest --maxWorkers=50% --findRelatedTests --passWithNoTests committed.ts edited.ts new.ts"]' "$(q '[.[].run]')"
+git -C "$R" checkout -q edited.ts
+printf '#!/bin/sh\nexit 0\n' >"$TMP/bin/npx"
+chmod +x "$TMP/bin/npx"
+run_verify "$R" --branch
+check "branch: runs and says how many files" '[0,true]' "[$CODE,$(printf '%s' "$OUT" | grep -q 'checks the 3 files this branch changes' && echo true || echo false)]"
+TREE=$(lib vf_tree "$R")
+check "branch: records the branch level" branch "$(jq -r .level "$AGENT_TOOLKIT_STATE_DIR/verify/$TREE.json")"
+check "branch: satisfies related and branch, not full" '0 0 1' \
+  "$(lib vf_record_ok "$TREE" related; echo -n "$? "; lib vf_record_ok "$TREE" branch; echo -n "$? "; lib vf_record_ok "$TREE" full; echo $?)"
+run_verify "$R" --related
+check "branch: a later --related pass keeps the --branch record" 0 "$(lib vf_record_ok "$TREE" branch; echo $?)"
+run_verify "$R" --full
+run_verify "$R" --branch
+check "branch: a later --branch pass keeps the --full record" 0 "$(lib vf_record_ok "$TREE" full; echo $?)"
+# origin/HEAD, when set, names the default branch.
+git -C "$R" update-ref refs/remotes/origin/trunk "$(git -C "$R" rev-parse feat)"
+git -C "$R" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/trunk
+check "branch: origin/HEAD is the base when set" "$(git -C "$R" rev-parse feat)" "$(lib vf_branch_base "$R")"
+git -C "$R" symbolic-ref --delete refs/remotes/origin/HEAD
+# Nothing to diff against: --branch runs every check instead.
+git -C "$R" update-ref -d refs/remotes/origin/main
+git -C "$R" update-ref -d refs/remotes/origin/trunk
+echo x >"$R/x.ts"
+run_verify "$R" --branch
+check "branch: no default branch falls back to --full, and says so" '[0,true,"full"]' \
+  "[$CODE,$(printf '%s' "$OUT" | grep -q 'runs every check' && echo true || echo false),\"$(jq -r .level "$AGENT_TOOLKIT_STATE_DIR/verify/$(lib vf_tree "$R").json")\"]"
+
+rm "$TMP/bin/npx"
+
+# A branch with more changed files than one command line safely holds runs
+# every check instead.
+git -C "$R" update-ref refs/remotes/origin/main main
+mkdir -p "$R/many"
+for i in $(seq 501); do : >"$R/many/f$i.ts"; done
+run_verify "$R" --branch
+check "branch: over 500 changed files runs --full, and says so" '[0,true,"full"]' \
+  "[$CODE,$(printf '%s' "$OUT" | grep -q 'more than 500' && echo true || echo false),\"$(jq -r .level "$AGENT_TOOLKIT_STATE_DIR/verify/$(lib vf_tree "$R").json")\"]"
+rm -rf "$R/many"
+git -C "$R" update-ref -d refs/remotes/origin/main
+
+# A clean tree has nothing against HEAD; after a rebase its commits still
+# hold code no run saw, so --related checks what it changes against the
+# branch as the remote has it. A deleted file picks its suite without being
+# handed to any command.
+RC=$(mkrepo clean '{"lint":"l"}' "" 'npm run lint')
+mkdir -p "$RC/src" "$RC/tests"
+echo a >"$RC/src/a.sh"
+echo b >"$RC/src/gone.sh"
+git -C "$RC" add -A && git -C "$RC" -c user.email=t@t -c user.name=t commit -q -m src
+git -C "$RC" update-ref refs/remotes/origin/main HEAD
+git -C "$RC" switch -q -c feat
+git -C "$RC" update-ref refs/remotes/origin/feat HEAD
+echo a2 >"$RC/src/a.sh"
+git -C "$RC" rm -q src/gone.sh
+git -C "$RC" -c user.email=t@t -c user.name=t commit -q -am rebased
+jq -n --arg seen "$TMP/seen" '{repos: {"owner/clean": {checks: [{name: "all", run: "true"}],
+  related: ("printf \"%s\\n\" {files} >" + $seen),
+  relatedPaths: {"src/**": ["echo suite >>" + $seen, "printf \"[%s]\\n\" {files} >>" + $seen]}}}}' >"$CFG"
+rm -f "$TMP/seen"
+run_verify "$RC" --related
+check "clean: checks what HEAD changes against the remote's copy of the branch" '[0,true]' \
+  "[$CODE,$(printf '%s' "$OUT" | grep -q 'no tracked changes against HEAD, so --related checks the 1 files the tree changes against origin/feat' && echo true || echo false)]"
+check "clean: the changed file reaches the commands, the deleted one picks the suite only" \
+  "$(printf 'src/a.sh\nsuite\n[src/a.sh]')" "$(cat "$TMP/seen" 2>/dev/null)"
+# Only the deleted file changed: the suite runs, the {files} commands don't.
+git -C "$RC" reset -q --hard origin/feat
+git -C "$RC" rm -q src/gone.sh
+rm -f "$TMP/seen"
+run_verify "$RC" --related
+check "clean: a deletion alone still runs its suite" suite "$(cat "$TMP/seen" 2>/dev/null)"
+# An untracked scratch file doesn't hide the rebased commits.
+git -C "$RC" reset -q --hard origin/feat
+echo a3 >"$RC/src/a.sh"
+git -C "$RC" -c user.email=t@t -c user.name=t commit -q -am again
+echo s >"$RC/scratch.txt"
+rm -f "$TMP/seen"
+run_verify "$RC" --related
+check "clean: an untracked file doesn't stop the remote comparison" "$(printf 'scratch.txt\nsrc/a.sh\nsuite\n[src/a.sh]')" "$(cat "$TMP/seen" 2>/dev/null)"
+rm -f "$RC/scratch.txt"
+# Under push.default=upstream the baseline is the upstream's ref.
+git -C "$RC" config branch.feat.remote origin
+git -C "$RC" config branch.feat.merge refs/heads/feat-up
+git -C "$RC" config push.default upstream
+git -C "$RC" update-ref refs/remotes/origin/feat-up origin/main
+check "clean: push.default=upstream compares against the upstream" origin/feat-up "$(lib vf_pushed_ref "$RC")"
+git -C "$RC" config --unset push.default
+check "clean: otherwise against the same name" origin/feat "$(lib vf_pushed_ref "$RC")"
+# A moved file is a deletion and an addition: its old place picks suites.
+git -C "$RC" reset -q --hard origin/feat
+mkdir -p "$RC/lib"
+git -C "$RC" mv src/a.sh lib/a.sh
+check "clean: a rename lists both paths" "$(printf 'lib/a.sh\nsrc/a.sh')" "$(lib vf_changed_files "$RC")"
+# Deletions count toward the cutoff too.
+git -C "$RC" reset -q --hard origin/feat
+mkdir -p "$RC/many"
+for i in $(seq 501); do : >"$RC/many/f$i"; done
+git -C "$RC" add many && git -C "$RC" -c user.email=t@t -c user.name=t commit -q -m many
+git -C "$RC" rm -q -r many
+run_verify "$RC" --related
+check "clean: 501 deletions run every check" true "$(printf '%s' "$OUT" | grep -q '501 changed files is more than 500' && echo true || echo false)"
+rm -f "$TMP/seen" "$CFG"
+
+# firstPush in the config: per repo, or for every repo at the top.
+check "branch: the first push needs --branch by default" branch "$(lib vf_first_push_level "$R")"
+echo '{"firstPush": "full"}' >"$CFG"
+check "branch: firstPush full at the top applies to every repo" full "$(lib vf_first_push_level "$R")"
+echo '{"firstPush": "full", "repos": {"owner/br": {"firstPush": "branch"}}}' >"$CFG"
+check "branch: a repo's own firstPush wins" branch "$(lib vf_first_push_level "$R")"
+rm "$CFG"
+
+# ---------------------------------------------------------------------- lock
+# One run at a time on the machine: a second run waits for the first, and
+# says whose run it's queued behind.
+LOCK="$AGENT_TOOLKIT_STATE_DIR/verify/run.lock"
+export VF_LOCK_POLL=0.1
+A=$(mkrepo locka '{"lint":"sleep 1; touch '"$TMP"'/a-done"}' "" 'npm run lint')
+B=$(mkrepo lockb '{"lint":"test -f '"$TMP"'/a-done"}' "" 'npm run lint')
+rm -f "$TMP/a-done"
+(cd "$A" && bash "$S/verify" --full >"$TMP/a-out" 2>&1) &
+apid=$!
+for _ in $(seq 50); do [ -f "$LOCK/owner" ] && break; sleep 0.1; done
+check "lock: a run holds the lock, naming its repo" owner/locka "$(sed -n 's/^repo=//p' "$LOCK/owner" 2>/dev/null)"
+run_verify "$B" --full
+wait "$apid"
+check "lock: a second run waits for the first to finish" 0 "$CODE"
+check "lock: and says whose run it's queued behind" true "$(printf '%s' "$OUT" | grep -q 'queued behind the verify run for owner/locka' && echo true || echo false)"
+check "lock: released after the run" false "$([ -e "$LOCK" ] && echo true || echo false)"
+
+# The changed files are listed once the lock is held, not before the wait:
+# a file edited while a run is queued is still checked.
+jq -n --arg r "printf '%s\\n' {files} >$TMP/seen" '{repos: {"owner/lockb": {checks: [{name: "t", run: "true"}], related: $r}}}' >"$XDG_CONFIG_HOME/agent-toolkit/verify.local.json"
+sleep 30 &
+holder=$!
+mkdir -p "$LOCK"
+printf 'pid=%s\nstart=%s\nrepo=owner/other\nat=now\n' "$holder" "$(lib _vf_proc_start "$holder")" >"$LOCK/owner"
+echo a >"$B/first.txt"
+(cd "$B" && bash "$S/verify" --related >"$TMP/b-out" 2>&1) &
+bpid=$!
+for _ in $(seq 50); do grep -q queued "$TMP/b-out" 2>/dev/null && break; sleep 0.1; done
+echo b >"$B/during-wait.txt"
+kill "$holder" 2>/dev/null
+wait "$holder" 2>/dev/null
+wait "$bpid"
+check "lock: files changed while queued are checked" true "$(grep -qx during-wait.txt "$TMP/seen" && echo true || echo false)"
+rm -f "$B/first.txt" "$B/during-wait.txt" "$TMP/seen" "$XDG_CONFIG_HOME/agent-toolkit/verify.local.json"
+rm -rf "$LOCK"
+
+# A lock whose holder died is stale: the next run takes it over.
+sh -c 'exit 0' &
+dead=$!
+wait "$dead"
+mkdir -p "$LOCK"
+printf 'pid=%s\nrepo=owner/gone\nat=then\n' "$dead" >"$LOCK/owner"
+run_verify "$B" --full
+check "lock: a dead holder's lock is taken over" 0 "$CODE"
+check "lock: and says so" true "$(printf '%s' "$OUT" | grep -q 'stale lock left by pid' && echo true || echo false)"
+check "lock: released after the run" false "$([ -e "$LOCK" ] && echo true || echo false)"
+
+# A live PID that started at another time isn't the holder: its PID was
+# reused. Only where ps can say when a process started.
+if [ -n "$(lib _vf_proc_start $$)" ]; then
+  mkdir -p "$LOCK"
+  printf 'pid=%s\nstart=Thu Jan  1 00:00:00 1970\nrepo=owner/old\nat=then\n' "$$" >"$LOCK/owner"
+  run_verify "$B" --full
+  check "lock: a reused PID's lock is stale" '[0,true]' "[$CODE,$(printf '%s' "$OUT" | grep -q 'stale lock' && echo true || echo false)]"
+fi
+
+# A lock with no owner yet, made moments ago, belongs to a run that's still
+# writing it: taking it over would leave that run with no lock.
+mkdir -p "$LOCK"
+lib _vf_lock_break "$LOCK" >/dev/null
+check "lock: a new lock with no owner yet is put back, not deleted" true "$([ -d "$LOCK" ] && echo true || echo false)"
+rm -rf "$LOCK"
+
+# A lock with no owner a minute after it was made is stale too.
+mkdir -p "$LOCK"
+touch -t 202001010000 "$LOCK"
+run_verify "$B" --full
+check "lock: an ownerless lock from long ago is taken over" '[0,true]' "[$CODE,$(printf '%s' "$OUT" | grep -q 'stale lock' && echo true || echo false)]"
+
+# A run a check starts (a test suite that runs verify) shares the lock its
+# parent holds rather than waiting on it.
+sleep 30 &
+holder=$!
+mkdir -p "$LOCK"
+printf 'pid=%s\nstart=%s\nrepo=owner/parent\nat=now\n' "$holder" "$(lib _vf_proc_start "$holder")" >"$LOCK/owner"
+OUT=$(cd "$B" && VF_LOCK_HELD="$LOCK" bash "$S/verify" --full 2>"$TMP/stderr")
+CODE=$?
+check "lock: a nested run doesn't wait on its parent's lock" '[0,false]' "[$CODE,$(printf '%s' "$OUT" | grep -q queued && echo true || echo false)]"
+check "lock: and leaves it in place" owner/parent "$(sed -n 's/^repo=//p' "$LOCK/owner" 2>/dev/null)"
+kill "$holder" 2>/dev/null
+wait "$holder" 2>/dev/null
+rm -rf "$LOCK"
+unset VF_LOCK_POLL
 
 # CI with PR workflows that verify can't read isn't the same as no CI.
 R=$(mkrepo shellci '{}' "" 'bash run-tests.sh')

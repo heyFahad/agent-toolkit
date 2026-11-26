@@ -1,16 +1,21 @@
 #!/bin/bash
-# Usage: verify --related [FILES...] | --full | --status [--tree SHA] | --list [--related] [FILES...]
+# Usage: verify --related [FILES...] | --branch | --full | --status [--tree SHA] | --list [--related|--branch] [FILES...]
 #
 # Runs a repo's checks and records that they passed, so the verify-gate hook
 # lets the tree be committed or pushed. See lib.sh for where the checks come
 # from, and the verify skill for when to run each level.
 #
-#   --related [FILES...]  run the quick checks (lint, and tests related to
-#                         FILES, by default the files changed against HEAD)
+#   --related [FILES...]  run the quick checks (format, lint and typecheck,
+#                         and tests related to FILES, by default the files
+#                         changed against HEAD)
+#   --branch              the quick checks on every file the branch changes
+#                         since it split from the default branch (what the
+#                         push that creates the branch on the remote needs)
 #   --full                run every check
 #   --status [--tree SHA] print the record for a tree (default: the working
 #                         tree); exit 1 when there is none
-#   --list [--related] [FILES...]  print the checks as JSON [{name, run}]
+#   --list [--related|--branch] [FILES...]  print the checks as JSON
+#                         [{name, run}]
 #
 # A run stops at the first failing check. It fails too when a check changes
 # tracked files (a format script that writes, a generated file that was out
@@ -18,6 +23,9 @@
 # writes a record under the hash of the working tree after the run, and under
 # its tracked-files-only hash, which the verify-gate hook reads. Untracked
 # build output doesn't fail a run.
+#
+# Only one run checks at a time on this machine, across every repo and
+# session: another one prints that it's queued, and waits for it.
 #
 # Exit codes: 0 success (or the gate is off: no checks for this repo); 1 a
 # check failed; 2 bad usage or not a git repo; 3 a missing prerequisite (the
@@ -42,6 +50,10 @@ while [ "$#" -gt 0 ]; do
       LEVEL=related
       [ -n "$MODE" ] || MODE=run
       ;;
+    --branch)
+      LEVEL=branch
+      [ -n "$MODE" ] || MODE=run
+      ;;
     --full)
       LEVEL=full
       [ -n "$MODE" ] || MODE=run
@@ -51,11 +63,73 @@ while [ "$#" -gt 0 ]; do
   esac
   shift
 done
-[ -n "$MODE" ] || vf_die 2 "usage: verify --related [FILES...] | --full | --status [--tree SHA] | --list [--related] [FILES...]"
+[ -n "$MODE" ] || vf_die 2 "usage: verify --related [FILES...] | --branch | --full | --status [--tree SHA] | --list [--related|--branch] [FILES...]"
 
 ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || vf_die 2 "not in a git repository"
 
+# Named files check only those, so the run can't vouch for the whole tree:
+# useful while working, but it writes no record.
+EXPLICIT=false
+[ "${#FILES[@]}" -eq 0 ] || EXPLICIT=true
+# More changed files than this and the commands holding them all can outgrow
+# what one argument may be, so the run checks everything instead.
+MAX_FILES=500
+
+say() { [ "$MODE" = list ] || echo "$@"; }
+
+# collect_files: fill FILES with the changed files the level checks: the
+# working tree against HEAD for related, against where the branch left the
+# default branch for branch. May move LEVEL to full.
+collect_files() {
+  local base up n
+  [ "$EXPLICIT" = false ] || return 0
+  case "$LEVEL" in
+    related)
+      # Tracked files clean (after a rebase, say; untracked scratch files
+      # don't count): nothing against HEAD, but the commits may hold code
+      # no run saw, so check what the tree changes against the branch as
+      # the remote has it.
+      if git -C "$ROOT" diff --quiet HEAD 2>/dev/null && up=$(vf_pushed_ref "$ROOT") &&
+        [ "$(git -C "$ROOT" rev-parse "HEAD^{tree}")" != "$(git -C "$ROOT" rev-parse "$up^{tree}")" ]; then
+        add_changed "$up"
+        say "verify: no tracked changes against HEAD, so --related checks the ${#FILES[@]} files the tree changes against $up"
+      else
+        add_changed
+      fi
+      ;;
+    branch)
+      if base=$(vf_branch_base "$ROOT"); then
+        add_changed "$base"
+        say "verify: --branch checks the $((${#FILES[@]} + $(printf '%s' "$DELETED" | grep -c .))) files this branch changes since ${base:0:7}"
+      else
+        say "verify: no origin/HEAD, origin/main or origin/master to find where this branch started, so --branch runs every check"
+        LEVEL=full
+      fi
+      ;;
+  esac
+  n=$((${#FILES[@]} + $(printf '%s' "$DELETED" | grep -c . || true)))
+  if [ "$LEVEL" != full ] && [ "$n" -gt "$MAX_FILES" ]; then
+    say "verify: $n changed files is more than $MAX_FILES, so this runs every check (--full)"
+    LEVEL=full FILES=() DELETED=""
+  fi
+  VF_DELETED=$DELETED
+  export VF_DELETED
+  return 0
+}
+
+# add_changed [BASE]: add the files changed against BASE to FILES, and the
+# deleted ones to DELETED.
+DELETED=""
+add_changed() {
+  local f
+  while IFS= read -r f; do
+    if [ -e "$ROOT/$f" ]; then FILES+=("$f"); else DELETED="$DELETED$f"$'\n'; fi
+  done < <(vf_changed_files "$ROOT" ${1+"$1"})
+}
+
 if [ "$MODE" = list ]; then
+  # --list --related with no files lists the checks that need none.
+  [ "$LEVEL" != branch ] || collect_files
   vf_checks "$ROOT" "$LEVEL" ${FILES[@]+"${FILES[@]}"}
   exit 0
 fi
@@ -69,20 +143,12 @@ if [ "$MODE" = status ]; then
 fi
 
 # run
-# Named files check only those, so the run can't vouch for the whole tree:
-# useful while working, but it writes no record.
-EXPLICIT=false
-[ "${#FILES[@]}" -eq 0 ] || EXPLICIT=true
-if [ "$LEVEL" = related ] && [ "${#FILES[@]}" -eq 0 ]; then
-  while IFS= read -r f; do FILES+=("$f"); done < <(vf_changed_files "$ROOT")
-fi
-CHECKS=$(vf_checks "$ROOT" "$LEVEL" ${FILES[@]+"${FILES[@]}"})
 # The gate is off only when there are no full checks. A related level with
 # nothing quick to run (CI runs tests, but no jest or vitest to pick the
 # related ones) still records a pass.
 if [ "$(vf_checks "$ROOT" full | jq length)" -eq 0 ]; then
   if [ -z "$(vf_override "$ROOT")" ] && [ -n "$(vf_pr_workflows "$ROOT")" ]; then
-    echo "verify: no checks for $(vf_repo_key "$ROOT") (gate off): its pull_request workflows run nothing verify can read (no package.json scripts). Ask the user to set this repo's checks in $(vf_config_file) (see the verify skill)."
+    echo "verify: no checks for $(vf_repo_key "$ROOT") (gate off): its pull_request workflows run nothing verify can read (no package.json scripts outside advisory continue-on-error steps; tools called through pnpm exec or npx aren't read). Ask the user to set this repo's checks in $(vf_config_file) (see the verify skill)."
   else
     echo "verify: no checks for $(vf_repo_key "$ROOT") (gate off): CI runs none and there's no override"
   fi
@@ -91,6 +157,15 @@ fi
 NODE_BIN=$(vf_node_path "$ROOT") || exit $?
 STATE=$(vf_state_dir)
 mkdir -p "$STATE/logs"
+# One run at a time on this machine (see vf_lock_acquire). Taken before the
+# changed files are listed and the tree is hashed: both may change while
+# this waits.
+trap 'vf_lock_release' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+vf_lock_acquire "$(vf_repo_key "$ROOT")"
+collect_files
+CHECKS=$(vf_checks "$ROOT" "$LEVEL" ${FILES[@]+"${FILES[@]}"})
 LOG=$(mktemp "$STATE/logs/run.XXXXXX")
 BEFORE=$(vf_tracked_tree "$ROOT") || vf_die 2 "could not hash the working tree"
 
@@ -156,8 +231,8 @@ RECORD=$(jq -n --arg tree "$TREE" --arg tracked "$AFTER" --arg level "$LEVEL" --
   --argjson untracked "$(printf '%s' "$UNTRACKED" | jq -R -s -c 'split("\n") | map(select(. != ""))')" \
   '{tree: $tree, trackedTree: $tracked, level: $level, repo: $repo, at: $at, passed: $passed, commands: $commands, untracked: $untracked, log: $log}')
 for t in "$TREE" "$AFTER"; do
-  # A passing --related run never replaces a passing --full one.
-  if [ "$LEVEL" = related ] && [ "$PASSED" = true ] && vf_record_ok "$t" full; then
+  # A passing run never replaces a passing one at a higher level.
+  if [ "$PASSED" = true ] && [ "$LEVEL" != full ] && vf_record_ok "$t" "$([ "$LEVEL" = related ] && echo branch || echo full)"; then
     continue
   fi
   tmp=$(mktemp "$STATE/.record.XXXXXX")

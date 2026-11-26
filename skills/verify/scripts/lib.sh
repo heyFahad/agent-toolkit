@@ -7,13 +7,24 @@
 #        {"repos": {"<owner/name>": {"checks": [{"name": "...", "run": "..."}],
 #                                    "related": "... {files} ..."}}}
 #      "checks": [] turns the gate off for that repo. In "related", {files}
-#      becomes the changed files, shell-quoted; without it, the related level
-#      runs the full list.
+#      becomes the changed files, shell-quoted (with no changed files, a
+#      command that takes {files} doesn't run). "relatedPaths" maps globs
+#      to commands, {"<glob>": "<command>" or ["<command>", ...]}: each
+#      command whose glob matches a changed file runs once, with {files} as
+#      the files its glob matched ({file}: once per file), and the same
+#      command picked twice runs once. It's a key of its own so that older
+#      versions of verify, which read "related" only as a string, ignore it.
+#      With neither, the related level runs the full list.
 #   2. What CI runs: the root package.json scripts that a workflow triggered
 #      by pull_request invokes, with the arguments CI passes after `--`. CI
 #      is green on the default branch, so these pass before a change and a
 #      failure is the change's fault; a script CI doesn't run, or runs with
-#      `|| true`, may already be failing. No such script: the gate is off.
+#      `|| true` or in a step or job with `continue-on-error: true`, may
+#      already be failing. No such script: the gate is off.
+#      The related level is the format, lint and type scripts plus jest or
+#      vitest on the tests related to the changed files. Jest and vitest run
+#      with at most half the cores (--maxWorkers=50%), so one run leaves room
+#      for the other sessions on the machine.
 
 # Install-time scripts are build steps, not checks.
 VF_SKIP_SCRIPTS=" prepare preinstall install postinstall prepublishOnly "
@@ -61,11 +72,62 @@ vf_pm() {
   fi
 }
 
-# vf_pr_workflows ROOT: the text of every workflow triggered by pull_request.
+# vf_drop_advisory: a workflow on stdin, without the jobs and steps that set
+# `continue-on-error: true`. CI ignores their result, so they may already be
+# failing, the same as a step run with `|| true`. An expression there
+# (`${{ matrix.experimental }}`) isn't literally true, so that step stays.
+# Indentation decides what belongs to a job or step; comments and blank
+# lines go with the block they sit in.
+vf_drop_advisory() {
+  local coe='continue-on-error:[ ]*["'"'"']?true["'"'"']?[ ]*(#.*)?$'
+  awk -v coe="$coe" '
+    function flush() { if (buf != "" && !bad) printf "%s", buf; buf = ""; bad = 0 }
+    {
+      if ($0 ~ /^[ ]*(#.*)?$/) { if (injob) buf = buf $0 "\n"; else print; next }
+      match($0, /^ */); ind = RLENGTH
+      if (ind == 0) { flush(); injob = 0; jobind = -1; injobs = ($0 ~ /^jobs:[ ]*(#.*)?$/); print; next }
+      if (injobs) {
+        if (jobind < 0) jobind = ind
+        if (ind == jobind) { flush(); injob = 1; keyind = -1; buf = $0 "\n"; next }
+        if (injob) {
+          # The job'"'"'s own keys sit at the indent of its first line.
+          if (keyind < 0) keyind = ind
+          if (ind == keyind && $0 ~ ("^ *" coe)) bad = 1
+          buf = buf $0 "\n"
+          next
+        }
+      }
+      print
+    }
+    END { flush() }' | awk -v coe="$coe" '
+    function flush() { if (have && !bad) printf "%s", buf; buf = ""; bad = 0; have = 0 }
+    {
+      if ($0 ~ /^[ ]*(#.*)?$/) { if (have) buf = buf $0 "\n"; else print; next }
+      match($0, /^ */); ind = RLENGTH
+      if (have && ind > sind) {
+        if (ind == skey && $0 ~ ("^ *" coe)) bad = 1
+        buf = buf $0 "\n"
+        next
+      }
+      flush()
+      if ($0 ~ /^ *- /) {
+        # The step'"'"'s keys line up with the first one, after the dash.
+        match($0, /^ *- +/); skey = RLENGTH
+        have = 1; sind = ind; buf = $0 "\n"
+        if ($0 ~ ("^ *- +" coe)) bad = 1
+        next
+      }
+      print
+    }
+    END { flush() }'
+}
+
+# vf_pr_workflows ROOT: the text of every workflow triggered by pull_request,
+# without its advisory jobs and steps (vf_drop_advisory).
 vf_pr_workflows() {
   local f
   for f in "$1"/.github/workflows/*.yml "$1"/.github/workflows/*.yaml; do
-    [ -f "$f" ] && grep -q 'pull_request' "$f" && cat "$f" && echo
+    [ -f "$f" ] && grep -q 'pull_request' "$f" && vf_drop_advisory <"$f" && echo
   done
   return 0
 }
@@ -116,19 +178,129 @@ vf_quote() {
   printf '%q ' "$@" | sed 's/ $//'
 }
 
+# The worker cap for jest and vitest: half the cores, so one run doesn't
+# starve the other sessions on the machine.
+VF_WORKERS="--maxWorkers=50%"
+
+# vf_dep_major ROOT NAME: the major version a dependency's range names, or
+# nothing when it doesn't name one (workspace:, catalog:, a URL).
+vf_dep_major() {
+  jq -r --arg n "$2" '((.dependencies // {}) + (.devDependencies // {}))[$n] // ""' "$1/package.json" |
+    sed -nE 's/^[^0-9]*([0-9]+).*/\1/p'
+}
+
+# vf_capped ROOT RUNNER: exit 0 when RUNNER (jest or vitest) takes the worker
+# cap. Vitest 0.x has no --maxWorkers.
+vf_capped() {
+  case "$2" in
+    jest) return 0 ;;
+    vitest) [ "$(vf_dep_major "$1" vitest)" != 0 ] ;;
+    *) return 1 ;;
+  esac
+}
+
+# vf_script_runner ROOT SCRIPT ARGS: jest or vitest when the script's body is
+# one call of it that sets no worker count of its own (nor do CI's ARGS),
+# else nothing. A body that chains commands is left alone: an appended flag
+# would reach only the last one.
+vf_script_runner() {
+  local root=$1 body k=0 w=()
+  body=$(jq -r --arg n "$2" '.scripts[$n] // ""' "$root/package.json")
+  case "$body" in *'&&'* | *'||'* | *';'* | *'|'* | *'>'* | *'<'*) return 0 ;; esac
+  case " $body $3 " in
+    *' --maxWorkers'* | *' -w'* | *' --runInBand'* | *' -i '* | *' --pool'* | *' --no-file-parallelism'* | *' --threads'*) return 0 ;;
+  esac
+  read -ra w <<<"$body" || true
+  while [ "$k" -lt "${#w[@]}" ]; do
+    case "${w[$k]}" in
+      -*) ;;
+      *=*) ;;
+      cross-env | npx | bunx | exec | pnpm | yarn) ;;
+      *) break ;;
+    esac
+    k=$((k + 1))
+  done
+  case "${w[$k]:-}" in
+    jest | vitest) vf_capped "$root" "${w[$k]}" && echo "${w[$k]}" ;;
+  esac
+  return 0
+}
+
+# vf_glob_re GLOB: GLOB as an anchored ERE over repo-relative paths. `**/`
+# matches any number of directories, `**` anything, `*` and `?` stay within
+# one directory.
+vf_glob_re() {
+  printf '%s' "$1" | sed -E 's/[].^$+(){}|\\[]/\\&/g
+    s#\*\*/#<DS>#g; s#\*\*#<DD>#g; s#\*#[^/]*#g; s#\?#[^/]#g
+    s#<DS>#(.*/)?#g; s#<DD>#.*#g; s#^#^#; s#$#$#'
+}
+
+# vf_related_map OVERRIDE FILES...: the checks an override picks for FILES
+# at the related level, as JSON objects, one per line: "related" (a string),
+# then each "relatedPaths" command whose glob matched. A relatedPaths value
+# is a command or a list of them; each runs once on the files its glob
+# matched ({files}), or once per file ({file}). The same command picked
+# twice runs once.
+vf_related_map() {
+  local ov=$1 run n j g re f m me q c cmds k nc del=()
+  shift
+  # Files deleted since the base (VF_DELETED, one per line, from verify)
+  # still pick their suites, but aren't handed to any command.
+  while IFS= read -r f; do [ -z "$f" ] || del+=("$f"); done <<<"${VF_DELETED:-}"
+  run=$(printf '%s' "$ov" | jq -r '.related // empty | strings')
+  {
+    case "$run" in
+      "") ;;
+      *'{files}'*) [ "$#" -eq 0 ] || jq -n --arg r "${run//\{files\}/$(vf_quote "$@")}" '{name: "related", run: $r}' ;;
+      *) jq -n --arg r "$run" '{name: "related", run: $r}' ;;
+    esac
+    n=$(printf '%s' "$ov" | jq '.relatedPaths // {} | length')
+    j=0
+    while [ "$j" -lt "$n" ]; do
+      g=$(printf '%s' "$ov" | jq -r --argjson j "$j" '.relatedPaths | keys_unsorted[$j]')
+      cmds=$(printf '%s' "$ov" | jq -c --argjson j "$j" '.relatedPaths | .[keys_unsorted[$j]] | if type == "array" then . else [.] end')
+      re=$(vf_glob_re "$g")
+      m=() me=()
+      for f in "$@"; do
+        [[ $f =~ $re ]] && m+=("$f") && me+=("$f")
+      done
+      for f in ${del[@]+"${del[@]}"}; do
+        [[ $f =~ $re ]] && m+=("$f")
+      done
+      j=$((j + 1))
+      [ "${#m[@]}" -gt 0 ] || continue
+      q=$(vf_quote ${me[@]+"${me[@]}"})
+      nc=$(printf '%s' "$cmds" | jq length)
+      k=0
+      while [ "$k" -lt "$nc" ]; do
+        c=$(printf '%s' "$cmds" | jq -r --argjson k "$k" '.[$k]')
+        k=$((k + 1))
+        case "$c" in
+          *'{file}'*)
+            for f in ${me[@]+"${me[@]}"}; do
+              jq -n --arg n "related $g" --arg r "${c//\{file\}/$(vf_quote "$f")}" '{name: $n, run: $r}'
+            done
+            ;;
+          *'{files}'*) [ "${#me[@]}" -eq 0 ] || jq -n --arg n "related $g" --arg r "${c//\{files\}/$q}" '{name: $n, run: $r}' ;;
+          *) jq -n --arg n "related $g" --arg r "$c" '{name: $n, run: $r}' ;;
+        esac
+      done
+    done
+  } | jq -s -c 'reduce .[] as $c ([]; if any(.[]; .run == $c.run) then . else . + [$c] end) | .[]'
+}
+
 # vf_checks ROOT LEVEL [FILES...]: the checks to run, as a JSON array of
-# {name, run}. LEVEL is full or related; FILES are the changed files for the
-# related level. [] means the gate is off.
+# {name, run}. LEVEL is full, branch or related; FILES are the changed files
+# for the related and branch levels, which run the same checks (branch just
+# on every file the branch changed). [] means the gate is off.
 vf_checks() {
-  local root=$1 level=$2 ov pm x names related tests_ci dev
+  local root=$1 level=$2 ov pm x names tests_ci dev runner flag
   shift 2
+  [ "$level" != branch ] || level=related
   ov=$(vf_override "$root")
   if [ -n "$ov" ]; then
-    related=$(printf '%s' "$ov" | jq -r '.related // empty')
-    if [ "$level" = related ] && [ -n "$related" ]; then
-      local q
-      q=$(vf_quote "$@")
-      jq -n --arg r "${related//\{files\}/$q}" '[{name: "related", run: $r}]'
+    if [ "$level" = related ] && printf '%s' "$ov" | jq -e '(.related | type) == "string" or has("relatedPaths")' >/dev/null; then
+      vf_related_map "$ov" "$@" | jq -s -c .
     else
       printf '%s' "$ov" | jq -c '.checks // []'
     fi
@@ -139,14 +311,25 @@ vf_checks() {
     echo '[]'
     return 0
   fi
+
   pm=$(vf_pm "$root")
   if [ "$level" = related ]; then
     tests_ci=$(printf '%s\n' "$names" | grep -E '^test' || true)
-    names=$(printf '%s\n' "$names" | grep -E '^(format|lint)' || true)
+    names=$(printf '%s\n' "$names" | grep -E '^(format|lint|type)' || true)
   fi
   {
     [ -z "$names" ] || printf '%s\n' "$names" | while IFS=$(printf '\t') read -r n a; do
-      jq -n --arg n "$n" --arg r "CI=true $pm run $n${a:+ -- $a}" '{name: $n, run: $r}'
+      runner=$(vf_script_runner "$root" "$n" "$a")
+      flag=""
+      if [ -n "$runner" ]; then
+        # npm needs `--` to pass a flag on to the script; the others pass it
+        # as is. After CI's own `--`, every manager passes it on.
+        if [ -n "$a" ]; then flag=" $VF_WORKERS"
+        elif [ "$pm" = npm ]; then flag=" -- $VF_WORKERS"
+        else flag=" $VF_WORKERS"
+        fi
+      fi
+      jq -n --arg n "$n" --arg r "CI=true $pm run $n${a:+ -- $a}$flag" '{name: $n, run: $r}'
     done
     if [ "$level" = related ] && [ -n "${tests_ci:-}" ] && [ "$#" -gt 0 ]; then
       case "$pm" in
@@ -157,9 +340,11 @@ vf_checks() {
       esac
       dev=$(jq -r '(.dependencies // {}) + (.devDependencies // {}) | keys[]' "$root/package.json")
       if printf '%s\n' "$dev" | grep -qx jest; then
-        jq -n --arg r "CI=true $x jest --findRelatedTests --passWithNoTests $(vf_quote "$@")" '{name: "related-tests", run: $r}'
+        jq -n --arg r "CI=true $x jest $VF_WORKERS --findRelatedTests --passWithNoTests $(vf_quote "$@")" '{name: "related-tests", run: $r}'
       elif printf '%s\n' "$dev" | grep -qx vitest; then
-        jq -n --arg r "CI=true $x vitest related --run --passWithNoTests $(vf_quote "$@")" '{name: "related-tests", run: $r}'
+        flag=""
+        vf_capped "$root" vitest && flag=" $VF_WORKERS"
+        jq -n --arg r "CI=true $x vitest related --run --passWithNoTests$flag $(vf_quote "$@")" '{name: "related-tests", run: $r}'
       fi
     fi
   } | jq -s -c .
@@ -210,21 +395,183 @@ _vf_tree_with() {
 # vf_record_file TREE: where the record for TREE lives.
 vf_record_file() { echo "$(vf_state_dir)/$1.json"; }
 
+# vf_rank LEVEL: related 1, branch 2, full 3. Each level's run covers the
+# ones below it: branch checks a superset of related's files, and full runs
+# everything.
+vf_rank() {
+  case "$1" in
+    full) echo 3 ;;
+    branch) echo 2 ;;
+    related) echo 1 ;;
+    *) echo 0 ;;
+  esac
+}
+
 # vf_record_ok TREE LEVEL: exit 0 when TREE has a passing record at LEVEL or
-# above (a full run satisfies related).
+# above.
 vf_record_ok() {
   local f
   f=$(vf_record_file "$1")
   [ -f "$f" ] || return 1
-  jq -e --arg want "$2" '.passed == true and (.level == "full" or .level == $want)' "$f" >/dev/null 2>&1
+  jq -e --argjson want "$(vf_rank "$2")" '.passed == true and
+    ({related: 1, branch: 2, full: 3}[.level] // 0) >= $want' "$f" >/dev/null 2>&1
 }
 
-# vf_changed_files ROOT: files changed against HEAD, plus untracked files that
-# aren't ignored, that still exist. One per line, relative to ROOT.
+# vf_branch_base ROOT: where the current branch split from the default
+# branch (origin/HEAD, else origin/main or origin/master), or exit 1 when
+# there's none of those.
+vf_branch_base() {
+  local root=$1 r cand
+  cand=$(git -C "$root" symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || true)
+  for r in $cand origin/main origin/master; do
+    git -C "$root" rev-parse -q --verify "$r^{commit}" >/dev/null 2>&1 || continue
+    git -C "$root" merge-base HEAD "$r" 2>/dev/null && return 0
+  done
+  return 1
+}
+
+# vf_pushed_ref ROOT: the remote-tracking ref a bare push of the current
+# branch updates: on the remote it pushes to (branch.<b>.pushRemote,
+# remote.pushDefault, branch.<b>.remote, else origin), under its own name,
+# or its upstream's under push.default=upstream. Exit 1 when there's none.
+vf_pushed_ref() {
+  local cur r remote="" name merge
+  cur=$(git -C "$1" symbolic-ref -q --short HEAD 2>/dev/null) || return 1
+  for r in "branch.$cur.pushRemote" remote.pushDefault "branch.$cur.remote"; do
+    remote=$(git -C "$1" config --get "$r" 2>/dev/null) && break
+  done
+  [ -n "$remote" ] || remote=origin
+  name=$cur
+  if [ "$(git -C "$1" config --get push.default 2>/dev/null)" = upstream ] &&
+    [ "$(git -C "$1" config --get "branch.$cur.remote" 2>/dev/null)" = "$remote" ]; then
+    merge=$(git -C "$1" config --get "branch.$cur.merge" 2>/dev/null || true)
+    [ -z "$merge" ] || name=${merge#refs/heads/}
+  fi
+  git -C "$1" rev-parse -q --verify "refs/remotes/$remote/$name" >/dev/null 2>&1 || return 1
+  echo "$remote/$name"
+}
+
+# vf_first_push_level ROOT: what the push that creates a branch on the
+# remote needs: branch, unless the override's "firstPush" (for the repo, or
+# at the top of the file for every repo) says full.
+vf_first_push_level() {
+  local key cfg v=""
+  key=$(vf_repo_key "$1")
+  cfg=$(vf_config_file)
+  [ -s "$cfg" ] && v=$(jq -r --arg k "$key" '.repos[$k].firstPush // .firstPush // empty' "$cfg" 2>/dev/null)
+  case "$v" in full) echo full ;; *) echo branch ;; esac
+}
+
+# vf_changed_files ROOT [BASE]: files the working tree changes against BASE
+# (default HEAD), deleted ones included, plus untracked files that aren't
+# ignored. One per line, relative to ROOT. verify hands the ones that still
+# exist to the checks, and the deleted ones to relatedPaths (VF_DELETED),
+# where they pick suites without being passed to them.
 vf_changed_files() {
   (
     cd "$1" || exit 0
-    { git diff --name-only HEAD 2>/dev/null; git ls-files --others --exclude-standard; } |
-      sort -u | while IFS= read -r f; do [ -e "$f" ] && printf '%s\n' "$f"; done
+    # --no-renames: a moved file is a deletion and an addition, so its old
+    # place picks its suites too.
+    { git diff --no-renames --name-only "${2:-HEAD}" 2>/dev/null; git ls-files --others --exclude-standard; } | sort -u
   )
+}
+
+# One verify run at a time on this machine, across every repo and session:
+# jest, vitest and eslint each take every core they're given, and a few at
+# once can fill memory and swap. The lock is a directory in the state dir
+# (mkdir is atomic), with an owner file naming the holder's PID, its process
+# start time and its repo. A holder that has died, or whose PID now belongs
+# to another process, has left a stale lock, which the next run takes over.
+# It's best effort: in a narrow race two runs can overlap, which is slow but
+# harmless.
+vf_lock_dir() { echo "$(vf_state_dir)/run.lock"; }
+
+# _vf_proc_start PID: when PID started, as ps prints it, or nothing when ps
+# can't tell (no ps, as in a minimal container).
+_vf_proc_start() { { LC_ALL=C TZ=UTC ps -o lstart= -p "$1" 2>/dev/null || true; } | sed 's/^ *//; s/ *$//'; }
+
+# _vf_owner FILE KEY: one field of a lock's owner file.
+_vf_owner() { { sed -n "s/^$2=//p" "$1" 2>/dev/null || true; } | head -1; }
+
+# _vf_lock_alive OWNERFILE: exit 0 when the process that wrote it still runs.
+_vf_lock_alive() {
+  local pid start now
+  pid=$(_vf_owner "$1" pid)
+  [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null || return 1
+  start=$(_vf_owner "$1" start)
+  [ -n "$start" ] || return 0
+  now=$(_vf_proc_start "$pid")
+  [ -z "$now" ] || [ "$now" = "$start" ]
+}
+
+# _vf_lock_break LOCK: take a stale lock away. Renaming it is atomic, so only
+# one waiter wins; if what it renamed turns out to be a live lock another
+# waiter took in between (one with a live owner, or one so new its owner
+# isn't written yet), it goes back.
+_vf_lock_break() {
+  local lock=$1 stale="$1.stale.$$" pid repo
+  mv "$lock" "$stale" 2>/dev/null || return 0
+  if { [ -f "$stale/owner" ] && _vf_lock_alive "$stale/owner"; } ||
+    { [ ! -f "$stale/owner" ] && [ -z "$(find "$stale" -maxdepth 0 -mmin +1 2>/dev/null)" ]; }; then
+    [ -e "$lock" ] || mv "$stale" "$lock" 2>/dev/null || true
+    rm -rf "$stale"
+    return 0
+  fi
+  pid=$(_vf_owner "$stale/owner" pid) repo=$(_vf_owner "$stale/owner" repo)
+  echo "verify: took over a stale lock${pid:+ left by pid $pid}${repo:+ ($repo)}"
+  rm -rf "$stale"
+}
+
+# _vf_lock_own LOCK REPO: write the owner file into a lock this run just
+# made. Fails when another waiter took the directory away in between (it
+# looked stale), and the run tries again.
+_vf_lock_own() {
+  {
+    printf 'pid=%s\nstart=%s\nrepo=%s\nat=%s\n' "$$" "$(_vf_proc_start $$)" "$2" \
+      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$1/owner.tmp" &&
+      mv "$1/owner.tmp" "$1/owner"
+  } 2>/dev/null
+}
+
+# vf_lock_acquire REPO: wait until no other verify run holds the lock, then
+# take it. A run started by a check of the run holding it (a test suite that
+# runs verify) shares it rather than waiting on itself.
+vf_lock_acquire() {
+  local lock said="" f
+  lock=$(vf_lock_dir)
+  [ "${VF_LOCK_HELD:-}" != "$lock" ] || return 0
+  mkdir -p "$(dirname "$lock")"
+  while ! { mkdir "$lock" 2>/dev/null && _vf_lock_own "$lock" "$1"; }; do
+    f="$lock/owner"
+    if [ -f "$f" ] && ! _vf_lock_alive "$f"; then
+      _vf_lock_break "$lock"
+      continue
+    fi
+    if [ ! -f "$f" ]; then
+      [ -d "$lock" ] || continue
+      # Just made, its owner not written yet; a minute without one is stale.
+      if [ -n "$(find "$lock" -maxdepth 0 -mmin +1 2>/dev/null)" ]; then
+        _vf_lock_break "$lock"
+        continue
+      fi
+    fi
+    if [ -z "$said" ] && [ -f "$f" ]; then
+      echo "verify: queued behind the verify run for $(_vf_owner "$f" repo) (pid $(_vf_owner "$f" pid), since $(_vf_owner "$f" at)); one run at a time on this machine, so this waits for it to finish"
+      said=1
+    fi
+    sleep "${VF_LOCK_POLL:-2}"
+  done
+  VF_LOCK_HELD=$lock VF_LOCK_MINE=1
+  export VF_LOCK_HELD
+  [ -z "$said" ] || echo "verify: the other run finished; starting"
+}
+
+# vf_lock_release: drop the lock, if this process took it.
+vf_lock_release() {
+  local lock
+  [ "${VF_LOCK_MINE:-}" = 1 ] || return 0
+  lock=$(vf_lock_dir)
+  [ "$(_vf_owner "$lock/owner" pid)" = "$$" ] && rm -rf "$lock"
+  VF_LOCK_MINE=""
+  return 0
 }
