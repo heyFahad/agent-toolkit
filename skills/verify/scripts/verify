@@ -81,18 +81,20 @@ say() { [ "$MODE" = list ] || echo "$@"; }
 # working tree against HEAD for related, against where the branch left the
 # default branch for branch. May move LEVEL to full.
 collect_files() {
-  local base up
+  local base up n
   [ "$EXPLICIT" = false ] || return 0
   case "$LEVEL" in
     related)
-      add_changed
-      # A clean tree (after a rebase, say) has nothing against HEAD, but its
-      # commits may hold code no run saw: check what it changes against the
-      # branch as the remote has it.
-      if [ "${#FILES[@]}" -eq 0 ] && [ -z "$DELETED" ] && up=$(vf_pushed_ref "$ROOT") &&
+      # Tracked files clean (after a rebase, say; untracked scratch files
+      # don't count): nothing against HEAD, but the commits may hold code
+      # no run saw, so check what the tree changes against the branch as
+      # the remote has it.
+      if git -C "$ROOT" diff --quiet HEAD 2>/dev/null && up=$(vf_pushed_ref "$ROOT") &&
         [ "$(git -C "$ROOT" rev-parse "HEAD^{tree}")" != "$(git -C "$ROOT" rev-parse "$up^{tree}")" ]; then
         add_changed "$up"
-        say "verify: the working tree is clean, so --related checks the ${#FILES[@]} files it changes against $up"
+        say "verify: no tracked changes against HEAD, so --related checks the ${#FILES[@]} files the tree changes against $up"
+      else
+        add_changed
       fi
       ;;
     branch)
@@ -105,8 +107,9 @@ collect_files() {
       fi
       ;;
   esac
-  if [ "$LEVEL" != full ] && [ "${#FILES[@]}" -gt "$MAX_FILES" ]; then
-    say "verify: ${#FILES[@]} changed files is more than $MAX_FILES, so this runs every check (--full)"
+  n=$((${#FILES[@]} + $(printf '%s' "$DELETED" | grep -c . || true)))
+  if [ "$LEVEL" != full ] && [ "$n" -gt "$MAX_FILES" ]; then
+    say "verify: $n changed files is more than $MAX_FILES, so this runs every check (--full)"
     LEVEL=full FILES=() DELETED=""
   fi
   VF_DELETED=$DELETED

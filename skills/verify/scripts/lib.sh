@@ -430,18 +430,25 @@ vf_branch_base() {
   return 1
 }
 
-# vf_pushed_ref ROOT: the remote-tracking ref of the current branch on the
-# remote it pushes to (branch.<b>.pushRemote, remote.pushDefault,
-# branch.<b>.remote, else origin), or exit 1 when there's none.
+# vf_pushed_ref ROOT: the remote-tracking ref a bare push of the current
+# branch updates: on the remote it pushes to (branch.<b>.pushRemote,
+# remote.pushDefault, branch.<b>.remote, else origin), under its own name,
+# or its upstream's under push.default=upstream. Exit 1 when there's none.
 vf_pushed_ref() {
-  local cur r remote=""
+  local cur r remote="" name merge
   cur=$(git -C "$1" symbolic-ref -q --short HEAD 2>/dev/null) || return 1
   for r in "branch.$cur.pushRemote" remote.pushDefault "branch.$cur.remote"; do
     remote=$(git -C "$1" config --get "$r" 2>/dev/null) && break
   done
   [ -n "$remote" ] || remote=origin
-  git -C "$1" rev-parse -q --verify "refs/remotes/$remote/$cur" >/dev/null 2>&1 || return 1
-  echo "$remote/$cur"
+  name=$cur
+  if [ "$(git -C "$1" config --get push.default 2>/dev/null)" = upstream ] &&
+    [ "$(git -C "$1" config --get "branch.$cur.remote" 2>/dev/null)" = "$remote" ]; then
+    merge=$(git -C "$1" config --get "branch.$cur.merge" 2>/dev/null || true)
+    [ -z "$merge" ] || name=${merge#refs/heads/}
+  fi
+  git -C "$1" rev-parse -q --verify "refs/remotes/$remote/$name" >/dev/null 2>&1 || return 1
+  echo "$remote/$name"
 }
 
 # vf_first_push_level ROOT: what the push that creates a branch on the
@@ -463,7 +470,9 @@ vf_first_push_level() {
 vf_changed_files() {
   (
     cd "$1" || exit 0
-    { git diff --name-only "${2:-HEAD}" 2>/dev/null; git ls-files --others --exclude-standard; } | sort -u
+    # --no-renames: a moved file is a deletion and an addition, so its old
+    # place picks its suites too.
+    { git diff --no-renames --name-only "${2:-HEAD}" 2>/dev/null; git ls-files --others --exclude-standard; } | sort -u
   )
 }
 

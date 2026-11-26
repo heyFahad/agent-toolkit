@@ -557,7 +557,7 @@ jq -n --arg seen "$TMP/seen" '{repos: {"owner/clean": {checks: [{name: "all", ru
 rm -f "$TMP/seen"
 run_verify "$RC" --related
 check "clean: checks what HEAD changes against the remote's copy of the branch" '[0,true]' \
-  "[$CODE,$(printf '%s' "$OUT" | grep -q 'clean, so --related checks the 1 files it changes against origin/feat' && echo true || echo false)]"
+  "[$CODE,$(printf '%s' "$OUT" | grep -q 'no tracked changes against HEAD, so --related checks the 1 files the tree changes against origin/feat' && echo true || echo false)]"
 check "clean: the changed file reaches the commands, the deleted one picks the suite only" \
   "$(printf 'src/a.sh\nsuite\n[src/a.sh]')" "$(cat "$TMP/seen" 2>/dev/null)"
 # Only the deleted file changed: the suite runs, the {files} commands don't.
@@ -566,6 +566,36 @@ git -C "$RC" rm -q src/gone.sh
 rm -f "$TMP/seen"
 run_verify "$RC" --related
 check "clean: a deletion alone still runs its suite" suite "$(cat "$TMP/seen" 2>/dev/null)"
+# An untracked scratch file doesn't hide the rebased commits.
+git -C "$RC" reset -q --hard origin/feat
+echo a3 >"$RC/src/a.sh"
+git -C "$RC" -c user.email=t@t -c user.name=t commit -q -am again
+echo s >"$RC/scratch.txt"
+rm -f "$TMP/seen"
+run_verify "$RC" --related
+check "clean: an untracked file doesn't stop the remote comparison" "$(printf 'scratch.txt\nsrc/a.sh\nsuite\n[src/a.sh]')" "$(cat "$TMP/seen" 2>/dev/null)"
+rm -f "$RC/scratch.txt"
+# Under push.default=upstream the baseline is the upstream's ref.
+git -C "$RC" config branch.feat.remote origin
+git -C "$RC" config branch.feat.merge refs/heads/feat-up
+git -C "$RC" config push.default upstream
+git -C "$RC" update-ref refs/remotes/origin/feat-up origin/main
+check "clean: push.default=upstream compares against the upstream" origin/feat-up "$(lib vf_pushed_ref "$RC")"
+git -C "$RC" config --unset push.default
+check "clean: otherwise against the same name" origin/feat "$(lib vf_pushed_ref "$RC")"
+# A moved file is a deletion and an addition: its old place picks suites.
+git -C "$RC" reset -q --hard origin/feat
+mkdir -p "$RC/lib"
+git -C "$RC" mv src/a.sh lib/a.sh
+check "clean: a rename lists both paths" "$(printf 'lib/a.sh\nsrc/a.sh')" "$(lib vf_changed_files "$RC")"
+# Deletions count toward the cutoff too.
+git -C "$RC" reset -q --hard origin/feat
+mkdir -p "$RC/many"
+for i in $(seq 501); do : >"$RC/many/f$i"; done
+git -C "$RC" add many && git -C "$RC" -c user.email=t@t -c user.name=t commit -q -m many
+git -C "$RC" rm -q -r many
+run_verify "$RC" --related
+check "clean: 501 deletions run every check" true "$(printf '%s' "$OUT" | grep -q '501 changed files is more than 500' && echo true || echo false)"
 rm -f "$TMP/seen" "$CFG"
 
 # firstPush in the config: per repo, or for every repo at the top.
